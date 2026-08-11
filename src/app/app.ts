@@ -8,7 +8,7 @@ import { createJavaScriptRuntimePlugin } from "../plugins/javascript-runtime.js"
 import { createLocalModelPlugin } from "../plugins/local-model.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
-import { ConversationRepository, CONVERSATION_LIMITS, isConversationMessage, titleFor, type Conversation } from "./conversations.js";
+import { CHAT_LIMITS, createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { messageElement, renderShell, textElement, type AppElements } from "./view.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/openai-compatible.js";
@@ -29,22 +29,12 @@ export interface AgentAppOptions {
   readonly initialModelId?: string;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(timestamp);
-}
-
 export class AgentApp {
   private readonly root: HTMLElement;
   private readonly options: AgentAppOptions;
   private readonly runtime = new BrowserWorkerRuntime();
-  private conversations = new Map<string, Conversation>();
-  private activeId = "";
+  private chat: ChatState = createChatState();
   private store!: StateStore;
-  private repository!: ConversationRepository;
   private capabilities!: CapabilityManager;
   private tools!: ToolRegistry;
   private plugins!: PluginManager;
@@ -74,8 +64,8 @@ export class AgentApp {
     if ("scrollRestoration" in window.history) window.history.scrollRestoration = "auto";
     Object.assign(this.elements, renderShell(this.root));
     this.bindEvents();
+    this.chat = createChatState();
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
-    this.repository = new ConversationRepository(this.store);
     this.capabilities = new CapabilityManager({
       decide: ({ pluginId, name, reason }) => {
         if (typeof window.confirm !== "function") return false;
@@ -119,7 +109,8 @@ export class AgentApp {
         this.renderHeader();
       }
     });
-    await this.loadConversations();
+    this.syncConnectionPanelFromUrl();
+    this.normalizeUrl(false);
     this.ready = true;
     this.renderAll();
     this.focusComposer();
@@ -138,7 +129,6 @@ export class AgentApp {
   }
 
   private bindEvents(): void {
-    this.elements["new-session"]?.addEventListener("click", () => void this.createSession());
     this.elements["composer-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.sendMessage();
@@ -160,12 +150,15 @@ export class AgentApp {
     this.elements["connection-details"]?.addEventListener("toggle", () => {
       const details = this.elements["connection-details"] as HTMLDetailsElement;
       const urlOpen = new URL(window.location.href).searchParams.get("connect") === "1";
-      if (details.open !== urlOpen) this.updateUrl(true);
+      if (details.open !== urlOpen) this.normalizeUrl(true);
     });
     for (const field of ["model-endpoint", "model-name"]) {
       this.elements[field]?.addEventListener("input", () => this.clearFieldError(field));
     }
-    window.addEventListener("popstate", () => void this.selectFromUrl());
+    window.addEventListener("popstate", () => {
+      this.syncConnectionPanelFromUrl();
+      this.normalizeUrl(false);
+    });
     window.addEventListener("beforeunload", (event) => {
       const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
       if (this.busy || input === undefined || input.value.trim().length === 0) return;
@@ -174,109 +167,9 @@ export class AgentApp {
     });
   }
 
-  private async loadConversations(): Promise<void> {
-    this.conversations = await this.repository.load();
-    if (this.conversations.size === 0) {
-      const conversation = this.repository.create();
-      this.conversations.set(conversation.id, conversation);
-      await this.persist(conversation);
-    }
-    const requested = new URLSearchParams(window.location.search).get("session");
-    this.activeId = requested !== null && this.conversations.has(requested) ? requested : this.sortedConversations()[0]?.id ?? "";
-    this.syncConnectionPanelFromUrl();
-    this.updateUrl(false);
-  }
-
-  private async persist(conversation: Conversation, removedIds: readonly string[] = []): Promise<void> {
-    try {
-      await this.repository.save(this.conversations, conversation, removedIds);
-    } catch (error) {
-      this.notify(error instanceof Error ? `State could not be persisted: ${error.message}` : "State could not be persisted.", "error");
-      if (this.ready && this.activeId.length > 0 && this.conversations.has(this.activeId)) this.renderAll();
-    }
-  }
-
-  private sortedConversations(): Conversation[] {
-    return [...this.conversations.values()].sort((left, right) => right.updatedAt - left.updatedAt);
-  }
-
-  private activeConversation(): Conversation {
-    const conversation = this.conversations.get(this.activeId);
-    if (conversation === undefined) throw new Error("Active session is unavailable.");
-    return conversation;
-  }
-
-  private async createSession(): Promise<void> {
-    if (!this.ready || this.busy || !this.confirmDraft()) return;
-    if (this.conversations.size >= CONVERSATION_LIMITS.maxSessions) {
-      this.notify(`You can keep at most ${CONVERSATION_LIMITS.maxSessions} sessions. Delete an old session first.`, "error");
-      return;
-    }
-    const conversation = this.repository.create();
-    this.conversations.set(conversation.id, conversation);
-    this.activeId = conversation.id;
-    await this.persist(conversation);
-    this.updateUrl(true);
-    this.renderAll();
-    this.notify("New session ready.", "success");
-    this.focusComposer(true);
-  }
-
-  private async deleteSession(id: string): Promise<void> {
-    if (!this.ready || this.busy || !this.conversations.has(id)) return;
-    if (id === this.activeId && !this.confirmDraft()) return;
-    const conversation = this.conversations.get(id);
-    if (conversation === undefined || typeof window.confirm !== "function" || !window.confirm(`Delete “${conversation.title}”?`)) return;
-    try {
-      await this.repository.remove(this.conversations, id);
-    } catch (error) {
-      this.notify(error instanceof Error ? `State could not be persisted: ${error.message}` : "State could not be persisted.", "error");
-      return;
-    }
-    if (this.conversations.size === 0) {
-      const replacement = this.repository.create();
-      this.conversations.set(replacement.id, replacement);
-      await this.persist(replacement);
-    }
-    if (id === this.activeId) this.activeId = this.sortedConversations()[0]?.id ?? "";
-    this.updateUrl(true);
-    this.renderAll();
-    this.notify("Session deleted.", "success");
-  }
-
-  private async selectFromUrl(): Promise<void> {
-    if (!this.ready) return;
-    this.syncConnectionPanelFromUrl();
-    const requested = new URLSearchParams(window.location.search).get("session");
-    if (requested === this.activeId) return;
-    if (requested === null || !this.conversations.has(requested)) {
-      this.updateUrl(false);
-      return;
-    }
-    if (this.busy || !this.confirmDraft()) {
-      this.updateUrl(false);
-      return;
-    }
-    this.activeId = requested;
-    this.pendingText = "";
-    this.pendingTool = undefined;
-    this.renderAll();
-    this.focusComposer(true);
-  }
-
-  private async selectSession(id: string): Promise<void> {
-    if (!this.ready || this.busy || !this.conversations.has(id) || id === this.activeId || !this.confirmDraft()) return;
-    this.activeId = id;
-    this.pendingText = "";
-    this.pendingTool = undefined;
-    this.updateUrl(true);
-    this.renderAll();
-    this.focusComposer(true);
-  }
-
-  private updateUrl(push: boolean): void {
+  private normalizeUrl(push: boolean): void {
     const url = new URL(window.location.href);
-    url.searchParams.set("session", this.activeId);
+    url.searchParams.delete("session");
     const details = this.elements["connection-details"] as HTMLDetailsElement | undefined;
     if (details?.open === true) url.searchParams.set("connect", "1");
     else url.searchParams.delete("connect");
@@ -345,7 +238,7 @@ export class AgentApp {
 
   private async sendMessage(): Promise<void> {
     if (!this.ready) {
-      this.notify("Loading local sessions…");
+      this.notify("Starting chat…");
       return;
     }
     if (this.busy) return;
@@ -356,8 +249,8 @@ export class AgentApp {
       input.focus();
       return;
     }
-    if (rawContent.length > CONVERSATION_LIMITS.maxMessageChars) {
-      this.notify(`Messages are limited to ${CONVERSATION_LIMITS.maxMessageChars} characters.`, "error");
+    if (rawContent.length > CHAT_LIMITS.maxMessageChars) {
+      this.notify(`Messages are limited to ${CHAT_LIMITS.maxMessageChars} characters.`, "error");
       return;
     }
 
@@ -366,38 +259,33 @@ export class AgentApp {
     this.setBusy(true);
     try {
       const processed = await this.plugins.process({ role: "user", content: rawContent }, controller.signal);
-      if (!isConversationMessage(processed) || processed.role !== "user" || typeof processed.content !== "string") {
+      if (!isMessageEnvelope(processed) || processed.role !== "user" || typeof processed.content !== "string") {
         throw new Error("A message processor must return a user message.");
       }
       const content = processed.content.trim();
-      if (!content || content.length > CONVERSATION_LIMITS.maxMessageChars) throw new Error("The processed message is empty or too large.");
-      const conversation = this.activeConversation();
-      conversation.messages = [...conversation.messages, { role: "user", content }];
-      if (conversation.messages.filter((message) => message.role === "user").length === 1) conversation.title = titleFor(content);
+      if (!content || content.length > CHAT_LIMITS.maxMessageChars) throw new Error("The processed message is empty or too large.");
+      this.chat.messages = normalizeMessages([...this.chat.messages, { role: "user", content }]);
       input.value = "";
       this.pendingText = "";
       this.pendingTool = undefined;
-      await this.persist(conversation);
-      const runConversation = this.activeConversation();
       this.renderAll();
       const result = await this.agent.run({
-        messages: runConversation.messages,
+        messages: this.chat.messages,
         signal: controller.signal,
         maxTurns: 8,
         toolTimeoutMs: 10_000,
         limits: {
-          maxMessages: CONVERSATION_LIMITS.maxMessages,
-          maxMessageChars: CONVERSATION_LIMITS.maxMessageChars,
-          maxRequestChars: CONVERSATION_LIMITS.maxConversationChars,
+          maxMessages: CHAT_LIMITS.maxMessages,
+          maxMessageChars: CHAT_LIMITS.maxMessageChars,
+          maxRequestChars: CHAT_LIMITS.maxConversationChars,
           maxToolOutputChars: 16_000,
           maxToolCallsPerTurn: 16,
         },
         onEvent: (event) => this.handleAgentEvent(event),
       });
-      runConversation.messages = [...result.messages];
-      await this.persist(runConversation);
+      this.chat.messages = normalizeMessages(result.messages);
       if (result.status === "completed") this.notify("Response complete.", "success");
-      else if (result.status === "cancelled") this.notify("Run cancelled. The conversation was saved.", "error");
+      else if (result.status === "cancelled") this.notify("Run cancelled.", "error");
       else if (result.status === "max-turns") this.notify("Run stopped at the turn limit.", "error");
       else this.notify(result.error?.message ?? "The model could not complete this run.", "error");
     } catch (error) {
@@ -456,7 +344,6 @@ export class AgentApp {
     input.disabled = value;
     const spinner = send.querySelector<HTMLElement>(".spinner");
     if (spinner !== null) spinner.hidden = !value;
-    this.renderSessions();
     this.renderTools();
   }
 
@@ -467,53 +354,16 @@ export class AgentApp {
   }
 
   private renderAll(): void {
-    this.renderSessions();
     this.renderHeader();
     this.renderChat();
     this.renderTools();
-    this.element("storage-label").textContent = this.store.kind === "indexeddb"
-      ? "Local state · IndexedDB"
-      : this.store.failureReason === undefined ? "Session state · memory" : "Session state · memory (storage unavailable)";
   }
 
   private renderHeader(): void {
-    const conversation = this.activeConversation();
-    this.element("conversation-title").textContent = conversation.title;
-    this.element("conversation-meta").textContent = `${conversation.messages.length} message${conversation.messages.length === 1 ? "" : "s"} · updated ${formatTime(conversation.updatedAt)}`;
+    this.element("conversation-title").textContent = "Chat";
+    this.element("conversation-meta").textContent = `${this.chat.messages.length} message${this.chat.messages.length === 1 ? "" : "s"} · clears on refresh`;
     this.element("model-chip").replaceChildren(textElement("span", "Model · "), textElement("strong", this.activeModelLabel));
-    document.title = `${conversation.title} · Static Web Agent`;
-  }
-
-  private renderSessions(): void {
-    const list = this.elements["session-list"];
-    if (list === undefined) return;
-    list.replaceChildren();
-    for (const conversation of this.sortedConversations()) {
-      const item = document.createElement("li");
-      item.className = "session-item";
-      const row = document.createElement("div");
-      row.className = "session-row";
-      const button = document.createElement("button");
-      button.className = "session-button";
-      button.type = "button";
-      button.textContent = conversation.title;
-      button.title = `${conversation.title} · ${formatTime(conversation.updatedAt)}`;
-      button.setAttribute("aria-current", conversation.id === this.activeId ? "page" : "false");
-      button.disabled = this.busy;
-      button.addEventListener("click", () => void this.selectSession(conversation.id));
-      const remove = document.createElement("button");
-      remove.className = "icon-button session-delete";
-      remove.type = "button";
-      remove.textContent = "×";
-      remove.title = "Delete session";
-      remove.setAttribute("aria-label", `Delete session ${conversation.title}`);
-      remove.disabled = this.busy;
-      remove.addEventListener("click", () => void this.deleteSession(conversation.id));
-      row.append(button, remove);
-      item.append(row);
-      list.append(item);
-    }
-    this.element("session-count").textContent = String(this.conversations.size);
+    document.title = "Static Web Agent";
   }
 
   private scheduleChatRender(): void {
@@ -533,23 +383,22 @@ export class AgentApp {
     const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
     chat.setAttribute("aria-busy", String(this.busy));
     chat.replaceChildren();
-    const conversation = this.activeConversation();
-    if (conversation.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
+    if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
       const icon = textElement("div", "✦", "empty-icon");
       icon.setAttribute("aria-hidden", "true");
-      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Start with /help for offline commands, or connect a model for open-ended answers. Your sessions stay in this browser by default."));
+      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Start with /help for offline commands, or connect a model for open-ended answers. This chat clears when you refresh."));
       chat.append(empty);
     } else {
-      for (const message of conversation.messages) chat.append(messageElement(message));
+      for (const message of this.chat.messages) chat.append(messageElement(message));
       if (this.pendingText.length > 0) chat.append(messageElement({ role: "assistant", content: this.pendingText }, true));
       if (this.pendingTool !== undefined) {
         const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
         chat.append(messageElement(toolMessage, true));
       }
     }
-    if (nearBottom || conversation.messages.length === 0) chat.scrollTop = chat.scrollHeight;
+    if (nearBottom || this.chat.messages.length === 0) chat.scrollTop = chat.scrollHeight;
   }
 
   private renderTools(): void {

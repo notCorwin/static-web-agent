@@ -3,8 +3,7 @@ import assert from "node:assert/strict";
 import {
   Agent,
   CapabilityManager,
-  ConversationRepository,
-  CONVERSATION_LIMITS,
+  CHAT_LIMITS,
   LocalModelAdapter,
   MemoryStateStore,
   OpenAICompatibleAdapter,
@@ -14,6 +13,7 @@ import {
   ToolRegistry,
   createBrowserStateStore,
   createRemoteModelPlugin,
+  normalizeMessages,
   validate,
 } from "../dist/index.js";
 
@@ -357,17 +357,16 @@ test("browser state falls back to memory when IndexedDB opening fails", async ()
   assert.ok(store instanceof ResilientStateStore);
 });
 
-test("conversation persistence caps message history and repairs its index", async () => {
-  const state = new MemoryStateStore();
-  const repository = new ConversationRepository(state);
-  const conversation = repository.create();
-  conversation.messages = Array.from({ length: CONVERSATION_LIMITS.maxMessages + 20 }, (_, index) => ({ role: "user", content: `message-${index}` }));
-  const conversations = new Map([[conversation.id, conversation]]);
-  await repository.save(conversations, conversation);
-  assert.equal(conversations.get(conversation.id).messages.length, CONVERSATION_LIMITS.maxMessages);
-  const loaded = await repository.load();
-  assert.equal(loaded.get(conversation.id).messages.length, CONVERSATION_LIMITS.maxMessages);
-  assert.deepEqual(await state.keys(), ["conversation:" + conversation.id, "conversations:index"]);
+test("in-memory chat normalization caps message history without persistence", () => {
+  const messages = Array.from({ length: CHAT_LIMITS.maxMessages + 20 }, (_, index) => ({ role: "user", content: `message-${index}` }));
+  const normalized = normalizeMessages(messages);
+  assert.equal(normalized.length, CHAT_LIMITS.maxMessages);
+  assert.equal(normalized[0].content, "message-20");
+  assert.equal(normalized.at(-1).content, `message-${CHAT_LIMITS.maxMessages + 19}`);
+  assert.throws(
+    () => normalizeMessages([{ role: "user", content: "x".repeat(CHAT_LIMITS.maxMessageChars + 1) }]),
+    /chat message is too large/,
+  );
 });
 
 test("OpenAI-compatible adapter normalizes a provider response", async () => {

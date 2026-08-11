@@ -15,4 +15,4 @@ export * from "./plugins/local-model.js";
 export * from "./plugins/remote-model.js";
 export * from "./plugins/storage.js";
 export * from "./app/app.js";
-export * from "./app/conversations.js";
+export * from "./app/chat.js";

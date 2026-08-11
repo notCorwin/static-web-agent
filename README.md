@@ -1,6 +1,6 @@
 # Static Web Agent
 
-Static Web Agent is a browser-native agent workspace. Conversation state, orchestration, tools, plugins, and workers run in the page. A remote model is optional and is called directly from the browser; there is no application backend, localhost service, extension, or native helper.
+Static Web Agent is a browser-native agent workspace. Conversation state, orchestration, tools, plugins, and workers run in the page. Chat history is held in memory and clears when the page is refreshed. A remote model is optional and is called directly from the browser; there is no application backend, localhost service, extension, or native helper.
 
 ## Run
 
@@ -41,7 +41,7 @@ Provider failures, HTTP errors, empty responses, malformed tool arguments, malfo
 ```text
 UI
 ↓
-AgentApp → ConversationRepository
+AgentApp → in-memory chat state
 ↓
 Agent
 ├─ Model adapter registry
@@ -57,13 +57,13 @@ Important modules:
 - `src/core/agent.ts` — bounded, cancellable model/tool loop with model and tool deadlines. A deadline aborts the adapter/tool signal and ends the run; ordinary same-realm plugin code must cooperate with that signal because JavaScript cannot forcibly kill an arbitrary Promise.
 - `src/core/plugin-manager.ts` — lifecycle-scoped registration for tools, capabilities, model adapters, processors, and UI contributions.
 - `src/core/state.ts` — atomic state batches and a resilient IndexedDB store that switches to an in-memory shadow on failure.
-- `src/app/conversations.ts` — bounded conversation loading and atomic persistence.
+- `src/app/chat.ts` — in-memory chat state and message limits.
 - `src/app/view.ts` — shell and message rendering kept separate from application orchestration.
 - `src/adapters/openai-compatible.ts` — provider-boundary normalization for JSON and SSE responses.
 
 Plugins are code-loaded modules, not discovered or downloaded by the application. Consumers can provide trusted plugins through `startApp(root, { plugins, initialModelId })`. A plugin can register a model adapter, processor, or UI contribution; the application uses the adapter registry, runs processors on outgoing user-message envelopes, and mounts UI contributions in the extension host. Plugin setup registers contributions; capability access is available after installation (tools normally request it during execution). Uninstalling a plugin removes all of its contributions and closes its registration context.
 
-The built-in JavaScript runtime and local storage plugins are opt-in. The permission policy is explicit and the default UI asks before granting a capability. The application limits work to 50 sessions, 200 messages per session, 20,000 characters per message, 250,000 characters per conversation/model request, 16 tool calls per turn, and 16,000-character tool output.
+The built-in JavaScript runtime and local storage plugins are opt-in. The permission policy is explicit and the default UI asks before granting a capability. The application limits work to 200 messages per chat, 20,000 characters per message, 250,000 characters per conversation/model request, 16 tool calls per turn, and 16,000-character tool output. Chat history is never written to the browser state store; the optional local storage plugin keeps its own namespaced values independently.
 
 ## Security boundaries
 

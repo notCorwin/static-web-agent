@@ -185,7 +185,7 @@ export class IndexedDbStateStore implements StateStore {
   }
 }
 
-/** Keeps a shadow copy so a browser storage failure does not destroy the current session. */
+/** Keeps a shadow copy so a browser storage failure does not destroy current in-memory state. */
 export class ResilientStateStore implements StateStore {
   private readonly primary: StateStore;
   private readonly fallback: MemoryStateStore;

@@ -204,9 +204,16 @@ try {
   }
 
   const persisted = await page.evaluate("document.querySelector('.message.user .message-body')?.textContent === '/calc 2 * (3 + 4)'");
-  assert.equal(persisted, true, "the browser UI should render the sent message");
+  assert.equal(persisted, true, "the browser UI should render the sent message before reload");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, "document.querySelector('#runtime-action') !== null && document.querySelector('#runtime-action')?.disabled === false && document.querySelector('.message.user .message-body')?.textContent === '/calc 2 * (3 + 4)' && !document.querySelector('.loading-state')");
+  await waitFor(page, "document.querySelector('#runtime-action') !== null && document.querySelector('#runtime-action')?.disabled === false && document.querySelector('.empty-state') !== null && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')");
+  const resetState = await page.evaluate(`({
+    noSessionControls: document.querySelector('#new-session') === null && document.querySelector('#session-list') === null && document.querySelector('#session-count') === null,
+    noSessionUrl: !new URL(location.href).searchParams.has('session'),
+    lightTheme: getComputedStyle(document.documentElement).colorScheme === 'light',
+    emptyChat: document.querySelector('.empty-state') !== null,
+  })`);
+  assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, emptyChat: true });
   await page.evaluate("window.confirm = () => true");
 
   await page.evaluate("document.querySelector('#runtime-action').click()");
@@ -322,7 +329,7 @@ try {
     };
   })()`);
   assert.deepEqual(browserBoundaries, { worker: true, workerTimeout: true, indexedDb: true, sse: true, cancelled: true, pluginUi: true });
-  console.log("Browser checks passed: UI, persistence, plugin toggle, Worker, IndexedDB, SSE, and cancellation.");
+  console.log("Browser checks passed: UI, in-memory reset, plugin toggle, Worker, IndexedDB, SSE, and cancellation.");
 } finally {
   await page?.close();
   child.kill("SIGTERM");

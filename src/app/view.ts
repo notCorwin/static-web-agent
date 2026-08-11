@@ -20,22 +20,17 @@ export function renderShell(root: HTMLElement): AppElements {
             <p class="brand-subtitle">Browser-native workspace</p>
           </div>
         </div>
-        <button class="primary-button new-session" id="new-session" type="button">＋ New session</button>
-        <section class="sidebar-section" aria-labelledby="sessions-heading">
-          <div class="section-heading"><h2 id="sessions-heading">Sessions</h2><span class="count" id="session-count">0</span></div>
-          <ul class="session-list" id="session-list"></ul>
-        </section>
         <div class="sidebar-footer">
-          <div class="storage-status"><span class="status-dot" aria-hidden="true"></span><span id="storage-label">Local state</span></div>
-          <span>Nothing leaves this browser unless you connect a model.</span>
+          <div class="storage-status"><span class="status-dot" aria-hidden="true"></span><span id="storage-label">In-memory chat</span></div>
+          <span>Chat records clear when you refresh.</span>
         </div>
       </aside>
 
       <main class="workspace" id="main-content" tabindex="-1">
         <header class="topbar">
           <div class="title-wrap">
-            <h1 id="conversation-title">New session</h1>
-            <p id="conversation-meta">Local-first conversation</p>
+            <h1 id="conversation-title">Chat</h1>
+            <p id="conversation-meta">In memory · clears on refresh</p>
           </div>
           <div class="topbar-actions">
             <span class="model-chip" id="model-chip">Model · <strong>Offline assistant</strong></span>
@@ -56,7 +51,7 @@ export function renderShell(root: HTMLElement): AppElements {
               <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
             </div>
             <div class="field">
-              <label for="model-key">API key <span class="faint">(session only)</span></label>
+              <label for="model-key">API key <span class="faint">(not saved)</span></label>
               <input id="model-key" name="apiKey" type="password" autocomplete="new-password" aria-describedby="key-help" placeholder="Paste a key…" />
               <p class="field-help" id="key-help">Accepted by the endpoint, never saved here.</p>
             </div>
@@ -71,7 +66,7 @@ export function renderShell(root: HTMLElement): AppElements {
           <div class="loading-state" role="status" aria-live="polite">
             <span class="loading-line loading-line-wide" aria-hidden="true"></span>
             <span class="loading-line loading-line-short" aria-hidden="true"></span>
-            <span class="loading-label">Loading local sessions…</span>
+            <span class="loading-label">Starting chat…</span>
           </div>
         </section>
         <div class="composer-wrap">
