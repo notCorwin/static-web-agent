@@ -356,6 +356,6 @@ try {
   });
   if (child.exitCode === null) child.kill("SIGTERM");
   await childExited;
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await new Promise((resolve) => server.close(resolve));
 }
