@@ -70,7 +70,7 @@ async function startStaticServer() {
   return { server, port: server.address().port };
 }
 
-function waitForOutput(child, timeoutMs = 10_000) {
+function waitForOutput(child, timeoutMs = 30_000) {
   return new Promise((resolve, reject) => {
     let output = "";
     const timer = setTimeout(() => reject(new Error("Timed out waiting for Chrome DevTools.")), timeoutMs);
