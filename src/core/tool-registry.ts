@@ -13,6 +13,13 @@ import type {
 
 const CORE_PLUGIN_ID = "core";
 const TOOL_NAME = /^[a-z][a-z0-9_.-]{0,63}$/;
+const DEFAULT_MAX_OUTPUT_CHARS = 64_000;
+const DEFAULT_MAX_INPUT_CHARS = 100_000;
+
+export interface ToolRegistryOptions {
+  readonly maxInputChars?: number;
+  readonly maxOutputChars?: number;
+}
 
 function issuesAsJson(issues: readonly { readonly path: string; readonly message: string }[]): JsonValue {
   return issues.map((issue) => ({ path: issue.path, message: issue.message }));
@@ -31,19 +38,31 @@ function cloneSchema(schema: JsonSchema): JsonSchema {
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition & { readonly pluginId: string; readonly requiredCapabilities: readonly string[] }>();
   private readonly capabilities: CapabilityManager;
+  private readonly maxInputChars: number;
+  private readonly maxOutputChars: number;
 
-  constructor(capabilities: CapabilityManager) {
+  constructor(capabilities: CapabilityManager, options: ToolRegistryOptions = {}) {
     this.capabilities = capabilities;
+    this.maxInputChars = options.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS;
+    this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
+    if (!Number.isInteger(this.maxInputChars) || this.maxInputChars < 1) throw new Error("maxInputChars must be a positive integer.");
+    if (!Number.isInteger(this.maxOutputChars) || this.maxOutputChars < 1) throw new Error("maxOutputChars must be a positive integer.");
   }
 
-  register(tool: ToolDefinition, owner = tool.pluginId ?? CORE_PLUGIN_ID): () => void {
+  register(tool: ToolDefinition, owner?: string): () => void {
+    if (typeof tool !== "object" || tool === null || typeof tool.name !== "string" || typeof tool.description !== "string" || typeof tool.execute !== "function") {
+      throw new Error("Tools need a name, description, and execute function.");
+    }
+    const pluginOwner = owner ?? tool.pluginId ?? CORE_PLUGIN_ID;
     const name = tool.name.trim();
     if (!TOOL_NAME.test(name)) {
       throw new Error(`Invalid tool name “${tool.name}”. Use lowercase letters, numbers, dots, hyphens, or underscores.`);
     }
     if (!tool.description.trim()) throw new Error(`Tool “${name}” must have a description.`);
     if (this.tools.has(name)) throw new Error(`Tool “${name}” is already registered.`);
+    if (tool.requiredCapabilities !== undefined && !Array.isArray(tool.requiredCapabilities)) throw new Error(`Tool “${name}” declares invalid capabilities.`);
 
+    if ((tool.requiredCapabilities ?? []).some((capability) => typeof capability !== "string")) throw new Error(`Tool “${name}” declares invalid capabilities.`);
     const requiredCapabilities = [...new Set((tool.requiredCapabilities ?? []).map((capability) => capability.trim()))];
     if (requiredCapabilities.some((capability) => capability.length === 0)) {
       throw new Error(`Tool “${name}” declares an empty capability name.`);
@@ -53,7 +72,7 @@ export class ToolRegistry {
       name,
       inputSchema: cloneSchema(tool.inputSchema),
       ...(tool.outputSchema === undefined ? {} : { outputSchema: cloneSchema(tool.outputSchema) }),
-      pluginId: owner,
+      pluginId: pluginOwner,
       requiredCapabilities: Object.freeze(requiredCapabilities),
     };
     this.tools.set(name, registered);
@@ -87,6 +106,13 @@ export class ToolRegistry {
     if (!inputValidation.valid) {
       return failure("INVALID_TOOL_INPUT", formatIssues(inputValidation.issues), issuesAsJson(inputValidation.issues));
     }
+    let serializedInput: string;
+    try {
+      serializedInput = JSON.stringify(input) ?? "";
+    } catch {
+      return failure("INVALID_TOOL_INPUT", "Tool input could not be serialized as JSON.");
+    }
+    if (serializedInput.length > this.maxInputChars) return failure("TOOL_INPUT_TOO_LARGE", `Tool input exceeds the ${this.maxInputChars}-character limit.`);
 
     const signal = request.signal ?? new AbortController().signal;
     try {
@@ -102,6 +128,15 @@ export class ToolRegistry {
         },
       });
       if (!isJsonValue(result)) return failure("INVALID_TOOL_OUTPUT", "Tool output must be valid JSON.");
+      let serializedOutput: string;
+      try {
+        serializedOutput = JSON.stringify(result) ?? "";
+      } catch {
+        return failure("INVALID_TOOL_OUTPUT", "Tool output could not be serialized as JSON.");
+      }
+      if (serializedOutput.length > this.maxOutputChars) {
+        return failure("TOOL_OUTPUT_TOO_LARGE", `Tool output exceeds the ${this.maxOutputChars}-character limit.`);
+      }
       if (tool.outputSchema !== undefined) {
         const outputValidation = validate(tool.outputSchema, result);
         if (!outputValidation.valid) {

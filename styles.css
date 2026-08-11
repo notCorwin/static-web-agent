@@ -128,6 +128,10 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .session-list { display: grid; gap: 5px; max-height: calc(100vh - 240px); margin: 10px -6px 0; padding: 0 6px; overflow: auto; list-style: none; overscroll-behavior: contain; }
 .session-list:empty::before { content: "No sessions yet"; padding: 11px 10px; color: var(--faint); font-size: 13px; }
 .session-item { min-width: 0; content-visibility: auto; contain-intrinsic-size: 0 44px; }
+.session-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.session-row .session-button { flex: 1; min-width: 0; }
+.session-delete { flex: 0 0 44px; min-width: 44px; padding: 6px; border-color: transparent; }
+.session-delete:hover { color: var(--danger); }
 .session-button {
   display: block;
   width: 100%;
@@ -253,6 +257,8 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .permission-card p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .permission-card .secondary-button { width: 100%; }
 .permission-card[aria-busy="true"] .secondary-button { color: var(--muted); }
+.extension-host { display: grid; gap: 8px; margin-top: 18px; }
+.extension-host:empty { display: none; }
 .tool-list { display: grid; gap: 8px; margin-top: 18px; }
 .tool-list:empty::before { content: "No tools enabled"; color: var(--faint); font-size: 12px; }
 .tool-entry { display: grid; gap: 5px; border-top: 1px solid var(--border); padding-top: 10px; }

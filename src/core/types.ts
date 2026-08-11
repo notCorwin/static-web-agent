@@ -175,12 +175,21 @@ export interface ModelAdapter {
   readonly stream: (request: ModelRequest) => AsyncIterable<ModelEvent>;
 }
 
+export interface AgentLimits {
+  readonly maxMessages: number;
+  readonly maxMessageChars: number;
+  readonly maxRequestChars: number;
+  readonly maxToolOutputChars: number;
+  readonly maxToolCallsPerTurn: number;
+}
+
 export interface AgentRunRequest {
   readonly messages: readonly ModelMessage[];
   readonly signal?: AbortSignal;
   readonly maxTurns?: number;
   readonly modelTimeoutMs?: number;
   readonly toolTimeoutMs?: number;
+  readonly limits?: Readonly<Partial<AgentLimits>>;
   readonly onEvent?: (event: AgentEvent) => void;
 }
 
@@ -234,6 +243,7 @@ export interface PluginContext {
   readonly registerUi: (contribution: UiContribution) => () => void;
 }
 
+/** Plugins are trusted same-realm modules; permissions constrain kernel contributions, not their ambient JavaScript access. */
 export interface Plugin {
   readonly manifest: PluginManifest;
   readonly setup: (context: PluginContext) => void | Promise<void>;
@@ -266,10 +276,19 @@ export interface StorageCapability {
   readonly keys: () => Promise<readonly string[]>;
 }
 
+export type StateStoreKind = "memory" | "indexeddb";
+
+export type StateChange =
+  | { readonly type: "set"; readonly key: string; readonly value: JsonValue }
+  | { readonly type: "remove"; readonly key: string };
+
 export interface StateStore {
+  readonly kind: StateStoreKind;
+  readonly failureReason?: string | undefined;
   readonly get: <T extends JsonValue = JsonValue>(key: string) => Promise<T | undefined>;
   readonly set: (key: string, value: JsonValue) => Promise<void>;
   readonly remove: (key: string) => Promise<void>;
+  readonly apply: (changes: readonly StateChange[]) => Promise<void>;
   readonly keys: () => Promise<readonly string[]>;
   readonly clear: () => Promise<void>;
 }

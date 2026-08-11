@@ -25,6 +25,50 @@ function throwIfAborted(signal: AbortSignal): void {
   }
 }
 
+function guardCapability<T>(value: T, check: () => void): T {
+  if ((typeof value !== "object" || value === null) && typeof value !== "function") return value;
+  if (typeof value === "function") {
+    return new Proxy(value as (...args: never[]) => unknown, {
+      apply(target, thisArg, args) {
+        check();
+        return Reflect.apply(target, thisArg, args);
+      },
+      get(target, property, receiver) {
+        check();
+        return Reflect.get(target, property, receiver);
+      },
+    }) as T;
+  }
+  let hasCallableMember = false;
+  let prototype: object | null = value as object;
+  while (prototype !== null && prototype !== Object.prototype) {
+    for (const key of Reflect.ownKeys(prototype)) {
+      if (typeof Reflect.get(prototype, key, value) === "function") {
+        hasCallableMember = true;
+        break;
+      }
+    }
+    if (hasCallableMember) break;
+    prototype = Object.getPrototypeOf(prototype) as object | null;
+  }
+  if (!hasCallableMember) return value;
+  return new Proxy(value as object, {
+    get(target, property, receiver) {
+      check();
+      const propertyValue = Reflect.get(target, property, receiver);
+      if (typeof propertyValue !== "function") return propertyValue;
+      return (...args: unknown[]) => {
+        check();
+        return Reflect.apply(propertyValue, target, args);
+      };
+    },
+    set(target, property, next, receiver) {
+      check();
+      return Reflect.set(target, property, next, receiver);
+    },
+  }) as T;
+}
+
 export class CapabilityManager {
   private readonly providers = new Map<CapabilityName, CapabilityProvider>();
   private readonly grants = new Map<string, Set<CapabilityName>>();
@@ -51,6 +95,12 @@ export class CapabilityManager {
   }
 
   async request(pluginId: string, requests: readonly CapabilityRequest[], signal = new AbortController().signal): Promise<readonly CapabilityName[]> {
+    if (!Array.isArray(requests)) throw new KernelError("INVALID_PERMISSION_REQUEST", "Capability requests must be an array.");
+    for (const request of requests) {
+      if (typeof request !== "object" || request === null || typeof request.name !== "string" || typeof request.reason !== "string") {
+        throw new KernelError("INVALID_PERMISSION_REQUEST", "Capability requests need a name and reason.");
+      }
+    }
     const unique = [...new Map(requests.map((request) => [request.name, request])).values()];
     const pending: CapabilityRequest[] = [];
     const alreadyGranted = this.grants.get(pluginId) ?? new Set<CapabilityName>();
@@ -96,18 +146,23 @@ export class CapabilityManager {
     if (!this.isGranted(pluginId, name)) throw new PermissionDeniedError(pluginId, name);
     const provider = this.providers.get(name);
     if (provider === undefined) throw new CapabilityUnavailableError(name);
-    return provider.provide({ pluginId, signal }) as T | Promise<T>;
+    const value = await provider.provide({ pluginId, signal });
+    return guardCapability(value as T, () => {
+      if (!this.isGranted(pluginId, name)) throw new PermissionDeniedError(pluginId, name, "The capability grant was revoked.");
+      throwIfAborted(signal);
+    });
   }
 
   scope(pluginId: string, allowedNames: readonly CapabilityName[], signal = new AbortController().signal): CapabilityScope {
     const allowed = new Set(allowedNames);
-    return {
-      has: (name) => allowed.has(name) && this.isGranted(pluginId, name),
+    const scope: CapabilityScope = {
+      has: (name: CapabilityName) => allowed.has(name) && this.isGranted(pluginId, name),
       get: async <T>(name: CapabilityName) => {
         if (!allowed.has(name)) throw new PermissionDeniedError(pluginId, name, "The plugin did not request this capability.");
         return this.get<T>(pluginId, name, signal);
       },
     };
+    return Object.freeze(scope);
   }
 
   revoke(pluginId: string, names?: readonly CapabilityName[]): void {

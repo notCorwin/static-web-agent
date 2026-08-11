@@ -1,6 +1,6 @@
 # Static Web Agent
 
-Static Web Agent is a browser-native, local-first agent runtime. The model may be remote, but orchestration, tool dispatch, permissions, persistence, plugins, and runtime execution stay in the page. There is no backend, localhost service, extension, or native helper.
+Static Web Agent is a browser-native agent workspace. Conversation state, orchestration, tools, plugins, and workers run in the page. A remote model is optional and is called directly from the browser; there is no application backend, localhost service, extension, or native helper.
 
 ## Run
 
@@ -9,64 +9,66 @@ npm install
 npm run build
 ```
 
-Serve the repository root (or `dist/`) from a static HTTP server and open `index.html`. A static server is only needed because browser module imports are restricted on `file://`; it is not an application backend. `npm test` runs the boundary tests after compiling the TypeScript source.
-
-The page starts with an offline echo adapter. The **Connect a model adapter** panel accepts any OpenAI-compatible streaming endpoint. Requests are made directly from the browser and therefore require CORS support. API keys are kept in memory for the current tab and are never written to IndexedDB.
-
-## GitHub Pages
-
-Every push to `master` runs `.github/workflows/deploy-pages.yml`, builds `dist/`, runs the tests, and publishes the artifact with GitHub Pages. For this repository the site URL is:
-
-<https://notcorwin.github.io/static-web-agent/>
-
-If Pages has not been enabled yet, open **Settings → Pages** in GitHub and select **GitHub Actions** as the source once; subsequent pushes deploy automatically. The artifact uses relative asset paths, so it also works under the repository subpath.
-
-## Architecture
-
-The dependency direction is:
-
-```text
-UI → Agent → Kernel
-             ├─ Model adapter
-             ├─ Tool registry
-             ├─ Capability manager
-             ├─ Runtime
-             ├─ State store
-             └─ Plugin manager → Browser APIs
-```
-
-The kernel does not know about the example JavaScript or storage plugins. A tool is registered at runtime with a name, description, JSON Schema input/output contracts, required capabilities, and an execution handler.
-
-### Public modules
-
-- `src/core/types.ts` — provider-independent contracts and JSON boundary types.
-- `src/core/schema.ts` — dependency-free JSON Schema validation for untrusted tool arguments and outputs.
-- `src/core/tool-registry.ts` — dynamic registration, discovery, validation, execution, and structured tool errors.
-- `src/core/capabilities.ts` — provider registration, explicit permission policy, grants, revocation, and scoped access.
-- `src/core/agent.ts` — cancellable model/tool loop with multiple calls, model and tool timeouts, max-turn termination, streaming events, and normalized errors.
-- `src/core/plugin-manager.ts` — versioned plugin lifecycle and contribution cleanup.
-- `src/core/state.ts` — IndexedDB persistence with a memory fallback and namespaced stores.
-- `src/core/runtime.ts` — time-limited worker execution. It passes no capability objects to executed code.
-- `src/adapters/openai-compatible.ts` — an optional provider-boundary adapter for OpenAI-compatible SSE responses.
-
-## Plugins and permissions
-
-Plugins receive a narrow `PluginContext`. They can contribute tools, capability providers, model adapters, processors, and UI mounts without receiving the kernel's internal maps. A plugin must declare every capability required by its tools. Installation requests those capabilities through the injected `PermissionPolicy`; the default kernel policy denies all requests.
-
-The UI's example plugins are deliberately opt-in:
-
-- **JavaScript runtime** registers `runtime.javascript` and requests `runtime`; code is an async function body with `input` and a capability-free `console` parameter.
-- **Local storage** registers `storage.local` and requests `storage`; its keys are isolated under the plugin namespace.
-
-Browser worker execution is a resource and lifecycle boundary, not a security boundary for hostile code. A worker has browser ambient APIs, and masking common APIs is best-effort. Do not install or run untrusted plugin source as if it were a security sandbox. Privileged application functionality must still be exposed through capabilities and explicit permission checks.
-
-## Browser constraints
-
-The runtime does not emulate shell commands, arbitrary host filesystem access, unrestricted cross-origin access, other-tab access, or unavailable browser APIs. New browser features should be added as capability implementations or plugins. Remote model access is subject to the browser's normal CORS and credential rules.
-
-## Checks
+Serve the repository root (or `dist/`) from a static HTTP server and open `index.html`. A server is needed because browser module imports are restricted on `file://`; it is not an application backend.
 
 ```sh
-npm run check   # strict TypeScript type check
-npm test        # build + node:test architectural boundary checks
+npm test          # typecheck, Node boundary tests, and browser checks when Chromium is available
+npm run check     # strict TypeScript check
+npm run test:browser
 ```
+
+The browser checks use `BROWSER_PATH` or a detected Chromium/Chrome binary. If no browser is installed they print an explicit skip message; set `BROWSER_PATH` in CI when browser coverage is required (and `REQUIRE_BROWSER=1` to turn absence into a failure).
+
+## What works without a model
+
+The default adapter is the bounded **Offline assistant**, not a language-model simulator. It supports:
+
+- `/help`
+- `/calc 2 * (3 + 4)` using a parser rather than `eval`
+- `/time`
+- `/tools`
+
+It does not pretend to answer open-ended questions. Connect a remote model for general reasoning and tool planning.
+
+## Remote models
+
+The connection panel installs a model plugin for the current tab. It accepts an OpenAI-compatible chat-completions endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. The first message verifies the endpoint; selecting the model itself does not make a network request. API keys remain in memory and are never stored in IndexedDB.
+
+Provider failures, HTTP errors, empty responses, malformed tool arguments, malformed SSE, incomplete SSE streams, cancellation, and request timeouts are returned as structured model errors.
+
+## Runtime architecture
+
+```text
+UI
+↓
+AgentApp → ConversationRepository
+↓
+Agent
+├─ Model adapter registry
+├─ Tool registry
+├─ Capability manager
+├─ Plugin manager
+├─ Browser worker runtime
+└─ State store (IndexedDB → memory fallback)
+```
+
+Important modules:
+
+- `src/core/agent.ts` — bounded, cancellable model/tool loop with model and tool deadlines. A deadline aborts the adapter/tool signal and ends the run; ordinary same-realm plugin code must cooperate with that signal because JavaScript cannot forcibly kill an arbitrary Promise.
+- `src/core/plugin-manager.ts` — lifecycle-scoped registration for tools, capabilities, model adapters, processors, and UI contributions.
+- `src/core/state.ts` — atomic state batches and a resilient IndexedDB store that switches to an in-memory shadow on failure.
+- `src/app/conversations.ts` — bounded conversation loading and atomic persistence.
+- `src/app/view.ts` — shell and message rendering kept separate from application orchestration.
+- `src/adapters/openai-compatible.ts` — provider-boundary normalization for JSON and SSE responses.
+
+Plugins are code-loaded modules, not discovered or downloaded by the application. Consumers can provide trusted plugins through `startApp(root, { plugins, initialModelId })`. A plugin can register a model adapter, processor, or UI contribution; the application uses the adapter registry, runs processors on outgoing user-message envelopes, and mounts UI contributions in the extension host. Plugin setup registers contributions; capability access is available after installation (tools normally request it during execution). Uninstalling a plugin removes all of its contributions and closes its registration context.
+
+The built-in JavaScript runtime and local storage plugins are opt-in. The permission policy is explicit and the default UI asks before granting a capability. The application limits work to 50 sessions, 200 messages per session, 20,000 characters per message, 250,000 characters per conversation/model request, 16 tool calls per turn, and 16,000-character tool output.
+
+## Security boundaries
+
+Plugins execute as trusted same-realm JavaScript. Their `PluginContext` is narrow, but a normal page cannot prevent plugin module code from using ambient browser APIs; capability permissions are therefore contribution/operation policy, not a sandbox for hostile plugin source. Do not install untrusted plugin modules.
+
+Worker JavaScript receives no application capability objects and is terminated on cancellation or timeout. A worker is a resource and lifecycle boundary, not a security sandbox: browser ambient APIs and same-origin communication may still be available. Do not treat the JavaScript runtime as a hostile-code sandbox.
+
+The runtime does not emulate shell commands, arbitrary host filesystem access, unrestricted cross-origin access, other-tab access, or unavailable browser APIs.

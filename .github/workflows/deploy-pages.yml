@@ -32,6 +32,8 @@ jobs:
         run: npm install --no-audit --no-fund
 
       - name: Verify and build site
+        env:
+          REQUIRE_BROWSER: "1"
         run: npm test
 
       - name: Configure GitHub Pages

@@ -2,36 +2,17 @@ import { Agent } from "../core/agent.js";
 import { CapabilityManager } from "../core/capabilities.js";
 import { PluginManager } from "../core/plugin-manager.js";
 import { BrowserWorkerRuntime } from "../core/runtime.js";
-import { isJsonValue } from "../core/schema.js";
-import { createBrowserStateStore, MemoryStateStore, PrefixedStateStore } from "../core/state.js";
+import { createBrowserStateStore, PrefixedStateStore } from "../core/state.js";
 import { ToolRegistry } from "../core/tool-registry.js";
-import { EchoModelAdapter } from "../adapters/echo-model.js";
-import { OpenAICompatibleAdapter, type BrowserFetcher } from "../adapters/openai-compatible.js";
 import { createJavaScriptRuntimePlugin } from "../plugins/javascript-runtime.js";
+import { createLocalModelPlugin } from "../plugins/local-model.js";
+import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
-import type {
-  AgentEvent,
-  JsonValue,
-  ModelMessage,
-  PluginHandle,
-  StorageCapability,
-  ToolCall,
-} from "../core/types.js";
+import { ConversationRepository, CONVERSATION_LIMITS, isConversationMessage, titleFor, type Conversation } from "./conversations.js";
+import { messageElement, renderShell, textElement, type AppElements } from "./view.js";
+import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall } from "../core/types.js";
+import type { BrowserFetcher } from "../adapters/openai-compatible.js";
 import type { StateStore } from "../core/types.js";
-
-interface Conversation {
-  id: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messages: ModelMessage[];
-}
-
-interface ConversationIndexItem {
-  id: string;
-  title: string;
-  updatedAt: number;
-}
 
 interface NetworkCapability {
   readonly fetch: BrowserFetcher;
@@ -43,122 +24,58 @@ interface ConnectionValues {
   readonly apiKey: string;
 }
 
+export interface AgentAppOptions {
+  readonly plugins?: readonly Plugin[];
+  readonly initialModelId?: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseToolCall(value: unknown): ToolCall | undefined {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string" || !isJsonValue(value.arguments)) return undefined;
-  return { id: value.id, name: value.name, arguments: value.arguments };
-}
-
-function parseMessage(value: unknown): ModelMessage | undefined {
-  if (!isRecord(value) || typeof value.role !== "string") return undefined;
-  if ((value.role === "system" || value.role === "user") && typeof value.content === "string") {
-    return { role: value.role, content: value.content };
-  }
-  if (value.role === "assistant" && typeof value.content === "string") {
-    if (value.toolCalls === undefined) return { role: "assistant", content: value.content };
-    if (!Array.isArray(value.toolCalls)) return undefined;
-    const toolCalls = value.toolCalls.map(parseToolCall);
-    if (toolCalls.some((call) => call === undefined)) return undefined;
-    return { role: "assistant", content: value.content, toolCalls: toolCalls as ToolCall[] };
-  }
-  if (value.role === "tool" && typeof value.callId === "string" && typeof value.name === "string" && typeof value.content === "string") {
-    return value.isError === true
-      ? { role: "tool", callId: value.callId, name: value.name, content: value.content, isError: true }
-      : { role: "tool", callId: value.callId, name: value.name, content: value.content };
-  }
-  return undefined;
-}
-
-function parseMessages(value: unknown): ModelMessage[] {
-  if (!Array.isArray(value)) return [];
-  const messages = value.map(parseMessage);
-  return messages.every((message): message is ModelMessage => message !== undefined) ? messages : [];
-}
-
-function parseConversation(value: unknown): Conversation | undefined {
-  if (!isRecord(value) || typeof value.id !== "string" || typeof value.title !== "string" || typeof value.createdAt !== "number" || typeof value.updatedAt !== "number" || !Number.isFinite(value.createdAt) || !Number.isFinite(value.updatedAt)) return undefined;
-  return {
-    id: value.id,
-    title: value.title,
-    createdAt: value.createdAt,
-    updatedAt: value.updatedAt,
-    messages: parseMessages(value.messages),
-  };
-}
-
-function parseIndex(value: unknown): ConversationIndexItem[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((item) => {
-    if (!isRecord(item) || typeof item.id !== "string" || typeof item.title !== "string" || typeof item.updatedAt !== "number" || !Number.isFinite(item.updatedAt)) return [];
-    return [{ id: item.id, title: item.title, updatedAt: item.updatedAt }];
-  });
-}
-
-function newId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  return `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-}
-
-function conversationValue(conversation: Conversation): JsonValue {
-  return {
-    id: conversation.id,
-    title: conversation.title,
-    createdAt: conversation.createdAt,
-    updatedAt: conversation.updatedAt,
-    messages: conversation.messages as unknown as JsonValue,
-  };
-}
-
-function titleFor(content: string): string {
-  const compact = content.replace(/\s+/g, " ").trim();
-  return compact.length > 42 ? `${compact.slice(0, 42)}…` : compact || "New session";
 }
 
 function formatTime(timestamp: number): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(timestamp);
 }
 
-function textElement(tag: keyof HTMLElementTagNameMap, text: string, className?: string): HTMLElement {
-  const element = document.createElement(tag);
-  if (className !== undefined) element.className = className;
-  element.textContent = text;
-  return element;
-}
-
 export class AgentApp {
   private readonly root: HTMLElement;
+  private readonly options: AgentAppOptions;
+  private readonly runtime = new BrowserWorkerRuntime();
+  private conversations = new Map<string, Conversation>();
+  private activeId = "";
   private store!: StateStore;
+  private repository!: ConversationRepository;
   private capabilities!: CapabilityManager;
   private tools!: ToolRegistry;
   private plugins!: PluginManager;
   private agent!: Agent;
-  private readonly runtime = new BrowserWorkerRuntime();
-  private readonly echo = new EchoModelAdapter();
-  private conversations = new Map<string, Conversation>();
-  private activeId = "";
+  private localHandle: PluginHandle | undefined;
+  private remoteHandle: PluginHandle | undefined;
   private runtimeHandle: PluginHandle | undefined;
   private storageHandle: PluginHandle | undefined;
-  private activeModelLabel = "Local demo";
+  private readonly extensionHandles: PluginHandle[] = [];
+  private uiCleanup: (() => void) | undefined;
+  private activeModelLabel = "Offline assistant";
   private ready = false;
   private busy = false;
   private runController: AbortController | undefined;
   private pendingText = "";
   private pendingTool: ToolCall | undefined;
   private chatRenderScheduled = false;
-  private readonly elements: Record<string, HTMLElement> = {};
+  private readonly elements: AppElements;
 
-  constructor(root: HTMLElement) {
+  constructor(root: HTMLElement, options: AgentAppOptions = {}) {
     this.root = root;
+    this.options = options;
+    this.elements = {};
   }
 
   async start(): Promise<void> {
     if ("scrollRestoration" in window.history) window.history.scrollRestoration = "auto";
-    this.renderShell();
+    Object.assign(this.elements, renderShell(this.root));
     this.bindEvents();
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
+    this.repository = new ConversationRepository(this.store);
     this.capabilities = new CapabilityManager({
       decide: ({ pluginId, name, reason }) => {
         if (typeof window.confirm !== "function") return false;
@@ -166,7 +83,9 @@ export class AgentApp {
       },
     });
     this.capabilities.register("runtime", { provide: () => this.runtime });
-    this.capabilities.register("network", { provide: () => ({ fetch: globalThis.fetch.bind(globalThis) }) });
+    this.capabilities.register("network", {
+      provide: (): NetworkCapability => ({ fetch: globalThis.fetch.bind(globalThis) }),
+    });
     this.capabilities.register("storage", {
       provide: ({ pluginId }): StorageCapability => {
         const scoped = new PrefixedStateStore(this.store, `plugin:${pluginId}`);
@@ -178,112 +97,44 @@ export class AgentApp {
         };
       },
     });
-    this.tools = new ToolRegistry(this.capabilities);
+    this.tools = new ToolRegistry(this.capabilities, { maxInputChars: 16_000, maxOutputChars: 16_000 });
     this.plugins = new PluginManager(this.tools, this.capabilities);
-    this.agent = new Agent(this.echo, this.tools);
+    this.localHandle = await this.plugins.install(createLocalModelPlugin());
+    try {
+      for (const plugin of this.options.plugins ?? []) this.extensionHandles.push(await this.plugins.install(plugin));
+    } catch (error) {
+      for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
+      await this.localHandle.uninstall();
+      this.localHandle = undefined;
+      throw error;
+    }
+    const modelId = this.options.initialModelId ?? "local";
+    const model = this.plugins.modelAdapter(modelId) ?? this.plugins.modelAdapter("local");
+    if (model === undefined) throw new Error("No model adapter is available.");
+    this.activeModelLabel = model.id === "local" ? "Offline assistant" : model.id;
+    this.agent = new Agent(model, this.tools);
+    this.plugins.subscribe(() => {
+      if (this.ready) {
+        this.renderTools();
+        this.renderHeader();
+      }
+    });
     await this.loadConversations();
     this.ready = true;
     this.renderAll();
     this.focusComposer();
   }
 
-  private renderShell(): void {
-    this.root.innerHTML = `
-      <div class="app-shell">
-        <aside class="sidebar" aria-label="Workspace navigation">
-          <div class="brand">
-            <div class="brand-mark" aria-hidden="true">∿</div>
-            <div>
-              <div class="brand-name" translate="no">Static Web Agent</div>
-              <p class="brand-subtitle">Browser-native workspace</p>
-            </div>
-          </div>
-          <button class="primary-button new-session" id="new-session" type="button">＋ New session</button>
-          <section class="sidebar-section" aria-labelledby="sessions-heading">
-            <div class="section-heading"><h2 id="sessions-heading">Sessions</h2><span class="count" id="session-count">0</span></div>
-            <ul class="session-list" id="session-list"></ul>
-          </section>
-          <div class="sidebar-footer">
-            <div class="storage-status"><span class="status-dot" aria-hidden="true"></span><span id="storage-label">Local state</span></div>
-            <span>Nothing leaves this browser unless you connect a model.</span>
-          </div>
-        </aside>
-
-        <main class="workspace" id="main-content" tabindex="-1">
-          <header class="topbar">
-            <div class="title-wrap">
-              <h1 id="conversation-title">New session</h1>
-              <p id="conversation-meta">Local-first conversation</p>
-            </div>
-            <div class="topbar-actions">
-              <span class="model-chip" id="model-chip">Model · <strong>Local demo</strong></span>
-            </div>
-          </header>
-
-          <details class="connection-details" id="connection-details">
-            <summary>Connect a model adapter</summary>
-            <form class="connection-form" id="connection-form" novalidate>
-              <div class="field">
-                <label for="model-endpoint">OpenAI-compatible endpoint</label>
-                <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1/chat/completions…" />
-                <p class="field-error" id="endpoint-error" role="status" aria-live="polite"></p>
-              </div>
-              <div class="field">
-                <label for="model-name">Model</label>
-                <input id="model-name" name="model" type="text" inputmode="text" autocomplete="off" aria-describedby="model-error" aria-invalid="false" placeholder="model-name…" />
-                <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
-              </div>
-              <div class="field">
-                <label for="model-key">API key <span class="faint">(session only)</span></label>
-                <input id="model-key" name="apiKey" type="password" autocomplete="new-password" aria-describedby="key-help" placeholder="Paste a key…" />
-                <p class="field-help" id="key-help">Accepted by the endpoint, never saved here.</p>
-              </div>
-              <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Use remote</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
-              <button class="secondary-button" id="use-local" type="button">Use local</button>
-              <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; the API key is never persisted.</p>
-              <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
-            </form>
-          </details>
-
-          <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
-            <div class="loading-state" role="status" aria-live="polite">
-              <span class="loading-line loading-line-wide" aria-hidden="true"></span>
-              <span class="loading-line loading-line-short" aria-hidden="true"></span>
-              <span class="loading-label">Loading local sessions…</span>
-            </div>
-          </section>
-          <div class="composer-wrap">
-            <form class="composer" id="composer-form">
-              <label class="sr-only" for="message-input">Message the agent</label>
-              <textarea id="message-input" name="message" rows="3" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
-              <button class="primary-button send-button" id="send-button" type="submit" aria-label="Send message"><span class="button-content"><span class="button-label">Send</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
-              <div class="composer-actions">
-                <p class="composer-hint">Enter adds a line · ⌘/Ctrl&nbsp;+&nbsp;Enter sends</p>
-                <button class="secondary-button danger cancel-button" id="cancel-button" type="button" hidden>Cancel run</button>
-              </div>
-              <p class="status-message" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
-            </form>
-          </div>
-        </main>
-
-        <aside class="tools-panel" aria-label="Runtime surface">
-          <div class="panel-heading"><h2>Capabilities</h2><span class="count" id="enabled-count">0</span></div>
-          <p class="panel-intro">Tools are plugins. Each plugin is off until you enable it and approve its browser capabilities.</p>
-          <div class="permission-card" id="runtime-card">
-            <h3>JavaScript runtime</h3>
-            <p>Run small transformations in a time-limited worker. No agent capability objects are passed in.</p>
-            <button class="secondary-button" id="runtime-action" type="button">Enable plugin</button>
-          </div>
-          <div class="permission-card" id="storage-card">
-            <h3>Local storage tool</h3>
-            <p>Give the agent a namespaced key-value store backed by this browser's local state.</p>
-            <button class="secondary-button" id="storage-action" type="button">Enable plugin</button>
-          </div>
-          <div class="tool-list" id="tool-list" aria-label="Enabled tools"></div>
-        </aside>
-      </div>
-    `;
-    for (const element of this.root.querySelectorAll<HTMLElement>("[id]")) this.elements[element.id] = element;
+  async stop(): Promise<void> {
+    this.runController?.abort();
+    this.uiCleanup?.();
+    this.uiCleanup = undefined;
+    if (this.remoteHandle !== undefined) await this.remoteHandle.uninstall();
+    if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
+    if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
+    for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
+    if (this.localHandle !== undefined) await this.localHandle.uninstall();
+    this.ready = false;
   }
 
   private bindEvents(): void {
@@ -305,7 +156,7 @@ export class AgentApp {
       event.preventDefault();
       void this.connectRemote(event.currentTarget as HTMLFormElement);
     });
-    this.elements["use-local"]?.addEventListener("click", () => this.useLocalModel());
+    this.elements["use-local"]?.addEventListener("click", () => void this.useLocalModel());
     this.elements["connection-details"]?.addEventListener("toggle", () => {
       const details = this.elements["connection-details"] as HTMLDetailsElement;
       const urlOpen = new URL(window.location.href).searchParams.get("connect") === "1";
@@ -324,13 +175,9 @@ export class AgentApp {
   }
 
   private async loadConversations(): Promise<void> {
-    const index = parseIndex(await this.store.get("conversations:index"));
-    for (const item of index) {
-      const conversation = parseConversation(await this.store.get(`conversation:${item.id}`));
-      if (conversation !== undefined) this.conversations.set(conversation.id, conversation);
-    }
+    this.conversations = await this.repository.load();
     if (this.conversations.size === 0) {
-      const conversation = this.makeConversation();
+      const conversation = this.repository.create();
       this.conversations.set(conversation.id, conversation);
       await this.persist(conversation);
     }
@@ -340,17 +187,13 @@ export class AgentApp {
     this.updateUrl(false);
   }
 
-  private makeConversation(): Conversation {
-    const timestamp = Date.now();
-    return { id: newId(), title: "New session", createdAt: timestamp, updatedAt: timestamp, messages: [] };
-  }
-
-  private async persist(conversation: Conversation): Promise<void> {
-    conversation.updatedAt = Date.now();
-    this.conversations.set(conversation.id, conversation);
-    await this.store.set(`conversation:${conversation.id}`, conversationValue(conversation));
-    const index = this.sortedConversations().map(({ id, title, updatedAt }) => ({ id, title, updatedAt }));
-    await this.store.set("conversations:index", index as unknown as JsonValue);
+  private async persist(conversation: Conversation, removedIds: readonly string[] = []): Promise<void> {
+    try {
+      await this.repository.save(this.conversations, conversation, removedIds);
+    } catch (error) {
+      this.notify(error instanceof Error ? `State could not be persisted: ${error.message}` : "State could not be persisted.", "error");
+      if (this.ready && this.activeId.length > 0 && this.conversations.has(this.activeId)) this.renderAll();
+    }
   }
 
   private sortedConversations(): Conversation[] {
@@ -365,7 +208,11 @@ export class AgentApp {
 
   private async createSession(): Promise<void> {
     if (!this.ready || this.busy || !this.confirmDraft()) return;
-    const conversation = this.makeConversation();
+    if (this.conversations.size >= CONVERSATION_LIMITS.maxSessions) {
+      this.notify(`You can keep at most ${CONVERSATION_LIMITS.maxSessions} sessions. Delete an old session first.`, "error");
+      return;
+    }
+    const conversation = this.repository.create();
     this.conversations.set(conversation.id, conversation);
     this.activeId = conversation.id;
     await this.persist(conversation);
@@ -373,6 +220,28 @@ export class AgentApp {
     this.renderAll();
     this.notify("New session ready.", "success");
     this.focusComposer(true);
+  }
+
+  private async deleteSession(id: string): Promise<void> {
+    if (!this.ready || this.busy || !this.conversations.has(id)) return;
+    if (id === this.activeId && !this.confirmDraft()) return;
+    const conversation = this.conversations.get(id);
+    if (conversation === undefined || typeof window.confirm !== "function" || !window.confirm(`Delete “${conversation.title}”?`)) return;
+    try {
+      await this.repository.remove(this.conversations, id);
+    } catch (error) {
+      this.notify(error instanceof Error ? `State could not be persisted: ${error.message}` : "State could not be persisted.", "error");
+      return;
+    }
+    if (this.conversations.size === 0) {
+      const replacement = this.repository.create();
+      this.conversations.set(replacement.id, replacement);
+      await this.persist(replacement);
+    }
+    if (id === this.activeId) this.activeId = this.sortedConversations()[0]?.id ?? "";
+    this.updateUrl(true);
+    this.renderAll();
+    this.notify("Session deleted.", "success");
   }
 
   private async selectFromUrl(): Promise<void> {
@@ -481,38 +350,52 @@ export class AgentApp {
     }
     if (this.busy) return;
     const input = this.elements["message-input"] as HTMLTextAreaElement;
-    const content = input.value.trim();
-    if (!content) {
+    const rawContent = input.value.trim();
+    if (!rawContent) {
       this.notify("Write a message before sending.", "error");
       input.focus();
       return;
     }
-
-    const conversation = this.activeConversation();
-    conversation.messages = [...conversation.messages, { role: "user", content }];
-    if (conversation.messages.filter((message) => message.role === "user").length === 1) conversation.title = titleFor(content);
-    input.value = "";
-    this.pendingText = "";
-    this.pendingTool = undefined;
-    try {
-      await this.persist(conversation);
-    } catch (error) {
-      this.notify(error instanceof Error ? `State could not be persisted: ${error.message}` : "State could not be persisted.", "error");
+    if (rawContent.length > CONVERSATION_LIMITS.maxMessageChars) {
+      this.notify(`Messages are limited to ${CONVERSATION_LIMITS.maxMessageChars} characters.`, "error");
+      return;
     }
-    this.setBusy(true);
-    this.renderAll();
+
     const controller = new AbortController();
     this.runController = controller;
+    this.setBusy(true);
     try {
+      const processed = await this.plugins.process({ role: "user", content: rawContent }, controller.signal);
+      if (!isConversationMessage(processed) || processed.role !== "user" || typeof processed.content !== "string") {
+        throw new Error("A message processor must return a user message.");
+      }
+      const content = processed.content.trim();
+      if (!content || content.length > CONVERSATION_LIMITS.maxMessageChars) throw new Error("The processed message is empty or too large.");
+      const conversation = this.activeConversation();
+      conversation.messages = [...conversation.messages, { role: "user", content }];
+      if (conversation.messages.filter((message) => message.role === "user").length === 1) conversation.title = titleFor(content);
+      input.value = "";
+      this.pendingText = "";
+      this.pendingTool = undefined;
+      await this.persist(conversation);
+      const runConversation = this.activeConversation();
+      this.renderAll();
       const result = await this.agent.run({
-        messages: conversation.messages,
+        messages: runConversation.messages,
         signal: controller.signal,
         maxTurns: 8,
         toolTimeoutMs: 10_000,
+        limits: {
+          maxMessages: CONVERSATION_LIMITS.maxMessages,
+          maxMessageChars: CONVERSATION_LIMITS.maxMessageChars,
+          maxRequestChars: CONVERSATION_LIMITS.maxConversationChars,
+          maxToolOutputChars: 16_000,
+          maxToolCallsPerTurn: 16,
+        },
         onEvent: (event) => this.handleAgentEvent(event),
       });
-      conversation.messages = [...result.messages];
-      await this.persist(conversation);
+      runConversation.messages = [...result.messages];
+      await this.persist(runConversation);
       if (result.status === "completed") this.notify("Response complete.", "success");
       else if (result.status === "cancelled") this.notify("Run cancelled. The conversation was saved.", "error");
       else if (result.status === "max-turns") this.notify("Run stopped at the turn limit.", "error");
@@ -533,7 +416,7 @@ export class AgentApp {
     switch (event.type) {
       case "text-delta":
         this.pendingText += event.delta;
-        this.notify("Thinking…");
+        this.notify("Receiving response…");
         this.scheduleChatRender();
         break;
       case "model-started":
@@ -588,7 +471,9 @@ export class AgentApp {
     this.renderHeader();
     this.renderChat();
     this.renderTools();
-    this.element("storage-label").textContent = this.store instanceof MemoryStateStore ? "Session state · memory" : "Local state · IndexedDB";
+    this.element("storage-label").textContent = this.store.kind === "indexeddb"
+      ? "Local state · IndexedDB"
+      : this.store.failureReason === undefined ? "Session state · memory" : "Session state · memory (storage unavailable)";
   }
 
   private renderHeader(): void {
@@ -606,6 +491,8 @@ export class AgentApp {
     for (const conversation of this.sortedConversations()) {
       const item = document.createElement("li");
       item.className = "session-item";
+      const row = document.createElement("div");
+      row.className = "session-row";
       const button = document.createElement("button");
       button.className = "session-button";
       button.type = "button";
@@ -614,7 +501,16 @@ export class AgentApp {
       button.setAttribute("aria-current", conversation.id === this.activeId ? "page" : "false");
       button.disabled = this.busy;
       button.addEventListener("click", () => void this.selectSession(conversation.id));
-      item.append(button);
+      const remove = document.createElement("button");
+      remove.className = "icon-button session-delete";
+      remove.type = "button";
+      remove.textContent = "×";
+      remove.title = "Delete session";
+      remove.setAttribute("aria-label", `Delete session ${conversation.title}`);
+      remove.disabled = this.busy;
+      remove.addEventListener("click", () => void this.deleteSession(conversation.id));
+      row.append(button, remove);
+      item.append(row);
       list.append(item);
     }
     this.element("session-count").textContent = String(this.conversations.size);
@@ -643,43 +539,17 @@ export class AgentApp {
       empty.className = "empty-state";
       const icon = textElement("div", "✦", "empty-icon");
       icon.setAttribute("aria-hidden", "true");
-      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Start with a question, a draft, or a small task. Your sessions stay in this browser by default."));
+      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Start with /help for offline commands, or connect a model for open-ended answers. Your sessions stay in this browser by default."));
       chat.append(empty);
     } else {
-      for (const message of conversation.messages) chat.append(this.messageElement(message));
-      if (this.pendingText.length > 0) chat.append(this.messageElement({ role: "assistant", content: this.pendingText }, true));
+      for (const message of conversation.messages) chat.append(messageElement(message));
+      if (this.pendingText.length > 0) chat.append(messageElement({ role: "assistant", content: this.pendingText }, true));
       if (this.pendingTool !== undefined) {
         const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
-        chat.append(this.messageElement(toolMessage, true));
+        chat.append(messageElement(toolMessage, true));
       }
     }
     if (nearBottom || conversation.messages.length === 0) chat.scrollTop = chat.scrollHeight;
-  }
-
-  private messageElement(message: ModelMessage, pending = false): HTMLElement {
-    const article = document.createElement("article");
-    article.className = `message ${message.role}${pending ? " pending" : ""}`;
-    const header = document.createElement("div");
-    header.className = "message-header";
-    header.textContent = message.role === "user" ? "You" : message.role === "assistant" ? "Agent" : message.role === "tool" ? message.name : "System";
-    if (message.role === "tool") header.setAttribute("translate", "no");
-    article.append(header);
-    const body = document.createElement("div");
-    body.className = "message-body";
-    if (message.role === "tool" && message.isError === true) body.classList.add("tool-error");
-    body.textContent = message.content;
-    article.append(body);
-    if (message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0) {
-      const calls = document.createElement("div");
-      calls.className = "tool-call-list";
-      for (const call of message.toolCalls) {
-        const tag = textElement("span", call.name, "tool-call-tag");
-        tag.setAttribute("translate", "no");
-        calls.append(tag);
-      }
-      article.append(calls);
-    }
-    return article;
   }
 
   private renderTools(): void {
@@ -690,13 +560,17 @@ export class AgentApp {
     storageAction.textContent = this.storageHandle === undefined ? "Enable plugin" : "Disable plugin";
     runtimeAction.disabled = this.busy;
     storageAction.disabled = this.busy;
-    const runtimeCard = this.element("runtime-card");
-    const storageCard = this.element("storage-card");
-    runtimeCard.setAttribute("aria-busy", String(runtimeAction.disabled));
-    storageCard.setAttribute("aria-busy", String(storageAction.disabled));
+    this.element("runtime-card").setAttribute("aria-busy", String(runtimeAction.disabled));
+    this.element("storage-card").setAttribute("aria-busy", String(storageAction.disabled));
+    this.uiCleanup?.();
+    this.uiCleanup = undefined;
+    const extensionHost = this.element("extension-host");
+    extensionHost.replaceChildren();
+    this.uiCleanup = this.plugins.mountUi(extensionHost);
     const list = this.element("tool-list");
     list.replaceChildren();
-    for (const descriptor of this.tools.descriptors()) {
+    const descriptors = this.tools.descriptors();
+    for (const descriptor of descriptors) {
       const entry = document.createElement("div");
       entry.className = "tool-entry";
       const name = textElement("strong", descriptor.name, "tool-name");
@@ -705,7 +579,7 @@ export class AgentApp {
       for (const capability of descriptor.requiredCapabilities) entry.append(textElement("span", `Requires · ${capability}`, "capability-chip"));
       list.append(entry);
     }
-    this.element("enabled-count").textContent = String(this.tools.descriptors().length);
+    this.element("enabled-count").textContent = String(descriptors.length);
   }
 
   private async toggleRuntime(): Promise<void> {
@@ -751,25 +625,31 @@ export class AgentApp {
   }
 
   private async connectRemote(form: HTMLFormElement): Promise<void> {
-    if (!this.ready) return;
+    if (!this.ready || this.busy) return;
     const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
     const spinner = submit?.querySelector<HTMLElement>(".spinner");
     const values = this.connectionValues(form);
     if (values === undefined) return;
-    const { endpoint, model, apiKey } = values;
     if (submit !== null && submit !== undefined) submit.disabled = true;
     if (spinner !== null && spinner !== undefined) spinner.hidden = false;
     try {
-      await this.capabilities.request("model-client", [{ name: "network", reason: "Send conversation messages to the configured model endpoint." }]);
-      const network = await this.capabilities.get<NetworkCapability>("model-client", "network");
-      const adapter = new OpenAICompatibleAdapter({ endpoint, model, apiKey, fetcher: network.fetch });
+      if (this.remoteHandle !== undefined) {
+        await this.remoteHandle.uninstall();
+        this.remoteHandle = undefined;
+      }
+      const handle = await this.plugins.install(createRemoteModelPlugin(values));
+      const adapter = this.plugins.modelAdapter("remote-model");
+      if (adapter === undefined) throw new Error("The remote model plugin did not register an adapter.");
+      this.remoteHandle = handle;
       this.agent.setModel(adapter);
-      this.activeModelLabel = `Remote · ${model}`;
-      this.element("connection-status").textContent = "Connected for this tab. The key remains in memory only.";
+      this.activeModelLabel = `Remote · ${values.model}`;
+      this.element("connection-status").textContent = "Remote model selected. The first message will verify the endpoint; the key remains in memory only.";
       this.renderHeader();
       this.notify("Remote model selected.", "success");
     } catch (error) {
-      this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not connect the model.";
+      this.agent.setModel(this.plugins.modelAdapter("local")!);
+      this.activeModelLabel = "Offline assistant";
+      this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not select the model.";
       this.notify(this.element("connection-status").textContent, "error");
     } finally {
       if (submit !== null && submit !== undefined) submit.disabled = false;
@@ -777,14 +657,22 @@ export class AgentApp {
     }
   }
 
-  private useLocalModel(): void {
+  private async useLocalModel(): Promise<void> {
     if (!this.ready || this.busy) return;
-    this.agent.setModel(this.echo);
-    this.capabilities.revoke("model-client");
-    this.activeModelLabel = "Local demo";
-    this.element("connection-status").textContent = "Using the offline local demo model.";
+    if (this.remoteHandle !== undefined) {
+      await this.remoteHandle.uninstall();
+      this.remoteHandle = undefined;
+    }
+    const local = this.plugins.modelAdapter("local");
+    if (local === undefined) {
+      this.notify("The offline model is unavailable.", "error");
+      return;
+    }
+    this.agent.setModel(local);
+    this.activeModelLabel = "Offline assistant";
+    this.element("connection-status").textContent = "Using the offline assistant. No model request leaves this browser.";
     this.renderHeader();
-    this.notify("Local model selected.", "success");
+    this.notify("Offline model selected.", "success");
   }
 
   private notify(message: string, kind: "normal" | "success" | "error" = "normal"): void {
@@ -804,7 +692,8 @@ export class AgentApp {
   }
 }
 
-export async function startApp(root: HTMLElement): Promise<void> {
-  const app = new AgentApp(root);
+export async function startApp(root: HTMLElement, options: AgentAppOptions = {}): Promise<AgentApp> {
+  const app = new AgentApp(root, options);
   await app.start();
+  return app;
 }

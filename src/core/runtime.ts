@@ -2,6 +2,8 @@ import { KernelError } from "./errors.js";
 import { isJsonValue } from "./schema.js";
 import type { JavaScriptRuntime, JavaScriptRuntimeResult, JsonValue } from "./types.js";
 
+const MAX_RUNTIME_TIMEOUT_MS = 60_000;
+
 const WORKER_SOURCE = `
   const serialize = (value, seen = new WeakSet(), depth = 0) => {
     if (depth > 8) return "[Max depth]";
@@ -31,9 +33,15 @@ const WORKER_SOURCE = `
 
   self.onmessage = async ({ data }) => {
     const logs = [];
+    let logChars = 0;
     const consoleProxy = {};
     for (const method of ["log", "info", "warn", "error", "debug"]) {
-      consoleProxy[method] = (...values) => logs.push(values.map((value) => serialize(value)).join(" "));
+      consoleProxy[method] = (...values) => {
+        if (logs.length >= 100 || logChars >= 16_000) return;
+        const line = values.map((value) => serialize(value)).join(" ").slice(0, 2_000);
+        logs.push(line);
+        logChars += line.length;
+      };
     }
     try {
       const execute = new Function("input", "console", "\\\"use strict\\\"; return (async () => {\\n" + data.code + "\\n})()");
@@ -66,7 +74,7 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
     if (source.length > 100_000) throw new KernelError("INVALID_RUNTIME_INPUT", "JavaScript code is limited to 100,000 characters.");
     if (options.signal?.aborted) throw abortError();
     const timeoutMs = options.timeoutMs ?? 5_000;
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1) throw new KernelError("INVALID_RUNTIME_INPUT", "Runtime timeout must be positive.");
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_RUNTIME_TIMEOUT_MS) throw new KernelError("INVALID_RUNTIME_INPUT", `Runtime timeout must be between 1 and ${MAX_RUNTIME_TIMEOUT_MS} ms.`);
 
     if (typeof Worker === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined") {
       throw new KernelError("RUNTIME_UNAVAILABLE", "This browser does not support worker-based JavaScript execution.");
@@ -107,9 +115,13 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
         }
         const record = data as Record<string, unknown>;
         const logs = Array.isArray(record.logs) ? record.logs.filter((value): value is string => typeof value === "string") : [];
-        if (record.ok === true && isJsonValue(record.value)) {
+        const serializedValue = record.ok === true && isJsonValue(record.value) ? JSON.stringify(record.value) ?? "" : "";
+        if (record.ok === true && isJsonValue(record.value) && serializedValue.length <= 64_000) {
           cleanup();
           resolve({ value: record.value, logs, durationMs: Math.round(now() - started) });
+        } else if (record.ok === true && isJsonValue(record.value)) {
+          cleanup();
+          reject(new KernelError("RUNTIME_OUTPUT_TOO_LARGE", "Runtime output exceeds the 64,000-character limit."));
         } else {
           const errorRecord = typeof record.error === "object" && record.error !== null ? record.error as Record<string, unknown> : undefined;
           const message = typeof errorRecord?.message === "string" ? errorRecord.message : "Runtime execution failed.";

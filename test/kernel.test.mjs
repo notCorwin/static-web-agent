@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import {
   Agent,
   CapabilityManager,
+  ConversationRepository,
+  CONVERSATION_LIMITS,
+  LocalModelAdapter,
   MemoryStateStore,
   OpenAICompatibleAdapter,
   PluginManager,
   PrefixedStateStore,
+  ResilientStateStore,
   ToolRegistry,
+  createBrowserStateStore,
+  createRemoteModelPlugin,
   validate,
 } from "../dist/index.js";
 
@@ -58,6 +64,11 @@ test("capabilities require an explicit provider and permission grant", async () 
   await allowed.request("example", [{ name: "secret", reason: "test" }]);
   const scope = allowed.scope("example", ["secret"]);
   assert.deepEqual(await scope.get("secret"), { value: 42 });
+  allowed.register("secret-method", { provide: () => ({ read: () => 42 }) });
+  await allowed.request("example", [{ name: "secret-method", reason: "test" }]);
+  const cached = await allowed.get("example", "secret-method");
+  allowed.revoke("example", ["secret-method"]);
+  assert.throws(() => cached.read(), (error) => error.code === "CAPABILITY_DENIED");
   await assert.rejects(scope.get("other"), (error) => error.code === "CAPABILITY_DENIED");
 });
 
@@ -86,6 +97,19 @@ test("tool registry validates arguments, enforces permission, and returns struct
 
   unregister();
   assert.equal(registry.get("test.clock"), undefined);
+});
+
+test("tool registry rejects oversized JSON output", async () => {
+  const tools = new ToolRegistry(new CapabilityManager(), { maxOutputChars: 8 });
+  tools.register({
+    name: "test.large",
+    description: "Return a large value.",
+    inputSchema: { type: "object", additionalProperties: false },
+    execute: () => ({ text: "too large" }),
+  });
+  const result = await tools.execute("test.large", {});
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "TOOL_OUTPUT_TOO_LARGE");
 });
 
 test("agent loops through multiple tool calls and normalizes tool errors", async () => {
@@ -153,23 +177,74 @@ test("agent cancellation returns a cancellable result", async () => {
   assert.equal(result.error.code, "ABORTED");
 });
 
-test("agent reports model timeouts", async () => {
+test("agent rejects an empty model stream", async () => {
+  const model = { id: "empty", async *stream() {} };
+  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({ messages: [] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "EMPTY_MODEL_RESPONSE");
+});
+
+test("agent reports model timeouts and aborts the adapter signal", async () => {
+  let aborted = false;
   const model = {
     id: "hanging",
-    async *stream() {
-      await new Promise(() => {});
+    async *stream({ signal }) {
+      await new Promise((resolve) => signal.addEventListener("abort", () => {
+        aborted = true;
+        resolve();
+      }, { once: true }));
     },
   };
   const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({ messages: [], modelTimeoutMs: 5 });
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "MODEL_TIMEOUT");
+  assert.equal(aborted, true);
 });
 
-test("plugin lifecycle is scoped and unregisters its contributions", async () => {
+test("tool timeout ends the run instead of starting another model turn", async () => {
+  const capabilities = new CapabilityManager({ decide: () => true });
+  const tools = new ToolRegistry(capabilities);
+  let aborted = false;
+  tools.register({
+    name: "test.slow",
+    description: "A slow tool.",
+    inputSchema: { type: "object", additionalProperties: false },
+    execute: async (_input, { signal }) => new Promise((resolve) => signal.addEventListener("abort", () => {
+      aborted = true;
+      resolve({ done: true });
+    }, { once: true })),
+  });
+  let turns = 0;
+  const model = {
+    id: "tool-timeout",
+    async *stream() {
+      turns += 1;
+      yield { type: "completed", message: { role: "assistant", content: "", toolCalls: [{ id: "slow", name: "test.slow", arguments: {} }] } };
+    },
+  };
+  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "run" }], toolTimeoutMs: 5 });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "TOOL_TIMEOUT");
+  assert.equal(turns, 1);
+  assert.equal(aborted, true);
+});
+
+test("agent enforces message and tool-call limits", async () => {
+  const model = { id: "limit", async *stream() { yield { type: "completed", message: { role: "assistant", content: "ok" } }; } };
+  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+    messages: [{ role: "user", content: "too long" }],
+    limits: { maxMessageChars: 2 },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "MESSAGE_LIMIT_EXCEEDED");
+});
+
+test("plugin lifecycle is scoped and unregisters all contribution types", async () => {
   const capabilities = new CapabilityManager({ decide: () => true });
   const tools = new ToolRegistry(capabilities);
   const plugins = new PluginManager(tools, capabilities);
   let teardown = false;
+  let lateRegister;
   const handle = await plugins.install({
     manifest: { apiVersion: "1", id: "test-plugin", name: "Test", version: "1.0.0", permissions: [] },
     setup(context) {
@@ -179,18 +254,71 @@ test("plugin lifecycle is scoped and unregisters its contributions", async () =>
         inputSchema: { type: "object", additionalProperties: false },
         execute: () => ({ done: true }),
       });
+      context.registerModelAdapter({ id: "test.model", async *stream() { yield { type: "completed", message: { role: "assistant", content: "model" } }; } });
+      context.registerProcessor({ id: "test.upper", description: "Uppercase values.", process: (value) => typeof value === "string" ? value.toUpperCase() : value });
+      context.registerUi({ id: "test.ui", mount: () => undefined });
+      lateRegister = () => context.registerTool({
+        name: "test.late",
+        description: "Must not register after uninstall.",
+        inputSchema: { type: "object", additionalProperties: false },
+        execute: () => null,
+      });
     },
     teardown() {
       teardown = true;
     },
   });
   assert.equal(tools.descriptors().length, 1);
+  assert.equal(plugins.modelAdapter("test.model").id, "test.model");
+  assert.equal(plugins.processors().length, 1);
+  assert.equal(plugins.uiContributions().length, 1);
+  assert.equal(await plugins.process("hello"), "HELLO");
   assert.equal(plugins.isInstalled("test-plugin"), true);
   await handle.uninstall();
   await handle.uninstall();
   assert.equal(teardown, true);
   assert.equal(plugins.isInstalled("test-plugin"), false);
   assert.equal(tools.descriptors().length, 0);
+  assert.equal(plugins.modelAdapter("test.model"), undefined);
+  assert.equal(plugins.processors().length, 0);
+  assert.equal(plugins.uiContributions().length, 0);
+  assert.throws(() => lateRegister(), (error) => error.code === "PLUGIN_INACTIVE");
+});
+
+test("a model adapter plugin is registered, selected, and removed through the registry", async () => {
+  const capabilities = new CapabilityManager({ decide: () => true });
+  capabilities.register("network", { provide: () => ({ fetch: async () => new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "remote" } }] }), { status: 200, headers: { "content-type": "application/json" } }) }) });
+  const tools = new ToolRegistry(capabilities);
+  const plugins = new PluginManager(tools, capabilities);
+  const handle = await plugins.install(createRemoteModelPlugin({ endpoint: "https://example.test/chat", model: "demo" }));
+  const adapter = plugins.modelAdapter("remote-model");
+  assert.ok(adapter);
+  const events = [];
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) events.push(event);
+  assert.equal(events.at(-1).message.content, "remote");
+  await handle.uninstall();
+  assert.equal(plugins.modelAdapter("remote-model"), undefined);
+});
+
+test("a plugin can provide a capability before requesting its grant", async () => {
+  const capabilities = new CapabilityManager({ decide: () => true });
+  const tools = new ToolRegistry(capabilities);
+  const plugins = new PluginManager(tools, capabilities);
+  const handle = await plugins.install({
+    manifest: { apiVersion: "1", id: "provider-plugin", name: "Provider", version: "1", permissions: [{ name: "provided", reason: "test" }] },
+    setup(context) {
+      context.registerCapability({ name: "provided", provider: { provide: () => ({ value: 7 }) } });
+      context.registerTool({
+        name: "provided.value",
+        description: "Read the provided capability.",
+        inputSchema: { type: "object", additionalProperties: false },
+        requiredCapabilities: ["provided"],
+        execute: async (_input, toolContext) => ({ value: (await toolContext.getCapability("provided")).value }),
+      });
+    },
+  });
+  assert.deepEqual(await tools.execute("provided.value", {}), { ok: true, value: { value: 7 } });
+  await handle.uninstall();
 });
 
 test("state store persists cloned values and isolates prefixes", async () => {
@@ -205,6 +333,41 @@ test("state store persists cloned values and isolates prefixes", async () => {
   assert.deepEqual(await state.keys(), ["plugin-a:item"]);
   await scoped.clear();
   assert.deepEqual(await state.keys(), []);
+  await state.apply([
+    { type: "set", key: "a", value: 1 },
+    { type: "set", key: "b", value: 2 },
+    { type: "remove", key: "a" },
+  ]);
+  assert.deepEqual(await state.keys(), ["b"]);
+});
+
+test("browser state falls back to memory when IndexedDB opening fails", async () => {
+  const failingIndexedDb = {
+    open() {
+      const request = {};
+      queueMicrotask(() => request.onerror?.());
+      return request;
+    },
+  };
+  const store = createBrowserStateStore({ indexedDB: failingIndexedDb });
+  assert.equal(store.kind, "indexeddb");
+  await store.set("draft", { text: "kept" });
+  assert.equal(store.kind, "memory");
+  assert.deepEqual(await store.get("draft"), { text: "kept" });
+  assert.ok(store instanceof ResilientStateStore);
+});
+
+test("conversation persistence caps message history and repairs its index", async () => {
+  const state = new MemoryStateStore();
+  const repository = new ConversationRepository(state);
+  const conversation = repository.create();
+  conversation.messages = Array.from({ length: CONVERSATION_LIMITS.maxMessages + 20 }, (_, index) => ({ role: "user", content: `message-${index}` }));
+  const conversations = new Map([[conversation.id, conversation]]);
+  await repository.save(conversations, conversation);
+  assert.equal(conversations.get(conversation.id).messages.length, CONVERSATION_LIMITS.maxMessages);
+  const loaded = await repository.load();
+  assert.equal(loaded.get(conversation.id).messages.length, CONVERSATION_LIMITS.maxMessages);
+  assert.deepEqual(await state.keys(), ["conversation:" + conversation.id, "conversations:index"]);
 });
 
 test("OpenAI-compatible adapter normalizes a provider response", async () => {
@@ -228,4 +391,99 @@ test("OpenAI-compatible adapter normalizes a provider response", async () => {
   assert.equal(events.at(-1).usage.totalTokens, 3);
   assert.equal(requestBody.model, "demo");
   assert.equal(requestBody.messages[0].role, "user");
+});
+
+test("OpenAI-compatible adapter rejects provider errors in HTTP 200 responses", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => new Response(JSON.stringify({ error: { message: "quota exceeded" } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  await assert.rejects(
+    async () => { for await (const _event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) {} },
+    (error) => error.code === "MODEL_PROVIDER_ERROR" && error.message === "quota exceeded",
+  );
+});
+
+test("OpenAI-compatible adapter rejects oversized requests before fetch", async () => {
+  let fetched = false;
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => { fetched = true; return new Response(""); },
+  });
+  await assert.rejects(
+    async () => { for await (const _event of adapter.stream({ messages: [{ role: "user", content: "x".repeat(600_000) }], tools: [], signal: noSignal() })) {} },
+    (error) => error.code === "MODEL_REQUEST_TOO_LARGE",
+  );
+  assert.equal(fetched, false);
+});
+
+test("OpenAI-compatible adapter rejects empty and incomplete SSE responses", async () => {
+  const empty = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "" } }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  await assert.rejects(
+    async () => { for await (const _event of empty.stream({ messages: [], tools: [], signal: noSignal() })) {} },
+    (error) => error.code === "MODEL_EMPTY_RESPONSE",
+  );
+
+  const incomplete = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => new Response(`data: {"choices":[{"delta":{"content":"hello"}}]}\n\n`, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    }),
+  });
+  await assert.rejects(
+    async () => { for await (const _event of incomplete.stream({ messages: [], tools: [], signal: noSignal() })) {} },
+    (error) => error.code === "MODEL_SSE_INCOMPLETE",
+  );
+});
+
+test("OpenAI-compatible adapter surfaces SSE error events", async () => {
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => new Response("event: error\ndata: upstream failed\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }),
+  });
+  await assert.rejects(
+    async () => { for await (const _event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) {} },
+    (error) => error.code === "MODEL_SSE_ERROR",
+  );
+});
+
+test("OpenAI-compatible adapter parses a completed SSE response", async () => {
+  const body = [
+    'data: {"choices":[{"delta":{"content":"hello"}}]}',
+    "",
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+  });
+  const events = [];
+  for await (const event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) events.push(event);
+  assert.equal(events.at(-1).type, "completed");
+  assert.equal(events.at(-1).message.content, "hello");
+});
+
+test("the default local model provides bounded offline commands instead of echoing", async () => {
+  const events = [];
+  for await (const event of new LocalModelAdapter().stream({ messages: [{ role: "user", content: "/calc 2 * (3 + 4)" }], tools: [], signal: noSignal() })) events.push(event);
+  assert.equal(events.at(-1).message.content, "Result: 14");
 });

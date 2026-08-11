@@ -31,8 +31,8 @@ export class PluginError extends KernelError {
 }
 
 export class ModelAdapterError extends KernelError {
-  constructor(message: string, details?: JsonValue) {
-    super("MODEL_ERROR", message, details);
+  constructor(message: string, details?: JsonValue, code = "MODEL_ERROR") {
+    super(code, message, details);
     this.name = "ModelAdapterError";
   }
 }
