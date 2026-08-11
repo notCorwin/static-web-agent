@@ -27,7 +27,7 @@ The workspace requires an OpenAI-compatible remote model for chat. Requests are 
 
 ## Remote models
 
-The connection panel installs a model plugin for the current tab. It accepts an OpenAI-compatible chat-completions endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. The first message verifies the endpoint; selecting the model itself does not make a network request. After a successful selection, the endpoint, model, and API key are saved in this browser's local IndexedDB and restored into the connection form on the next visit. The key is not sent anywhere except the configured endpoint; treat it as sensitive data because same-origin page code can read browser storage.
+The connection panel installs a model plugin for the current tab. It accepts an OpenAI-compatible API base such as `https://openrouter.ai/api/v1` or a full `/chat/completions` endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. Versioned API bases automatically receive the `/chat/completions` suffix. The first message verifies the endpoint; selecting the model itself does not make a network request. After a successful selection, the endpoint, model, and API key are saved in this browser's local IndexedDB and restored into the connection form on the next visit. The key is not sent anywhere except the configured endpoint; treat it as sensitive data because same-origin page code can read browser storage.
 
 Provider failures, HTTP errors, empty responses, malformed tool arguments, malformed SSE, incomplete SSE streams, cancellation, and request timeouts are returned as structured model errors.
 

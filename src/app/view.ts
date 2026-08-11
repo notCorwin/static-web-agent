@@ -17,8 +17,8 @@ export function renderShell(root: HTMLElement): AppElements {
           <summary>Connect an OpenAI-compatible model</summary>
           <form class="connection-form" id="connection-form" novalidate>
             <div class="field">
-              <label for="model-endpoint">OpenAI-compatible endpoint</label>
-              <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1/chat/completions…" />
+              <label for="model-endpoint">OpenAI-compatible endpoint or API base</label>
+              <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1 or …/chat/completions" />
               <p class="field-error" id="endpoint-error" role="status" aria-live="polite"></p>
             </div>
             <div class="field">

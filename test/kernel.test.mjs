@@ -405,6 +405,23 @@ test("OpenAI-compatible adapter normalizes a provider response", async () => {
   assert.equal(requestBody.messages[0].role, "user");
 });
 
+test("OpenAI-compatible adapter resolves versioned API bases to chat completions", async () => {
+  let requestUrl;
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://openrouter.ai/api/v1",
+    model: "demo",
+    fetcher: async (input) => {
+      requestUrl = String(input);
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "hello" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) {}
+  assert.equal(requestUrl, "https://openrouter.ai/api/v1/chat/completions");
+});
+
 test("OpenAI-compatible adapter rejects provider errors in HTTP 200 responses", async () => {
   const adapter = new OpenAICompatibleAdapter({
     endpoint: "https://example.test/chat",

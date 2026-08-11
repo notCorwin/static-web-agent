@@ -46,6 +46,15 @@ function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function normalizeEndpoint(endpoint: string): string {
+  const url = new URL(endpoint);
+  const path = url.pathname.replace(/\/+$/, "");
+  if (path.endsWith("/chat/completions")) return url.toString();
+  if (path === "" || path === "/") url.pathname = "/v1/chat/completions";
+  else if (path.endsWith("/v1")) url.pathname = `${path}/chat/completions`;
+  return url.toString();
+}
+
 function usage(value: unknown): ModelUsage | undefined {
   const record = asRecord(value);
   if (record === undefined) return undefined;
@@ -266,7 +275,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Model endpoint must use http:// or https://.");
     this.id = options.id ?? "openai-compatible";
-    this.endpoint = endpoint;
+    this.endpoint = normalizeEndpoint(endpoint);
     this.model = options.model.trim();
     if (!this.model) throw new Error("A model name is required.");
     this.apiKey = options.apiKey;
