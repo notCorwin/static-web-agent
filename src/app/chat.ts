@@ -1,9 +1,10 @@
 import type { JsonObject, ModelMessage } from "../core/types.js";
 
+/** Compatibility export: all application chat ceilings are unbounded by default. */
 export const CHAT_LIMITS = Object.freeze({
-  maxMessages: 200,
-  maxMessageChars: 20_000,
-  maxConversationChars: 250_000,
+  maxMessages: Number.POSITIVE_INFINITY,
+  maxMessageChars: Number.POSITIVE_INFINITY,
+  maxConversationChars: Number.POSITIVE_INFINITY,
 });
 
 export interface ChatState {
@@ -18,17 +19,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function jsonSize(value: unknown): number {
-  return (JSON.stringify(value) ?? "").length;
-}
-
 export function normalizeMessages(messages: readonly ModelMessage[]): ModelMessage[] {
-  let normalized = [...messages].slice(-CHAT_LIMITS.maxMessages);
-  while (normalized.length > 1 && jsonSize(normalized) > CHAT_LIMITS.maxConversationChars) normalized = normalized.slice(1);
+  let normalized = [...messages];
   while (normalized.length > 0 && normalized[0]?.role === "tool") normalized = normalized.slice(1);
-  for (const message of normalized) {
-    if (message.content.length > CHAT_LIMITS.maxMessageChars) throw new Error("A chat message is too large.");
-  }
   return normalized;
 }
 

@@ -2,11 +2,11 @@ import type { JavaScriptRuntime, JsonObject, Plugin, ToolDefinition } from "../c
 
 const tool: ToolDefinition = {
   name: "runtime.javascript",
-  description: "Run JavaScript in a time-limited worker without passing it agent capabilities.",
+  description: "Run JavaScript in a worker without passing it agent capabilities.",
   inputSchema: {
     type: "object",
     properties: {
-      code: { type: "string", minLength: 1, maxLength: 100_000 },
+      code: { type: "string", minLength: 1 },
       input: {},
     },
     required: ["code"],
@@ -38,8 +38,8 @@ export function createJavaScriptRuntimePlugin(): Plugin {
       id: "javascript-runtime",
       name: "JavaScript runtime",
       version: "1.0.0",
-      description: "A worker runtime for small JavaScript transformations.",
-      permissions: [{ name: "runtime", reason: "Execute code supplied by the agent in a time-limited worker." }],
+      description: "A worker runtime for JavaScript execution.",
+      permissions: [{ name: "runtime", reason: "Execute code supplied by the agent in a worker." }],
     },
     setup(context) {
       context.registerTool(tool);

@@ -17,7 +17,7 @@ const evaluateTool: ToolDefinition = {
   inputSchema: {
     type: "object",
     properties: {
-      code: { type: "string", minLength: 1, maxLength: 100_000 },
+      code: { type: "string", minLength: 1 },
       input: {},
     },
     required: ["code"],

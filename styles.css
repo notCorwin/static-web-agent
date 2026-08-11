@@ -157,7 +157,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .composer-wrap { flex-shrink: 0; padding: 0 clamp(18px, 4vw, 48px) 22px; background: var(--bg); }
 .composer { position: relative; display: grid; gap: 9px; border-radius: 14px; }
 .composer:focus-within { box-shadow: 0 0 0 2px rgb(0 0 0 / 14%); }
-.composer textarea { min-height: 64px; max-height: 180px; resize: vertical; padding: 10px 78px 10px 11px; line-height: 1.45; font-size: 15px; }
+.composer textarea { min-height: 64px; resize: vertical; padding: 10px 78px 10px 11px; line-height: 1.45; font-size: 15px; }
 .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .composer-hint { margin: 0; color: var(--faint); font-size: 11px; }
 .send-button { position: absolute; right: 7px; bottom: 47px; min-width: 62px; }

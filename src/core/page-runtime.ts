@@ -1,13 +1,9 @@
 import { KernelError } from "./errors.js";
 import type { JsonValue, JavaScriptRuntimeResult, PageRuntime } from "./types.js";
 
-const MAX_PAGE_CODE_CHARS = 100_000;
-const MAX_PAGE_OUTPUT_CHARS = 64_000;
-
 type PageConsole = Record<string, (...values: readonly unknown[]) => void>;
 
-function serialize(value: unknown, seen = new WeakSet<object>(), depth = 0): JsonValue {
-  if (depth > 12) return "[Max depth]";
+function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "undefined") return null;
@@ -33,15 +29,15 @@ function serialize(value: unknown, seen = new WeakSet<object>(), depth = 0): Jso
   }
   if (typeof Headers !== "undefined" && value instanceof Headers) return Object.fromEntries(value.entries());
   if (typeof Map !== "undefined" && value instanceof Map) {
-    return { type: "Map", entries: [...value.entries()].map(([key, entry]) => [serialize(key, seen, depth + 1), serialize(entry, seen, depth + 1)]) };
+    return { type: "Map", entries: [...value.entries()].map(([key, entry]) => [serialize(key, seen), serialize(entry, seen)]) };
   }
-  if (typeof Set !== "undefined" && value instanceof Set) return { type: "Set", values: [...value].map((entry) => serialize(entry, seen, depth + 1)) };
-  if (Array.isArray(value)) return value.map((entry) => serialize(entry, seen, depth + 1));
+  if (typeof Set !== "undefined" && value instanceof Set) return { type: "Set", values: [...value].map((entry) => serialize(entry, seen)) };
+  if (Array.isArray(value)) return value.map((entry) => serialize(entry, seen));
 
   const output: Record<string, JsonValue> = {};
   for (const key of Object.keys(value)) {
     try {
-      output[key] = serialize((value as Record<string, unknown>)[key], seen, depth + 1);
+      output[key] = serialize((value as Record<string, unknown>)[key], seen);
     } catch {
       output[key] = "[Unreadable]";
     }
@@ -55,27 +51,19 @@ function abortError(): Error {
   return error;
 }
 
-function serializedSize(value: JsonValue): number {
-  return (JSON.stringify(value) ?? "").length;
-}
-
 export class BrowserPageRuntime implements PageRuntime {
   async execute(code: string, input: JsonValue, options: { readonly signal?: AbortSignal } = {}): Promise<JavaScriptRuntimeResult> {
     const source = code.trim();
     if (!source) throw new KernelError("INVALID_PAGE_RUNTIME_INPUT", "Page JavaScript code cannot be empty.");
-    if (source.length > MAX_PAGE_CODE_CHARS) throw new KernelError("INVALID_PAGE_RUNTIME_INPUT", "Page JavaScript is limited to 100,000 characters.");
     if (options.signal?.aborted) throw abortError();
 
     const started = typeof performance === "undefined" ? Date.now() : performance.now();
     const logs: string[] = [];
-    let logChars = 0;
     const pageConsole: PageConsole = {};
     for (const method of ["log", "info", "warn", "error", "debug"]) {
       pageConsole[method] = (...values) => {
-        if (logs.length >= 100 || logChars >= 16_000) return;
-        const line = values.map((value) => serialize(value)).join(" ").slice(0, 2_000);
+        const line = values.map((value) => serialize(value)).join(" ");
         logs.push(line);
-        logChars += line.length;
       };
     }
 
@@ -107,7 +95,6 @@ export class BrowserPageRuntime implements PageRuntime {
         .then((value) => {
           if (settled) return;
           const serialized = serialize(value);
-          if (serializedSize(serialized) > MAX_PAGE_OUTPUT_CHARS) throw new KernelError("PAGE_RUNTIME_OUTPUT_TOO_LARGE", "Page runtime output exceeds the 64,000-character limit.");
           settled = true;
           cleanup();
           resolve({ value: serialized, logs, durationMs: Math.round((typeof performance === "undefined" ? Date.now() : performance.now()) - started) });

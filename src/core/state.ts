@@ -92,7 +92,6 @@ export class PrefixedStateStore implements StateStore {
   }
 
   async clear(): Promise<void> {
-    // ponytail: namespaced stores are intentionally small; batch-delete can replace this if that ceiling changes.
     await this.parent.apply((await this.keys()).map((key) => ({ type: "remove", key: `${this.prefix}${key}` })));
   }
 }

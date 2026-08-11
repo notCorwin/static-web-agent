@@ -48,7 +48,7 @@ function loggerFor(pluginId: string): Logger {
 function validateManifest(manifest: PluginManifest): void {
   if (typeof manifest !== "object" || manifest === null) throw new PluginError("INVALID_PLUGIN_MANIFEST", "A plugin manifest is required.");
   if (manifest.apiVersion !== API_VERSION) throw new PluginError("PLUGIN_API_MISMATCH", `Plugin “${String(manifest.id)}” requires an unsupported API version.`);
-  if (typeof manifest.id !== "string" || !/^[a-z][a-z0-9._-]{0,63}$/.test(manifest.id)) throw new PluginError("INVALID_PLUGIN_ID", "Plugin IDs must be lowercase and URL-safe.");
+  if (typeof manifest.id !== "string" || !manifest.id.trim()) throw new PluginError("INVALID_PLUGIN_ID", "Plugin IDs cannot be empty.");
   if (typeof manifest.name !== "string" || typeof manifest.version !== "string" || !manifest.name.trim() || !manifest.version.trim()) throw new PluginError("INVALID_PLUGIN_MANIFEST", "Plugin name and version are required.");
   if (!Array.isArray(manifest.permissions)) throw new PluginError("INVALID_PLUGIN_MANIFEST", "Plugin permissions must be an array.");
   const names = new Set<string>();
@@ -273,13 +273,11 @@ export class PluginManager {
   }
 
   async process(value: JsonValue, signal = new AbortController().signal): Promise<JsonValue> {
-    if ((JSON.stringify(value) ?? "").length > 100_000) throw new KernelError("PROCESSOR_INPUT_TOO_LARGE", "Processor input exceeds the 100,000-character limit.");
     let result = value;
     for (const processor of this.processors()) {
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : abortError();
       result = await processor.process(result, signal);
       if (!isJsonValue(result)) throw new KernelError("INVALID_PROCESSOR_OUTPUT", `Processor “${processor.id}” returned a non-JSON value.`);
-      if ((JSON.stringify(result) ?? "").length > 100_000) throw new KernelError("PROCESSOR_OUTPUT_TOO_LARGE", `Processor “${processor.id}” returned too much data.`);
     }
     return result;
   }

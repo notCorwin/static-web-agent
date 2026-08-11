@@ -2,11 +2,8 @@ import { KernelError } from "./errors.js";
 import { isJsonValue } from "./schema.js";
 import type { JavaScriptRuntime, JavaScriptRuntimeResult, JsonValue } from "./types.js";
 
-const MAX_RUNTIME_TIMEOUT_MS = 60_000;
-
 const WORKER_SOURCE = `
-  const serialize = (value, seen = new WeakSet(), depth = 0) => {
-    if (depth > 8) return "[Max depth]";
+  const serialize = (value, seen = new WeakSet()) => {
     if (value === null || typeof value === "string" || typeof value === "boolean") return value;
     if (typeof value === "number") return Number.isFinite(value) ? value : null;
     if (typeof value === "undefined") return null;
@@ -17,30 +14,21 @@ const WORKER_SOURCE = `
     if (typeof value === "object") {
       if (seen.has(value)) return "[Circular]";
       seen.add(value);
-      if (Array.isArray(value)) return value.map((item) => serialize(item, seen, depth + 1));
+      if (Array.isArray(value)) return value.map((item) => serialize(item, seen));
       const output = {};
-      for (const [key, item] of Object.entries(value)) output[key] = serialize(item, seen, depth + 1);
+      for (const [key, item] of Object.entries(value)) output[key] = serialize(item, seen);
       return output;
     }
     return String(value);
   };
 
-  // A worker receives no capability objects. These common ambient APIs are also masked
-  // where the browser permits it; this is a resource boundary, not a security boundary.
-  for (const name of ["fetch", "XMLHttpRequest", "WebSocket", "indexedDB", "caches", "importScripts"]) {
-    try { globalThis[name] = undefined; } catch (_) { /* read-only in some engines */ }
-  }
-
   self.onmessage = async ({ data }) => {
     const logs = [];
-    let logChars = 0;
     const consoleProxy = {};
     for (const method of ["log", "info", "warn", "error", "debug"]) {
       consoleProxy[method] = (...values) => {
-        if (logs.length >= 100 || logChars >= 16_000) return;
-        const line = values.map((value) => serialize(value)).join(" ").slice(0, 2_000);
+        const line = values.map((value) => serialize(value)).join(" ");
         logs.push(line);
-        logChars += line.length;
       };
     }
     try {
@@ -71,10 +59,9 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
   ): Promise<JavaScriptRuntimeResult> {
     const source = code.trim();
     if (!source) throw new KernelError("INVALID_RUNTIME_INPUT", "JavaScript code cannot be empty.");
-    if (source.length > 100_000) throw new KernelError("INVALID_RUNTIME_INPUT", "JavaScript code is limited to 100,000 characters.");
     if (options.signal?.aborted) throw abortError();
-    const timeoutMs = options.timeoutMs ?? 5_000;
-    if (!Number.isFinite(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_RUNTIME_TIMEOUT_MS) throw new KernelError("INVALID_RUNTIME_INPUT", `Runtime timeout must be between 1 and ${MAX_RUNTIME_TIMEOUT_MS} ms.`);
+    const timeoutMs = options.timeoutMs;
+    if (timeoutMs !== undefined && timeoutMs !== Number.POSITIVE_INFINITY && (!Number.isFinite(timeoutMs) || timeoutMs < 1)) throw new KernelError("INVALID_RUNTIME_INPUT", "Runtime timeout must be positive or Infinity.");
 
     if (typeof Worker === "undefined" || typeof Blob === "undefined" || typeof URL === "undefined") {
       throw new KernelError("RUNTIME_UNAVAILABLE", "This browser does not support worker-based JavaScript execution.");
@@ -115,13 +102,9 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
         }
         const record = data as Record<string, unknown>;
         const logs = Array.isArray(record.logs) ? record.logs.filter((value): value is string => typeof value === "string") : [];
-        const serializedValue = record.ok === true && isJsonValue(record.value) ? JSON.stringify(record.value) ?? "" : "";
-        if (record.ok === true && isJsonValue(record.value) && serializedValue.length <= 64_000) {
+        if (record.ok === true && isJsonValue(record.value)) {
           cleanup();
           resolve({ value: record.value, logs, durationMs: Math.round(now() - started) });
-        } else if (record.ok === true && isJsonValue(record.value)) {
-          cleanup();
-          reject(new KernelError("RUNTIME_OUTPUT_TOO_LARGE", "Runtime output exceeds the 64,000-character limit."));
         } else {
           const errorRecord = typeof record.error === "object" && record.error !== null ? record.error as Record<string, unknown> : undefined;
           const message = typeof errorRecord?.message === "string" ? errorRecord.message : "Runtime execution failed.";
@@ -134,10 +117,12 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
         reject(new KernelError("RUNTIME_WORKER_ERROR", "The runtime worker failed."));
       };
       signal?.addEventListener("abort", onAbort, { once: true });
-      timer = setTimeout(() => {
-        cleanup();
-        reject(new KernelError("RUNTIME_TIMEOUT", `Runtime execution exceeded ${timeoutMs} ms.`));
-      }, timeoutMs);
+      if (timeoutMs !== undefined && timeoutMs !== Number.POSITIVE_INFINITY) {
+        timer = setTimeout(() => {
+          cleanup();
+          reject(new KernelError("RUNTIME_TIMEOUT", `Runtime execution exceeded ${timeoutMs} ms.`));
+        }, timeoutMs);
+      }
       try {
         worker.postMessage({ code: source, input });
       } catch (error) {

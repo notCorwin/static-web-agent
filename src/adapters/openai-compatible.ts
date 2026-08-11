@@ -33,12 +33,6 @@ interface SseEvent {
   readonly data: string;
 }
 
-const MAX_MODEL_REQUEST_CHARS = 500_000;
-const MAX_MODEL_RESPONSE_CHARS = 1_000_000;
-const MAX_SSE_EVENT_CHARS = 100_000;
-const MAX_MODEL_OUTPUT_CHARS = 64_000;
-const MAX_PROVIDER_TOOL_NAME_CHARS = 64;
-
 function asRecord(value: unknown): UnknownRecord | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as UnknownRecord : undefined;
 }
@@ -80,12 +74,12 @@ function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string
   const used = new Set<string>();
   const names = new Map<string, string>();
   for (const [index, tool] of tools.entries()) {
-    const base = (tool.name.replace(/[^a-zA-Z0-9_-]/g, "_") || `tool_${index + 1}`).slice(0, MAX_PROVIDER_TOOL_NAME_CHARS);
+    const base = tool.name.replace(/[^a-zA-Z0-9_-]/g, "_") || `tool_${index + 1}`;
     let candidate = base;
     let suffix = 2;
     while (used.has(candidate)) {
       const suffixText = `_${suffix}`;
-      candidate = `${base.slice(0, MAX_PROVIDER_TOOL_NAME_CHARS - suffixText.length)}${suffixText}`;
+      candidate = `${base}${suffixText}`;
       suffix += 1;
     }
     used.add(candidate);
@@ -142,7 +136,7 @@ function parseArguments(value: unknown): JsonValue {
     try {
       parsed = JSON.parse(value) as unknown;
     } catch {
-      throw new ModelAdapterError("Model returned malformed tool arguments.", { arguments: value.slice(0, 2_000) }, "MODEL_PROTOCOL_ERROR");
+      throw new ModelAdapterError("Model returned malformed tool arguments.", { arguments: value }, "MODEL_PROTOCOL_ERROR");
     }
     if (!isJsonValue(parsed)) throw new ModelAdapterError("Model returned non-JSON tool arguments.", undefined, "MODEL_PROTOCOL_ERROR");
     return parsed;
@@ -177,7 +171,7 @@ function parseJson(text: string): UnknownRecord {
   try {
     parsed = JSON.parse(text) as unknown;
   } catch {
-    throw new ModelAdapterError("Model returned invalid JSON.", { body: text.slice(0, 2_000) }, "MODEL_PROTOCOL_ERROR");
+    throw new ModelAdapterError("Model returned invalid JSON.", { body: text }, "MODEL_PROTOCOL_ERROR");
   }
   const record = asRecord(parsed);
   if (record === undefined) throw new ModelAdapterError("Model returned a non-object JSON response.", undefined, "MODEL_PROTOCOL_ERROR");
@@ -204,12 +198,10 @@ function parseSseBlock(block: string): SseEvent | undefined {
   return data.length === 0 ? undefined : { event, data: data.join("\n") };
 }
 
-async function readTextLimited(response: Response, signal: AbortSignal, limit: number): Promise<string> {
+async function readText(response: Response, signal: AbortSignal): Promise<string> {
   if (response.body === null) {
     if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled.");
-    const text = await response.text();
-    if (text.length > limit) throw new ModelAdapterError("Model response is too large.", undefined, "MODEL_RESPONSE_TOO_LARGE");
-    return text;
+    return response.text();
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -219,7 +211,6 @@ async function readTextLimited(response: Response, signal: AbortSignal, limit: n
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled.");
       const chunk = await reader.read();
       text += decoder.decode(chunk.value, { stream: !chunk.done });
-      if (text.length > limit) throw new ModelAdapterError("Model response is too large.", undefined, "MODEL_RESPONSE_TOO_LARGE");
       if (chunk.done) return text;
     }
   } finally {
@@ -230,7 +221,7 @@ async function readTextLimited(response: Response, signal: AbortSignal, limit: n
 
 async function* ssePayloads(response: Response, signal: AbortSignal): AsyncIterable<SseEvent> {
   if (response.body === null) {
-    const text = await readTextLimited(response, signal, MAX_MODEL_RESPONSE_CHARS);
+    const text = await readText(response, signal);
     for (const block of text.split(/\r?\n\r?\n/)) {
       const event = parseSseBlock(block);
       if (event !== undefined) yield event;
@@ -241,16 +232,12 @@ async function* ssePayloads(response: Response, signal: AbortSignal): AsyncItera
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let totalChars = 0;
   try {
     while (true) {
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled.");
       const chunk = await reader.read();
       const decoded = decoder.decode(chunk.value, { stream: !chunk.done });
-      totalChars += decoded.length;
-      if (totalChars > MAX_MODEL_RESPONSE_CHARS) throw new ModelAdapterError("Model response is too large.", undefined, "MODEL_RESPONSE_TOO_LARGE");
       buffer += decoded;
-      if (buffer.length > MAX_SSE_EVENT_CHARS) throw new ModelAdapterError("Model SSE event is too large.", undefined, "MODEL_RESPONSE_TOO_LARGE");
       const lines = buffer.split(/\r?\n/);
       buffer = lines.pop() ?? "";
       for (const line of lines) {
@@ -265,10 +252,7 @@ async function* ssePayloads(response: Response, signal: AbortSignal): AsyncItera
       if (chunk.done) break;
     }
     const tail = decoder.decode();
-    totalChars += tail.length;
-    if (totalChars > MAX_MODEL_RESPONSE_CHARS) throw new ModelAdapterError("Model response is too large.", undefined, "MODEL_RESPONSE_TOO_LARGE");
     buffer += tail;
-    if (buffer.length > MAX_SSE_EVENT_CHARS) throw new ModelAdapterError("Model SSE event is too large.", undefined, "MODEL_RESPONSE_TOO_LARGE");
     const event = parseSseBlock(buffer);
     if (event !== undefined) yield event;
   } finally {
@@ -325,7 +309,6 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
     if (this.apiKey !== undefined && this.apiKey.length > 0) headers.Authorization = `Bearer ${this.apiKey}`;
 
     const serializedBody = JSON.stringify(body);
-    if (serializedBody.length > MAX_MODEL_REQUEST_CHARS) throw new ModelAdapterError("Model request is too large.", undefined, "MODEL_REQUEST_TOO_LARGE");
     const response = await this.fetcher(this.endpoint, {
       method: "POST",
       headers,
@@ -333,13 +316,13 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
       signal: request.signal,
     });
     if (!response.ok) {
-      const text = (await readTextLimited(response, request.signal, MAX_MODEL_RESPONSE_CHARS)).slice(0, 2_000);
+      const text = await readText(response, request.signal);
       throw new ModelAdapterError(`Model request failed with HTTP ${response.status}.`, { status: response.status, body: text }, "MODEL_HTTP_ERROR");
     }
 
     const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
     if (!contentType.includes("text/event-stream")) {
-      const payload = parseJson(await readTextLimited(response, request.signal, MAX_MODEL_RESPONSE_CHARS));
+      const payload = parseJson(await readText(response, request.signal));
       providerError(payload);
       const choices = payload.choices;
       if (!Array.isArray(choices) || choices.length === 0) throw new ModelAdapterError("Model response did not contain a choice.", undefined, "MODEL_PROTOCOL_ERROR");
@@ -360,7 +343,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
     let sawDone = false;
     let sawFinish = false;
     for await (const event of ssePayloads(response, request.signal)) {
-      if (event.event === "error") throw new ModelAdapterError(event.data.slice(0, 2_000) || "Model stream returned an error event.", undefined, "MODEL_SSE_ERROR");
+      if (event.event === "error") throw new ModelAdapterError(event.data || "Model stream returned an error event.", undefined, "MODEL_SSE_ERROR");
       if (event.data === "[DONE]") {
         sawDone = true;
         continue;
@@ -378,7 +361,6 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
       const deltaText = asString(delta?.content);
       if (deltaText !== undefined) {
         content += deltaText;
-        if (content.length > MAX_MODEL_OUTPUT_CHARS) throw new ModelAdapterError("Model output is too large.", undefined, "MODEL_OUTPUT_TOO_LARGE");
         yield { type: "text-delta", delta: deltaText };
       }
       if (Array.isArray(delta?.tool_calls)) {
@@ -392,7 +374,6 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
             name: `${previous.name}${asString(functionRecord?.name) ?? ""}`,
             arguments: `${previous.arguments}${asString(functionRecord?.arguments) ?? ""}`,
           });
-          if ((calls.get(index)?.arguments.length ?? 0) > MAX_MODEL_OUTPUT_CHARS) throw new ModelAdapterError("Model tool arguments are too large.", undefined, "MODEL_OUTPUT_TOO_LARGE");
         }
       }
     }

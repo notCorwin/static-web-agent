@@ -175,6 +175,7 @@ export interface ModelAdapter {
   readonly stream: (request: ModelRequest) => AsyncIterable<ModelEvent>;
 }
 
+/** Optional caller-selected quotas. The default Agent configuration uses Infinity for every field. */
 export interface AgentLimits {
   readonly maxMessages: number;
   readonly maxMessageChars: number;

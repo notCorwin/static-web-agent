@@ -101,8 +101,8 @@ test("tool registry validates arguments, enforces permission, and returns struct
   assert.equal(registry.get("test.clock"), undefined);
 });
 
-test("tool registry rejects oversized JSON output", async () => {
-  const tools = new ToolRegistry(new CapabilityManager(), { maxOutputChars: 8 });
+test("tool registry does not impose an output-size ceiling", async () => {
+  const tools = new ToolRegistry(new CapabilityManager());
   tools.register({
     name: "test.large",
     description: "Return a large value.",
@@ -110,8 +110,7 @@ test("tool registry rejects oversized JSON output", async () => {
     execute: () => ({ text: "too large" }),
   });
   const result = await tools.execute("test.large", {});
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, "TOOL_OUTPUT_TOO_LARGE");
+  assert.deepEqual(result, { ok: true, value: { text: "too large" } });
 });
 
 test("agent loops through multiple tool calls and normalizes tool errors", async () => {
@@ -168,6 +167,49 @@ test("agent termination is deterministic at max turns", async () => {
   const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "loop" }], maxTurns: 2 });
   assert.equal(result.status, "max-turns");
   assert.equal(result.turns, 2);
+});
+
+test("agent has no default turn or per-turn tool-call ceiling", async () => {
+  const tools = new ToolRegistry(new CapabilityManager());
+  tools.register({
+    name: "test.step",
+    description: "Advance the scripted run.",
+    inputSchema: { type: "object", additionalProperties: false },
+    execute: () => ({ ok: true }),
+  });
+  let turns = 0;
+  const model = {
+    id: "unbounded",
+    async *stream() {
+      turns += 1;
+      if (turns === 1) {
+        yield {
+          type: "completed",
+          message: {
+            role: "assistant",
+            content: "",
+            toolCalls: Array.from({ length: 17 }, (_, index) => ({ id: `first-${index}`, name: "test.step", arguments: {} })),
+          },
+        };
+      } else if (turns < 40) {
+        yield { type: "completed", message: { role: "assistant", content: "", toolCalls: [{ id: `step-${turns}`, name: "test.step", arguments: {} }] } };
+      } else {
+        yield { type: "completed", message: { role: "assistant", content: "done" } };
+      }
+    },
+  };
+  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "continue" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(result.turns, 40);
+  assert.equal(result.response.content, "done");
+});
+
+test("agent accepts large messages by default", async () => {
+  const model = { id: "large-message", async *stream() { yield { type: "completed", message: { role: "assistant", content: "ok" } }; } };
+  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+    messages: [{ role: "user", content: "x".repeat(120_000) }],
+  });
+  assert.equal(result.status, "completed");
 });
 
 test("agent cancellation returns a cancellable result", async () => {
@@ -231,7 +273,7 @@ test("tool timeout ends the run instead of starting another model turn", async (
   assert.equal(aborted, true);
 });
 
-test("agent enforces message and tool-call limits", async () => {
+test("agent still accepts explicit caller limits", async () => {
   const model = { id: "limit", async *stream() { yield { type: "completed", message: { role: "assistant", content: "ok" } }; } };
   const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
     messages: [{ role: "user", content: "too long" }],
@@ -370,16 +412,15 @@ test("connection settings persist as a browser-local state record", async () => 
   assert.equal(await loadConnectionSettings(state), undefined);
 });
 
-test("in-memory chat normalization caps message history without persistence", () => {
-  const messages = Array.from({ length: CHAT_LIMITS.maxMessages + 20 }, (_, index) => ({ role: "user", content: `message-${index}` }));
+test("in-memory chat normalization preserves unbounded message history", () => {
+  const messages = Array.from({ length: 220 }, (_, index) => ({ role: "user", content: `message-${index}` }));
   const normalized = normalizeMessages(messages);
-  assert.equal(normalized.length, CHAT_LIMITS.maxMessages);
-  assert.equal(normalized[0].content, "message-20");
-  assert.equal(normalized.at(-1).content, `message-${CHAT_LIMITS.maxMessages + 19}`);
-  assert.throws(
-    () => normalizeMessages([{ role: "user", content: "x".repeat(CHAT_LIMITS.maxMessageChars + 1) }]),
-    /chat message is too large/,
-  );
+  assert.equal(normalized.length, 220);
+  assert.equal(normalized[0].content, "message-0");
+  assert.equal(normalized.at(-1).content, "message-219");
+  assert.equal(CHAT_LIMITS.maxMessages, Infinity);
+  assert.equal(CHAT_LIMITS.maxMessageChars, Infinity);
+  assert.doesNotThrow(() => normalizeMessages([{ role: "user", content: "x".repeat(100_001) }]));
 });
 
 test("OpenAI-compatible adapter normalizes a provider response", async () => {
@@ -482,18 +523,23 @@ test("OpenAI-compatible adapter rejects provider errors in HTTP 200 responses", 
   );
 });
 
-test("OpenAI-compatible adapter rejects oversized requests before fetch", async () => {
+test("OpenAI-compatible adapter sends large requests without an application ceiling", async () => {
   let fetched = false;
   const adapter = new OpenAICompatibleAdapter({
     endpoint: "https://example.test/chat",
     model: "demo",
-    fetcher: async () => { fetched = true; return new Response(""); },
+    fetcher: async () => {
+      fetched = true;
+      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "accepted" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
   });
-  await assert.rejects(
-    async () => { for await (const _event of adapter.stream({ messages: [{ role: "user", content: "x".repeat(600_000) }], tools: [], signal: noSignal() })) {} },
-    (error) => error.code === "MODEL_REQUEST_TOO_LARGE",
-  );
-  assert.equal(fetched, false);
+  const events = [];
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "x".repeat(600_000) }], tools: [], signal: noSignal() })) events.push(event);
+  assert.equal(fetched, true);
+  assert.equal(events.at(-1).message.content, "accepted");
 });
 
 test("OpenAI-compatible adapter rejects empty and incomplete SSE responses", async () => {

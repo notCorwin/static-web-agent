@@ -9,7 +9,7 @@ import { createJavaScriptRuntimePlugin } from "../plugins/javascript-runtime.js"
 import { createBrowserApiPlugin } from "../plugins/browser-api.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
-import { CHAT_LIMITS, createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
+import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
 import { messageElement, renderShell, textElement, type AppElements } from "./view.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall } from "../core/types.js";
@@ -63,13 +63,7 @@ export class AgentApp {
     this.chat = createChatState();
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
     this.applyConnectionSettings(await loadConnectionSettings(this.store));
-    this.capabilities = new CapabilityManager({
-      decide: ({ pluginId, reason }) => {
-        if (pluginId === "javascript-runtime" || pluginId === "local-storage" || pluginId === "browser-api" || pluginId === "remote-model") return true;
-        if (typeof window.confirm !== "function") return false;
-        return window.confirm(`Allow “${pluginId}” to use a browser capability?\n\n${reason}`);
-      },
-    });
+    this.capabilities = new CapabilityManager({ decide: () => true });
     this.capabilities.register("runtime", { provide: () => this.runtime });
     this.capabilities.register("network", {
       provide: (): NetworkCapability => ({ fetch: globalThis.fetch.bind(globalThis) }),
@@ -86,7 +80,7 @@ export class AgentApp {
         };
       },
     });
-    this.tools = new ToolRegistry(this.capabilities, { maxInputChars: 16_000, maxOutputChars: 16_000 });
+    this.tools = new ToolRegistry(this.capabilities);
     this.plugins = new PluginManager(this.tools, this.capabilities);
     try {
       this.runtimeHandle = await this.plugins.install(createJavaScriptRuntimePlugin());
@@ -264,11 +258,6 @@ export class AgentApp {
       input.focus();
       return;
     }
-    if (rawContent.length > CHAT_LIMITS.maxMessageChars) {
-      this.notify(`Messages are limited to ${CHAT_LIMITS.maxMessageChars} characters.`, "error");
-      return;
-    }
-
     const controller = new AbortController();
     this.runController = controller;
     this.setBusy(true);
@@ -278,7 +267,7 @@ export class AgentApp {
         throw new Error("A message processor must return a user message.");
       }
       const content = processed.content.trim();
-      if (!content || content.length > CHAT_LIMITS.maxMessageChars) throw new Error("The processed message is empty or too large.");
+      if (!content) throw new Error("The processed message is empty.");
       this.chat.messages = normalizeMessages([...this.chat.messages, { role: "user", content }]);
       input.value = "";
       this.pendingText = "";
@@ -287,15 +276,6 @@ export class AgentApp {
       const result = await agent.run({
         messages: this.chat.messages,
         signal: controller.signal,
-        maxTurns: 8,
-        toolTimeoutMs: 10_000,
-        limits: {
-          maxMessages: CHAT_LIMITS.maxMessages,
-          maxMessageChars: CHAT_LIMITS.maxMessageChars,
-          maxRequestChars: CHAT_LIMITS.maxConversationChars,
-          maxToolOutputChars: 16_000,
-          maxToolCallsPerTurn: 16,
-        },
         onEvent: (event) => this.handleAgentEvent(event),
       });
       this.chat.messages = normalizeMessages(result.messages);

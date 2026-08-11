@@ -1,7 +1,6 @@
 const BUILD_VERSION_META = "meta[name=\"build-version\"]";
 const VERSION_FILE = "version.json";
 const VERSION_QUERY = "check";
-const UPDATE_CHECK_TIMEOUT_MS = 1_500;
 
 function currentBuildVersion(): string | undefined {
   const version = document.querySelector(BUILD_VERSION_META)?.getAttribute("content")?.trim();
@@ -20,15 +19,12 @@ export async function reloadIfOutdated(): Promise<boolean> {
   const localVersion = currentBuildVersion();
   if (localVersion === undefined) return false;
 
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
   try {
     const url = new URL(VERSION_FILE, window.location.href);
     url.searchParams.set(VERSION_QUERY, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
     const response = await fetch(url, {
       cache: "no-store",
       credentials: "same-origin",
-      signal: controller.signal,
     });
     if (!response.ok) return false;
     const payload: unknown = await response.json();
@@ -46,7 +42,5 @@ export async function reloadIfOutdated(): Promise<boolean> {
     return true;
   } catch {
     return false;
-  } finally {
-    window.clearTimeout(timeout);
   }
 }

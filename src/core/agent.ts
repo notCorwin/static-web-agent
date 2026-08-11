@@ -19,15 +19,12 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_AGENT_LIMITS: AgentLimits = Object.freeze({
-  maxMessages: 200,
-  maxMessageChars: 32_000,
-  maxRequestChars: 500_000,
-  maxToolOutputChars: 64_000,
-  maxToolCallsPerTurn: 16,
+  maxMessages: Number.POSITIVE_INFINITY,
+  maxMessageChars: Number.POSITIVE_INFINITY,
+  maxRequestChars: Number.POSITIVE_INFINITY,
+  maxToolOutputChars: Number.POSITIVE_INFINITY,
+  maxToolCallsPerTurn: Number.POSITIVE_INFINITY,
 });
-
-const MAX_TURNS = 32;
-const MAX_TIMEOUT_MS = 10 * 60 * 1_000;
 
 function runId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -73,10 +70,8 @@ function assertToolCall(call: ToolCall): void {
   if (
     typeof record.id !== "string" ||
     record.id.length === 0 ||
-    record.id.length > 256 ||
     typeof record.name !== "string" ||
     record.name.length === 0 ||
-    record.name.length > 128 ||
     !isJsonValue(record.arguments)
   ) {
     throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
@@ -115,9 +110,11 @@ function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits):
       for (const call of record.toolCalls) assertToolCall(call as ToolCall);
     }
   }
-  const serialized = JSON.stringify(messages) ?? "";
-  if (serialized.length > limits.maxRequestChars) {
-    throw new KernelError("REQUEST_LIMIT_EXCEEDED", `The model request exceeds the ${limits.maxRequestChars}-character limit.`);
+  if (Number.isFinite(limits.maxRequestChars)) {
+    const serialized = JSON.stringify(messages) ?? "";
+    if (serialized.length > limits.maxRequestChars) {
+      throw new KernelError("REQUEST_LIMIT_EXCEEDED", `The model request exceeds the ${limits.maxRequestChars}-character limit.`);
+    }
   }
 }
 
@@ -134,15 +131,9 @@ function assertUsage(usage: ModelUsage): void {
 }
 
 function validateLimits(input: AgentLimits): void {
-  const ceilings: AgentLimits = {
-    maxMessages: 2_000,
-    maxMessageChars: 100_000,
-    maxRequestChars: 1_000_000,
-    maxToolOutputChars: 100_000,
-    maxToolCallsPerTurn: 64,
-  };
   for (const [name, value] of Object.entries(input) as Array<[keyof AgentLimits, number]>) {
-    if (!Number.isInteger(value) || value < 1 || value > ceilings[name]) throw new Error(`${name} must be an integer between 1 and ${ceilings[name]}.`);
+    if (value === Number.POSITIVE_INFINITY) continue;
+    if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer or Infinity.`);
   }
 }
 
@@ -150,7 +141,7 @@ async function executeWithTimeout(
   registry: ToolRegistry,
   call: ToolCall,
   parentSignal: AbortSignal,
-  timeoutMs: number,
+  timeoutMs: number | undefined,
 ): Promise<ToolExecutionResult> {
   throwIfAborted(parentSignal);
   const controller = new AbortController();
@@ -158,17 +149,11 @@ async function executeWithTimeout(
   parentSignal.addEventListener("abort", relayAbort, { once: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onParentAbort: (() => void) | undefined;
-  let timedOut = false;
   const execution = registry.execute(call.name, call.arguments, { signal: controller.signal }).catch((error) => {
     const info = errorInfo(error, "TOOL_ERROR");
     return { ok: false, error: info } as ToolExecutionResult;
   });
-  const timeout = new Promise<ToolExecutionResult>((resolve, reject) => {
-    timer = setTimeout(() => {
-      timedOut = true;
-      controller.abort(new KernelError("TOOL_TIMEOUT", "Tool execution timed out."));
-      resolve(errorResult("TOOL_TIMEOUT", `Tool execution exceeded ${timeoutMs} ms.`));
-    }, timeoutMs);
+  const abort = new Promise<never>((_, reject) => {
     onParentAbort = () => {
       const error = new Error("Operation cancelled.");
       error.name = "AbortError";
@@ -176,11 +161,19 @@ async function executeWithTimeout(
     };
     parentSignal.addEventListener("abort", onParentAbort, { once: true });
   });
+  const timeout = timeoutMs === undefined || timeoutMs === Number.POSITIVE_INFINITY
+    ? undefined
+    : new Promise<ToolExecutionResult>((resolve) => {
+        timer = setTimeout(() => {
+          controller.abort(new KernelError("TOOL_TIMEOUT", "Tool execution timed out."));
+          resolve(errorResult("TOOL_TIMEOUT", `Tool execution exceeded ${timeoutMs} ms.`));
+        }, timeoutMs);
+      });
 
   try {
-    const result = await Promise.race([execution, timeout]);
-    if (timedOut) return errorResult("TOOL_TIMEOUT", `Tool execution exceeded ${timeoutMs} ms.`);
-    return result;
+    const races: Array<Promise<ToolExecutionResult>> = [execution, abort as Promise<ToolExecutionResult>];
+    if (timeout !== undefined) races.push(timeout);
+    return await Promise.race(races);
   } finally {
     parentSignal.removeEventListener("abort", relayAbort);
     if (onParentAbort !== undefined) parentSignal.removeEventListener("abort", onParentAbort);
@@ -204,13 +197,13 @@ export class Agent {
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     const id = runId();
     const signal = request.signal ?? new AbortController().signal;
-    const maxTurns = request.maxTurns ?? 8;
-    const modelTimeoutMs = request.modelTimeoutMs ?? 120_000;
-    const toolTimeoutMs = request.toolTimeoutMs ?? 15_000;
+    const maxTurns = request.maxTurns;
+    const modelTimeoutMs = request.modelTimeoutMs;
+    const toolTimeoutMs = request.toolTimeoutMs;
     const limits: AgentLimits = { ...DEFAULT_AGENT_LIMITS, ...(request.limits ?? {}) };
-    if (!Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS) throw new Error(`maxTurns must be an integer between 1 and ${MAX_TURNS}.`);
-    if (!Number.isFinite(modelTimeoutMs) || modelTimeoutMs < 1 || modelTimeoutMs > MAX_TIMEOUT_MS) throw new Error(`modelTimeoutMs must be between 1 and ${MAX_TIMEOUT_MS} ms.`);
-    if (!Number.isFinite(toolTimeoutMs) || toolTimeoutMs < 1 || toolTimeoutMs > MAX_TIMEOUT_MS) throw new Error(`toolTimeoutMs must be between 1 and ${MAX_TIMEOUT_MS} ms.`);
+    if (maxTurns !== undefined && maxTurns !== Number.POSITIVE_INFINITY && (!Number.isInteger(maxTurns) || maxTurns < 1)) throw new Error("maxTurns must be a positive integer or Infinity.");
+    if (modelTimeoutMs !== undefined && modelTimeoutMs !== Number.POSITIVE_INFINITY && (!Number.isFinite(modelTimeoutMs) || modelTimeoutMs < 1)) throw new Error("modelTimeoutMs must be positive or Infinity.");
+    if (toolTimeoutMs !== undefined && toolTimeoutMs !== Number.POSITIVE_INFINITY && (!Number.isFinite(toolTimeoutMs) || toolTimeoutMs < 1)) throw new Error("toolTimeoutMs must be positive or Infinity.");
     validateLimits(limits);
 
     const messages: ModelMessage[] = [];
@@ -264,9 +257,6 @@ export class Agent {
       let sawCompleted = false;
 
       const descriptors = this.tools.descriptors();
-      if ((JSON.stringify({ messages, tools: descriptors }) ?? "").length > limits.maxRequestChars) {
-        return fail({ code: "REQUEST_LIMIT_EXCEEDED", message: `The model request exceeds the ${limits.maxRequestChars}-character limit.` });
-      }
       const modelController = new AbortController();
       const relayModelAbort = () => modelController.abort(signal.reason);
       signal.addEventListener("abort", relayModelAbort, { once: true });
@@ -306,13 +296,7 @@ export class Agent {
             if (currentIterator.return !== undefined) await currentIterator.return();
           }
         })();
-        const timeout = new Promise<never>((_, reject) => {
-          modelTimer = setTimeout(() => {
-            timedOut = true;
-            modelController.abort(new KernelError("MODEL_TIMEOUT", "Model request timed out."));
-            void iterator?.return?.();
-            reject(new KernelError("MODEL_TIMEOUT", `Model request exceeded ${modelTimeoutMs} ms.`));
-          }, modelTimeoutMs);
+        const abort = new Promise<never>((_, reject) => {
           onModelParentAbort = () => {
             const error = new Error("Operation cancelled.");
             error.name = "AbortError";
@@ -320,7 +304,19 @@ export class Agent {
           };
           signal.addEventListener("abort", onModelParentAbort, { once: true });
         });
-        await Promise.race([consume, timeout]);
+        const timeout = modelTimeoutMs === undefined || modelTimeoutMs === Number.POSITIVE_INFINITY
+          ? undefined
+          : new Promise<never>((_, reject) => {
+              modelTimer = setTimeout(() => {
+                timedOut = true;
+                modelController.abort(new KernelError("MODEL_TIMEOUT", "Model request timed out."));
+                void iterator?.return?.();
+                reject(new KernelError("MODEL_TIMEOUT", `Model request exceeded ${modelTimeoutMs} ms.`));
+              }, modelTimeoutMs);
+            });
+        const races: Array<Promise<unknown>> = [consume, abort];
+        if (timeout !== undefined) races.push(timeout);
+        await Promise.race(races);
       } catch (error) {
         if (timedOut) return fail(errorInfo(error, "MODEL_TIMEOUT"));
         if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
@@ -355,16 +351,13 @@ export class Agent {
       this.emit(request.onEvent, { type: "assistant-message", message: assistant });
 
       if (calls.length === 0) return finish({ status: "completed", response: assistant });
-      if (turns >= maxTurns) return finish({ status: "max-turns", response: assistant });
+      if (maxTurns !== undefined && turns >= maxTurns) return finish({ status: "max-turns", response: assistant });
 
       for (const call of calls) {
         try {
           throwIfAborted(signal);
           this.emit(request.onEvent, { type: "tool-started", call });
-          let result = await executeWithTimeout(this.tools, call, signal, toolTimeoutMs);
-          if (result.ok && (JSON.stringify(result.value) ?? "").length > limits.maxToolOutputChars) {
-            result = errorResult("TOOL_OUTPUT_TOO_LARGE", `Tool output exceeds the ${limits.maxToolOutputChars}-character limit.`);
-          }
+          const result = await executeWithTimeout(this.tools, call, signal, toolTimeoutMs);
           this.emit(request.onEvent, { type: "tool-finished", call, result });
           const toolMessage: ToolMessage = result.ok
             ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value) }
