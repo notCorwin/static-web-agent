@@ -136,7 +136,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   overflow: auto;
   overscroll-behavior: contain;
 }
-.conversation-content { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 14px; }
+.conversation-content { display: flex; min-height: 100%; flex: 0 0 auto; flex-direction: column; gap: 14px; }
 .empty-state { max-width: 560px; margin: auto; padding: 30px 8px; text-align: center; }
 .empty-state .empty-icon { display: grid; width: 46px; height: 46px; margin: 0 auto 14px; place-items: center; border: 1px solid rgb(0 0 0 / 24%); border-radius: 14px; background: rgb(0 0 0 / 5%); color: var(--accent); font-size: 21px; }
 .empty-state h2 { margin: 0; font-size: 22px; letter-spacing: -.03em; }
@@ -148,7 +148,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .loading-line-short { width: 48%; }
 .loading-label { color: var(--muted); font-size: 12px; }
 @keyframes loading-pulse { 50% { opacity: .48; } }
-.message { display: grid; gap: 7px; max-width: min(760px, 92%); min-width: 0; content-visibility: auto; contain-intrinsic-size: 0 100px; }
+.message { display: grid; gap: 7px; max-width: min(760px, 92%); min-width: 0; }
 .message.user { align-self: end; }
 .message.assistant, .message.tool { align-self: start; }
 .message-header { display: flex; align-items: center; gap: 8px; color: var(--faint); font-size: 11px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }

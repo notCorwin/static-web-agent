@@ -43,8 +43,29 @@ async function startStaticServer() {
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
-      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-hang") {
+      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-scroll" || pathname === "/test-hang") {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+        if (pathname === "/test-scroll") {
+          const chunks = [
+            Array.from({ length: 32 }, (_, index) => `Scroll line ${index + 1}`).join("\n") + "\n",
+            ...Array.from({ length: 20 }, (_, index) => `stream chunk ${index + 1}\n`),
+            "The stream finished.\n",
+          ];
+          let index = 0;
+          const sendChunk = () => {
+            if (response.destroyed) return;
+            if (index < chunks.length) {
+              response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[index] } }] })}\n\n`);
+              index += 1;
+              setTimeout(sendChunk, 35);
+              return;
+            }
+            response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+            response.end("data: [DONE]\n\n");
+          };
+          sendChunk();
+          return;
+        }
         const content = pathname === "/test-rich"
           ? [
             "# Rich response",
@@ -261,6 +282,20 @@ try {
       return true;
     };
   })()`);
+  const keyboardBehavior = await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'first';
+    input.setSelectionRange(input.value.length, input.value.length);
+    const sendEvent = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    const sendDispatch = input.dispatchEvent(sendEvent);
+    const valueAfterSend = input.value;
+    input.value = 'first';
+    input.setSelectionRange(input.value.length, input.value.length);
+    const newlineEvent = new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true });
+    const newlineDispatch = input.dispatchEvent(newlineEvent);
+    return { sendDispatch, valueAfterSend, newlineDispatch, valueAfterNewline: input.value };
+  })()`);
+  assert.deepEqual(keyboardBehavior, { sendDispatch: false, valueAfterSend: "first", newlineDispatch: false, valueAfterNewline: "first\n" });
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'message before connecting';
@@ -300,7 +335,8 @@ try {
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'remote request';
-    document.querySelector('#composer-form').requestSubmit();
+    input.focus();
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   })()`);
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'sse'");
   const messageStyles = await page.evaluate("(() => { const assistant = document.querySelector('.message.assistant .message-body'); const user = document.querySelector('.message.user .message-body'); const assistantStyle = getComputedStyle(assistant); const userStyle = getComputedStyle(user); return { assistantBorder: assistantStyle.borderTopWidth, assistantBackground: assistantStyle.backgroundColor, assistantPadding: assistantStyle.padding, userBorder: userStyle.borderTopWidth, userPadding: userStyle.padding }; })()");
@@ -332,6 +368,30 @@ try {
   await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
   await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Send'");
+
+  await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = location.origin + '/test-scroll';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'scroll request';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('.message.assistant.pending .message-body')?.textContent.includes('Scroll line 32')", 20_000);
+  const midStreamScroll = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    return { overflow: chat.scrollHeight > chat.clientHeight, distance: chat.scrollHeight - chat.scrollTop - chat.clientHeight };
+  })()`);
+  assert.equal(midStreamScroll.overflow, true);
+  assert.ok(midStreamScroll.distance <= 2, "the conversation should follow the bottom while the model streams");
+  await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.includes('The stream finished') && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
+  const finishedStreamScroll = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    return chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+  })()`);
+  assert.ok(finishedStreamScroll <= 2, "the conversation should remain at the bottom after streaming");
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-tool';

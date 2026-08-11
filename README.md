@@ -33,7 +33,7 @@ Provider failures, HTTP errors, empty responses, malformed tool arguments, malfo
 
 ## Message rendering
 
-User and assistant messages render locally with GitHub-flavored Markdown, fenced code blocks, KaTeX math (`$...$`, `\(...\)`, `$$...$$`, and `\[...\]`), and Mermaid fenced flowcharts. Markdown is sanitized before it reaches the DOM, Mermaid runs with strict security settings, and an invalid diagram falls back to its source text. Tool results are collapsed by default; click a tool name to inspect its result or error without adding tool traces to the conversation as ordinary assistant messages.
+User and assistant messages render locally with GitHub-flavored Markdown, fenced code blocks, KaTeX math (`$...$`, `\(...\)`, `$$...$$`, and `\[...\]`), and Mermaid fenced flowcharts. Markdown is sanitized before it reaches the DOM, Mermaid runs with strict security settings, and an invalid diagram falls back to its source text. Tool results are collapsed by default; click a tool name to inspect its result or error without adding tool traces to the conversation as ordinary assistant messages. Press Enter to send; press Cmd/Ctrl+Enter to insert a newline. While a run is producing output, the conversation follows the bottom unless you scroll upward manually.
 
 ## Runtime architecture
 

@@ -77,6 +77,12 @@ export class AgentApp {
   private pendingText = "";
   private pendingTool: ToolCall | undefined;
   private chatRenderScheduled = false;
+  private chatScrollScheduled = false;
+  private followChat = true;
+  private chatObserver: MutationObserver | undefined;
+  private renderedMessages: readonly ModelMessage[] | undefined;
+  private renderedAgent: Agent | undefined;
+  private renderedConnectionEditing = false;
   private connectionEditing = false;
   private autoConnectStarted = false;
   private readonly elements: AppElements;
@@ -146,6 +152,13 @@ export class AgentApp {
 
   async stop(): Promise<void> {
     this.runController?.abort();
+    this.chatObserver?.disconnect();
+    this.chatObserver = undefined;
+    this.chatScrollScheduled = false;
+    this.followChat = true;
+    this.renderedMessages = undefined;
+    this.renderedAgent = undefined;
+    this.renderedConnectionEditing = false;
     this.uiCleanup?.();
     this.uiCleanup = undefined;
     if (this.remoteHandle !== undefined) await this.remoteHandle.uninstall();
@@ -168,13 +181,26 @@ export class AgentApp {
       }
       void this.sendMessage();
     });
-    this.elements["message-input"]?.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-        event.preventDefault();
-        if (this.busy) this.runController?.abort();
-        else void this.sendMessage();
-      }
+    const messageInput = this.elements["message-input"] as HTMLTextAreaElement | undefined;
+    messageInput?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.isComposing) return;
+      event.preventDefault();
+      if (event.metaKey || event.ctrlKey) {
+        const start = messageInput.selectionStart;
+        const end = messageInput.selectionEnd;
+        messageInput.setRangeText("\n", start, end, "end");
+        messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+      } else if (this.busy) this.runController?.abort();
+      else void this.sendMessage();
     });
+    const chat = this.elements["chat-log"];
+    chat?.addEventListener("scroll", () => this.updateChatFollowState(), { passive: true });
+    if (chat !== undefined && typeof MutationObserver === "function") {
+      this.chatObserver = new MutationObserver(() => {
+        if (this.followChat && this.busy) this.scheduleChatScroll();
+      });
+      this.chatObserver.observe(chat, { childList: true, subtree: true, characterData: true });
+    }
     this.elements["connection-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.connectRemote(event.currentTarget as HTMLFormElement);
@@ -285,6 +311,8 @@ export class AgentApp {
     }
     const controller = new AbortController();
     this.runController = controller;
+    this.followChat = true;
+    this.chatRenderScheduled = false;
     this.setBusy(true);
     try {
       const processed = await this.plugins.process({ role: "user", content: rawContent }, controller.signal);
@@ -386,7 +414,7 @@ export class AgentApp {
       this.chatRenderScheduled = false;
       if (this.ready) this.renderChat();
     };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(render);
+    if (typeof queueMicrotask === "function") queueMicrotask(render);
     else setTimeout(render, 0);
   }
 
@@ -396,44 +424,83 @@ export class AgentApp {
     const connectionCard = this.elements["connection-card"];
     if (chat === undefined || conversation === undefined || connectionCard === undefined) return;
     const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
+    if (nearBottom) this.followChat = true;
     chat.setAttribute("aria-busy", String(this.busy));
     connectionCard.hidden = this.agent !== undefined && !this.connectionEditing;
-    conversation.replaceChildren();
-    if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
-      if (this.agent !== undefined) {
-        const welcome = document.createElement("div");
-        welcome.className = "empty-state";
-        const icon = textElement("div", "✦", "empty-icon");
-        icon.setAttribute("aria-hidden", "true");
-        welcome.append(icon, textElement("h2", "Welcome"), textElement("p", "Your cloud model is connected. Ask anything to begin."));
-        const change = document.createElement("button");
-        change.className = "secondary-button";
-        change.type = "button";
-        change.textContent = "Change connection";
-        change.addEventListener("click", () => {
-          this.connectionEditing = true;
-          this.renderChat();
-          queueMicrotask(() => this.element<HTMLInputElement>("model-endpoint").focus());
-        });
-        welcome.append(change);
-        conversation.append(welcome);
+    const fullRender = this.renderedMessages !== this.chat.messages
+      || this.renderedAgent !== this.agent
+      || this.renderedConnectionEditing !== this.connectionEditing;
+    if (fullRender) {
+      conversation.replaceChildren();
+      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
+        if (this.agent !== undefined) {
+          const welcome = document.createElement("div");
+          welcome.className = "empty-state";
+          const icon = textElement("div", "✦", "empty-icon");
+          icon.setAttribute("aria-hidden", "true");
+          welcome.append(icon, textElement("h2", "Welcome"), textElement("p", "Your cloud model is connected. Ask anything to begin."));
+          const change = document.createElement("button");
+          change.className = "secondary-button";
+          change.type = "button";
+          change.textContent = "Change connection";
+          change.addEventListener("click", () => {
+            this.connectionEditing = true;
+            this.renderChat();
+            queueMicrotask(() => this.element<HTMLInputElement>("model-endpoint").focus());
+          });
+          welcome.append(change);
+          conversation.append(welcome);
+        }
+      } else {
+        for (const message of this.chat.messages) {
+          const element = messageElement(message);
+          if (element !== null) conversation.append(element);
+        }
+        this.appendPendingMessages(conversation);
       }
+      this.renderedMessages = this.chat.messages;
+      this.renderedAgent = this.agent;
+      this.renderedConnectionEditing = this.connectionEditing;
     } else {
-      for (const message of this.chat.messages) {
-        const element = messageElement(message);
-        if (element !== null) conversation.append(element);
-      }
-      if (this.pendingText.length > 0) {
-        const element = messageElement({ role: "assistant", content: this.pendingText }, true);
-        if (element !== null) conversation.append(element);
-      }
-      if (this.pendingTool !== undefined) {
-        const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
-        const element = messageElement(toolMessage, true);
-        if (element !== null) conversation.append(element);
-      }
+      for (const pending of conversation.querySelectorAll<HTMLElement>(".pending")) pending.remove();
+      this.appendPendingMessages(conversation);
     }
-    if (nearBottom || this.chat.messages.length === 0) chat.scrollTop = chat.scrollHeight;
+    if (this.followChat || this.chat.messages.length === 0) this.scrollChatToBottom();
+  }
+
+  private appendPendingMessages(conversation: HTMLElement): void {
+    if (this.pendingText.length > 0) {
+      const element = messageElement({ role: "assistant", content: this.pendingText }, true);
+      if (element !== null) conversation.append(element);
+    }
+    if (this.pendingTool !== undefined) {
+      const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
+      const element = messageElement(toolMessage, true);
+      if (element !== null) conversation.append(element);
+    }
+  }
+
+  private updateChatFollowState(): void {
+    const chat = this.elements["chat-log"];
+    if (chat === undefined) return;
+    this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
+  }
+
+  private scrollChatToBottom(): void {
+    const chat = this.elements["chat-log"];
+    if (chat === undefined) return;
+    chat.scrollTop = chat.scrollHeight;
+  }
+
+  private scheduleChatScroll(): void {
+    if (this.chatScrollScheduled || !this.followChat) return;
+    this.chatScrollScheduled = true;
+    const scroll = () => {
+      this.chatScrollScheduled = false;
+      if (this.followChat) this.scrollChatToBottom();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(scroll);
+    else setTimeout(scroll, 0);
   }
 
   private renderExtensions(): void {
