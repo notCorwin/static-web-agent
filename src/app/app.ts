@@ -9,6 +9,7 @@ import { createLocalModelPlugin } from "../plugins/local-model.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { CHAT_LIMITS, createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
+import { loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
 import { messageElement, renderShell, textElement, type AppElements } from "./view.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/openai-compatible.js";
@@ -16,12 +17,6 @@ import type { StateStore } from "../core/types.js";
 
 interface NetworkCapability {
   readonly fetch: BrowserFetcher;
-}
-
-interface ConnectionValues {
-  readonly endpoint: string;
-  readonly model: string;
-  readonly apiKey: string;
 }
 
 export interface AgentAppOptions {
@@ -66,6 +61,7 @@ export class AgentApp {
     this.bindEvents();
     this.chat = createChatState();
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
+    this.applyConnectionSettings(await loadConnectionSettings(this.store));
     this.capabilities = new CapabilityManager({
       decide: ({ pluginId, name, reason }) => {
         if (typeof window.confirm !== "function") return false;
@@ -182,6 +178,16 @@ export class AgentApp {
     if (details !== undefined) details.open = new URL(window.location.href).searchParams.get("connect") === "1";
   }
 
+  private applyConnectionSettings(settings: ConnectionSettings | undefined): void {
+    if (settings === undefined) return;
+    const endpoint = this.elements["model-endpoint"] as HTMLInputElement | undefined;
+    const model = this.elements["model-name"] as HTMLInputElement | undefined;
+    const apiKey = this.elements["model-key"] as HTMLInputElement | undefined;
+    if (endpoint !== undefined) endpoint.value = settings.endpoint;
+    if (model !== undefined) model.value = settings.model;
+    if (apiKey !== undefined) apiKey.value = settings.apiKey;
+  }
+
   private clearFieldError(fieldId: string): void {
     const input = this.elements[fieldId] as HTMLInputElement | undefined;
     const error = this.elements[`${fieldId === "model-endpoint" ? "endpoint" : "model"}-error`] as HTMLElement | undefined;
@@ -198,7 +204,7 @@ export class AgentApp {
     error.textContent = message;
   }
 
-  private connectionValues(form: HTMLFormElement): ConnectionValues | undefined {
+  private connectionValues(form: HTMLFormElement): ConnectionSettings | undefined {
     this.clearFieldError("model-endpoint");
     this.clearFieldError("model-name");
     const data = new FormData(form);
@@ -492,7 +498,8 @@ export class AgentApp {
       this.remoteHandle = handle;
       this.agent.setModel(adapter);
       this.activeModelLabel = `Remote · ${values.model}`;
-      this.element("connection-status").textContent = "Remote model selected. The first message will verify the endpoint; the key remains in memory only.";
+      await saveConnectionSettings(this.store, values);
+      this.element("connection-status").textContent = "Remote model selected. Connection settings saved in this browser.";
       this.renderHeader();
       this.notify("Remote model selected.", "success");
     } catch (error) {

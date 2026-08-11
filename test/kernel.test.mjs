@@ -4,6 +4,7 @@ import {
   Agent,
   CapabilityManager,
   CHAT_LIMITS,
+  CONNECTION_SETTINGS_KEY,
   LocalModelAdapter,
   MemoryStateStore,
   OpenAICompatibleAdapter,
@@ -13,7 +14,9 @@ import {
   ToolRegistry,
   createBrowserStateStore,
   createRemoteModelPlugin,
+  loadConnectionSettings,
   normalizeMessages,
+  saveConnectionSettings,
   validate,
 } from "../dist/index.js";
 
@@ -355,6 +358,17 @@ test("browser state falls back to memory when IndexedDB opening fails", async ()
   assert.equal(store.kind, "memory");
   assert.deepEqual(await store.get("draft"), { text: "kept" });
   assert.ok(store instanceof ResilientStateStore);
+});
+
+test("connection settings persist as a browser-local state record", async () => {
+  const state = new MemoryStateStore();
+  const settings = { endpoint: "https://example.test/v1/chat/completions", model: "demo", apiKey: "secret" };
+  await saveConnectionSettings(state, settings);
+  assert.deepEqual(await loadConnectionSettings(state), settings);
+  assert.deepEqual(await state.get(CONNECTION_SETTINGS_KEY), settings);
+
+  await state.set(CONNECTION_SETTINGS_KEY, { endpoint: settings.endpoint, model: settings.model, apiKey: 42 });
+  assert.equal(await loadConnectionSettings(state), undefined);
 });
 
 test("in-memory chat normalization caps message history without persistence", () => {

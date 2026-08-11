@@ -51,13 +51,13 @@ export function renderShell(root: HTMLElement): AppElements {
               <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
             </div>
             <div class="field">
-              <label for="model-key">API key <span class="faint">(not saved)</span></label>
+              <label for="model-key">API key <span class="faint">(saved locally)</span></label>
               <input id="model-key" name="apiKey" type="password" autocomplete="new-password" aria-describedby="key-help" placeholder="Paste a key…" />
-              <p class="field-help" id="key-help">Accepted by the endpoint, never saved here.</p>
+              <p class="field-help" id="key-help">Stored only in this browser's local storage.</p>
             </div>
             <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Use remote</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
             <button class="secondary-button" id="use-local" type="button">Use offline</button>
-            <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; the API key is never persisted.</p>
+            <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
             <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </form>
         </details>

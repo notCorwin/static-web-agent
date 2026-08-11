@@ -16,3 +16,4 @@ export * from "./plugins/remote-model.js";
 export * from "./plugins/storage.js";
 export * from "./app/app.js";
 export * from "./app/chat.js";
+export * from "./app/connection-settings.js";

@@ -233,6 +233,7 @@ try {
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-sse';
     document.querySelector('#model-name').value = 'browser-test';
+    document.querySelector('#model-key').value = 'browser-test-key';
     document.querySelector('#connection-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
@@ -255,6 +256,16 @@ try {
   await waitFor(page, "document.querySelector('#cancel-button')?.hidden === false");
   await page.evaluate("document.querySelector('#cancel-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
+
+  await page.send("Page.reload", { ignoreCache: true });
+  await waitFor(page, "document.querySelector('#runtime-action') !== null && document.querySelector('#runtime-action')?.disabled === false && document.querySelector('.empty-state') !== null && !document.querySelector('.loading-state')");
+  const savedConnection = await page.evaluate(`({
+    endpoint: document.querySelector('#model-endpoint')?.value,
+    model: document.querySelector('#model-name')?.value,
+    apiKey: document.querySelector('#model-key')?.value,
+  })`);
+  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-hang`, model: "browser-test", apiKey: "browser-test-key" });
+  await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {
     const { Agent, AgentApp, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, OpenAICompatibleAdapter, PluginManager, ToolRegistry } = await import('/dist/index.js');

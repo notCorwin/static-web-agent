@@ -32,7 +32,7 @@ It does not pretend to answer open-ended questions. Connect a remote model for g
 
 ## Remote models
 
-The connection panel installs a model plugin for the current tab. It accepts an OpenAI-compatible chat-completions endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. The first message verifies the endpoint; selecting the model itself does not make a network request. API keys remain in memory and are never stored in IndexedDB.
+The connection panel installs a model plugin for the current tab. It accepts an OpenAI-compatible chat-completions endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. The first message verifies the endpoint; selecting the model itself does not make a network request. After a successful selection, the endpoint, model, and API key are saved in this browser's local IndexedDB and restored into the connection form on the next visit. The key is not sent anywhere except the configured endpoint; treat it as sensitive data because same-origin page code can read browser storage.
 
 Provider failures, HTTP errors, empty responses, malformed tool arguments, malformed SSE, incomplete SSE streams, cancellation, and request timeouts are returned as structured model errors.
 
