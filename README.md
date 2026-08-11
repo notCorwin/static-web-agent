@@ -13,6 +13,14 @@ Serve the repository root (or `dist/`) from a static HTTP server and open `index
 
 The page starts with an offline echo adapter. The **Connect a model adapter** panel accepts any OpenAI-compatible streaming endpoint. Requests are made directly from the browser and therefore require CORS support. API keys are kept in memory for the current tab and are never written to IndexedDB.
 
+## GitHub Pages
+
+Every push to `master` runs `.github/workflows/deploy-pages.yml`, builds `dist/`, runs the tests, and publishes the artifact with GitHub Pages. For this repository the site URL is:
+
+<https://notcorwin.github.io/static-web-agent/>
+
+If Pages has not been enabled yet, open **Settings → Pages** in GitHub and select **GitHub Actions** as the source once; subsequent pushes deploy automatically. The artifact uses relative asset paths, so it also works under the repository subpath.
+
 ## Architecture
 
 The dependency direction is:
