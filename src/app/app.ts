@@ -31,6 +31,23 @@ interface BrowserPasswordCredentialData {
   readonly password?: unknown;
 }
 
+interface BrowserConnectionCredential {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly apiKey: string;
+}
+
+function browserEndpoint(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const endpoint = value.trim();
+  try {
+    const url = new URL(endpoint);
+    return url.protocol === "http:" || url.protocol === "https:" ? endpoint : "";
+  } catch {
+    return "";
+  }
+}
+
 export interface AgentAppOptions {
   readonly plugins?: readonly Plugin[];
   readonly initialModelId?: string;
@@ -458,8 +475,15 @@ export class AgentApp {
     this.autoConnectStarted = true;
     const credentialSettings = await this.readBrowserCredential();
     if (!this.ready || this.agent !== undefined) return;
-    const settings = credentialSettings ?? savedSettings;
+    const settings = credentialSettings === undefined
+      ? savedSettings
+      : {
+        endpoint: savedSettings?.endpoint || credentialSettings.endpoint,
+        model: credentialSettings.model || savedSettings?.model || "",
+        apiKey: credentialSettings.apiKey || savedSettings?.apiKey || "",
+      };
     if (settings === undefined) return;
+    if (!settings.endpoint || !settings.model) return;
     this.applyConnectionSettings(settings);
     const form = this.elements["connection-form"];
     if (!(form instanceof HTMLFormElement)) return;
@@ -479,7 +503,7 @@ export class AgentApp {
     return manager;
   }
 
-  private async readBrowserCredential(): Promise<ConnectionSettings | undefined> {
+  private async readBrowserCredential(): Promise<BrowserConnectionCredential | undefined> {
     const credentials = this.browserCredentialManager();
     const get = credentials?.get;
     if (credentials === undefined || get === undefined) return undefined;
@@ -487,18 +511,21 @@ export class AgentApp {
       const value = await get.call(credentials, { password: true, mediation: "silent" });
       if (typeof value !== "object" || value === null) return undefined;
       const data = value as BrowserPasswordCredentialData;
-      const endpoint = typeof data.id === "string" ? data.id.trim() : "";
-      const model = typeof data.name === "string" ? data.name.trim() : "";
+      const id = typeof data.id === "string" ? data.id.trim() : "";
+      const name = typeof data.name === "string" ? data.name.trim() : "";
       const apiKey = typeof data.password === "string" ? data.password : "";
-      if (endpoint && model && apiKey) return { endpoint, model, apiKey };
-      if (typeof data.id === "string") {
+      const endpoint = browserEndpoint(name);
+      if (id) {
         try {
-          const parsed: unknown = JSON.parse(data.id);
+          const parsed: unknown = JSON.parse(id);
           if (isConnectionSettings(parsed) && parsed.endpoint && parsed.model && parsed.apiKey) return parsed;
         } catch {
-          // The browser did not return a credential with the expected shape.
+          // The browser credential is not using the legacy serialized shape.
         }
       }
+      if (id && apiKey && !browserEndpoint(id)) return { endpoint, model: id, apiKey };
+      const legacyEndpoint = browserEndpoint(id);
+      if (legacyEndpoint && name && apiKey) return { endpoint: legacyEndpoint, model: name, apiKey };
     } catch {
       // Credential Management is optional and may be unavailable in this context.
     }
@@ -514,9 +541,9 @@ export class AgentApp {
     }).PasswordCredential;
     if (credentials === undefined || store === undefined || PasswordCredential === undefined) return;
     try {
-      const credential = new PasswordCredential({ id: settings.endpoint, name: settings.model, password: settings.apiKey });
+      const credential = new PasswordCredential({ id: settings.model, name: settings.endpoint, password: settings.apiKey });
       await store.call(credentials, credential);
-      this.element("credential-status").textContent = "Saved to this browser's password manager and local settings.";
+      this.element("credential-status").textContent = "Saved with the model name as the password-manager username; endpoint saved locally.";
     } catch {
       // A password manager may reject programmatic storage; local settings remain available.
     }

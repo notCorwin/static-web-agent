@@ -212,12 +212,22 @@ try {
   const connectionLayout = await page.evaluate(`(() => {
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
     const buttonTop = document.querySelector('#connection-form > .primary-button').getBoundingClientRect().top;
-    return { inputTops, buttonTop, composerHeight: document.querySelector('#message-input').getBoundingClientRect().height, modelAutocomplete: document.querySelector('#model-name').autocomplete, keyAutocomplete: document.querySelector('#model-key').autocomplete };
+    return {
+      inputTops,
+      buttonTop,
+      composerHeight: document.querySelector('#message-input').getBoundingClientRect().height,
+      modelAutocomplete: document.querySelector('#model-name').autocomplete,
+      keyAutocomplete: document.querySelector('#model-key').autocomplete,
+      modelLabel: document.querySelector('label[for="model-name"]').textContent,
+      endpointLabel: document.querySelector('label[for="model-endpoint"]').textContent,
+    };
   })()`);
   assert.ok(Math.abs(connectionLayout.inputTops[1] - connectionLayout.inputTops[2]) <= 1, "model and API key inputs should share a top alignment");
   assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[1]) <= 2, "connection button should align with the model fields");
   assert.equal(connectionLayout.modelAutocomplete, "username");
   assert.equal(connectionLayout.keyAutocomplete, "current-password");
+  assert.ok(connectionLayout.modelLabel.includes("password-manager username"), "the model name should be presented as the password-manager username");
+  assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
   assert.ok(connectionLayout.composerHeight <= 66, "the message composer should stay compact");
 
   await page.evaluate(`(() => {
