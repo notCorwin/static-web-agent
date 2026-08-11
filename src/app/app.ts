@@ -11,8 +11,8 @@ import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { isConnectionSettings, loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
-import { messageElement, renderShell, textElement, type AppElements } from "./view.js";
-import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall } from "../core/types.js";
+import { messageElement, messageElements, renderShell, streamingToolElement, textElement, toolGroupElement, type AppElements } from "./view.js";
+import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/openai-compatible.js";
 import type { StateStore } from "../core/types.js";
 
@@ -76,6 +76,7 @@ export class AgentApp {
   private runController: AbortController | undefined;
   private pendingText = "";
   private pendingTool: ToolCall | undefined;
+  private pendingToolCalls: readonly ToolCallDelta[] = [];
   private chatRenderScheduled = false;
   private chatScrollScheduled = false;
   private followChat = true;
@@ -156,6 +157,7 @@ export class AgentApp {
     this.chatObserver = undefined;
     this.chatScrollScheduled = false;
     this.followChat = true;
+    this.pendingToolCalls = [];
     this.renderedMessages = undefined;
     this.renderedAgent = undefined;
     this.renderedConnectionEditing = false;
@@ -195,6 +197,26 @@ export class AgentApp {
     });
     const chat = this.elements["chat-log"];
     chat?.addEventListener("scroll", () => this.updateChatFollowState(), { passive: true });
+    this.elements["scroll-bottom-button"]?.addEventListener("click", () => {
+      this.followChat = true;
+      this.scrollChatToBottom();
+      this.updateScrollButton();
+    });
+    this.elements["conversation-content"]?.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const button = target.closest<HTMLButtonElement>("button[data-action]");
+      if (button === null) return;
+      const index = Number.parseInt(button.dataset.messageIndex ?? "", 10);
+      if (!Number.isInteger(index)) return;
+      if (button.dataset.action === "edit-message") this.startMessageEdit(index);
+      else if (button.dataset.action === "cancel-edit") this.cancelMessageEdit();
+      else if (button.dataset.action === "save-edit") {
+        const editor = button.closest<HTMLElement>(".message-edit");
+        const input = editor?.querySelector<HTMLTextAreaElement>("textarea");
+        if (input !== null && input !== undefined) void this.resendEditedMessage(index, input.value);
+      }
+    });
     if (chat !== undefined && typeof MutationObserver === "function") {
       this.chatObserver = new MutationObserver(() => {
         if (this.followChat && this.busy) this.scheduleChatScroll();
@@ -325,6 +347,7 @@ export class AgentApp {
       input.value = "";
       this.pendingText = "";
       this.pendingTool = undefined;
+      this.pendingToolCalls = [];
       this.renderAll();
       const result = await agent.run({
         messages: this.chat.messages,
@@ -341,6 +364,7 @@ export class AgentApp {
     } finally {
       this.pendingText = "";
       this.pendingTool = undefined;
+      this.pendingToolCalls = [];
       this.runController = undefined;
       this.setBusy(false);
       this.renderAll();
@@ -356,9 +380,28 @@ export class AgentApp {
         this.scheduleChatRender();
         break;
       case "model-started":
+        this.pendingToolCalls = [];
         this.notify(`Thinking · turn ${event.turn}…`);
         break;
+      case "tool-call-delta": {
+        const previous = this.pendingToolCalls.find((delta) => delta.index === event.delta.index);
+        const merged: { index: number; id?: string; name?: string; arguments?: string } = { index: event.delta.index };
+        const id = event.delta.id ?? previous?.id;
+        const name = event.delta.name === undefined && previous?.name === undefined ? undefined : `${previous?.name ?? ""}${event.delta.name ?? ""}`;
+        const argumentsValue = event.delta.arguments === undefined && previous?.arguments === undefined ? undefined : `${previous?.arguments ?? ""}${event.delta.arguments ?? ""}`;
+        if (id !== undefined) merged.id = id;
+        if (name !== undefined) merged.name = name;
+        if (argumentsValue !== undefined) merged.arguments = argumentsValue;
+        this.pendingToolCalls = [...this.pendingToolCalls.filter((delta) => delta.index !== event.delta.index), merged].sort((left, right) => left.index - right.index);
+        this.notify(`${merged.name?.trim() || "Tool"} · preparing…`);
+        this.scheduleChatRender();
+        break;
+      }
       case "tool-started":
+        {
+          const pendingIndex = this.pendingToolCalls.findIndex((delta) => delta.id === event.call.id || (delta.id === undefined && delta.name === event.call.name));
+          if (pendingIndex >= 0) this.pendingToolCalls = this.pendingToolCalls.filter((_, index) => index !== pendingIndex);
+        }
         this.pendingTool = event.call;
         this.notify(`Running ${event.call.name}…`);
         this.renderChat();
@@ -373,6 +416,7 @@ export class AgentApp {
         break;
       case "run-finished":
         this.pendingTool = undefined;
+        this.pendingToolCalls = [];
         this.renderChat();
         break;
       case "run-started":
@@ -432,7 +476,7 @@ export class AgentApp {
       || this.renderedConnectionEditing !== this.connectionEditing;
     if (fullRender) {
       conversation.replaceChildren();
-      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
+      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined && this.pendingToolCalls.length === 0) {
         if (this.agent !== undefined) {
           const welcome = document.createElement("div");
           welcome.className = "empty-state";
@@ -452,31 +496,39 @@ export class AgentApp {
           conversation.append(welcome);
         }
       } else {
-        for (const message of this.chat.messages) {
-          const element = messageElement(message);
-          if (element !== null) conversation.append(element);
-        }
+        conversation.append(...messageElements(this.chat.messages));
         this.appendPendingMessages(conversation);
       }
       this.renderedMessages = this.chat.messages;
       this.renderedAgent = this.agent;
       this.renderedConnectionEditing = this.connectionEditing;
     } else {
+      const openKeys = new Set<string>();
+      for (const details of conversation.querySelectorAll<HTMLDetailsElement>("details[data-tool-key]")) {
+        if (details.open && details.dataset.toolKey !== undefined) openKeys.add(details.dataset.toolKey);
+      }
       for (const pending of conversation.querySelectorAll<HTMLElement>(".pending")) pending.remove();
-      this.appendPendingMessages(conversation);
+      this.appendPendingMessages(conversation, openKeys);
     }
     if (this.followChat || this.chat.messages.length === 0) this.scrollChatToBottom();
+    this.updateScrollButton();
   }
 
-  private appendPendingMessages(conversation: HTMLElement): void {
+  private appendPendingMessages(conversation: HTMLElement, openKeys: ReadonlySet<string> = new Set()): void {
     if (this.pendingText.length > 0) {
       const element = messageElement({ role: "assistant", content: this.pendingText }, true);
       if (element !== null) conversation.append(element);
     }
+    const pendingTools: HTMLElement[] = this.pendingToolCalls.map((toolCall) => streamingToolElement(toolCall));
     if (this.pendingTool !== undefined) {
       const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
       const element = messageElement(toolMessage, true);
-      if (element !== null) conversation.append(element);
+      if (element !== null) pendingTools.push(element);
+    }
+    if (pendingTools.length > 0) {
+      const group = toolGroupElement(pendingTools, true);
+      if (openKeys.has("tool-group")) group.open = true;
+      conversation.append(group);
     }
   }
 
@@ -484,12 +536,94 @@ export class AgentApp {
     const chat = this.elements["chat-log"];
     if (chat === undefined) return;
     this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
+    this.updateScrollButton();
   }
 
   private scrollChatToBottom(): void {
     const chat = this.elements["chat-log"];
     if (chat === undefined) return;
     chat.scrollTop = chat.scrollHeight;
+    this.scheduleChatScroll();
+    const settle = () => {
+      if (!this.followChat) return;
+      const currentChat = this.elements["chat-log"];
+      if (currentChat !== undefined) currentChat.scrollTop = currentChat.scrollHeight;
+      this.updateScrollButton();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(settle);
+    setTimeout(settle, 0);
+    this.updateScrollButton();
+  }
+
+  private updateScrollButton(): void {
+    const chat = this.elements["chat-log"];
+    const button = this.elements["scroll-bottom-button"];
+    if (chat === undefined || button === undefined) return;
+    button.hidden = this.followChat || chat.scrollHeight <= chat.clientHeight + 1;
+  }
+
+  private startMessageEdit(index: number): void {
+    if (this.busy) return;
+    const message = this.chat.messages[index];
+    if (message?.role !== "user") return;
+    const article = this.elements["conversation-content"]?.querySelector<HTMLElement>(`.message.user[data-message-index="${index}"]`);
+    const body = article?.querySelector<HTMLElement>(":scope > .message-body");
+    if (body === null || body === undefined || body.querySelector(".message-edit") !== null) return;
+    const editor = document.createElement("div");
+    editor.className = "message-edit";
+    const input = document.createElement("textarea");
+    input.rows = Math.min(8, Math.max(2, message.content.split("\n").length));
+    input.value = message.content;
+    input.setAttribute("aria-label", "Edit message");
+    const actions = document.createElement("div");
+    actions.className = "message-edit-actions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "secondary-button";
+    cancel.dataset.action = "cancel-edit";
+    cancel.dataset.messageIndex = String(index);
+    cancel.textContent = "Cancel";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "primary-button";
+    save.dataset.action = "save-edit";
+    save.dataset.messageIndex = String(index);
+    save.textContent = "Send";
+    actions.append(cancel, save);
+    editor.append(input, actions);
+    body.replaceChildren(editor);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.cancelMessageEdit();
+      } else if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault();
+        void this.resendEditedMessage(index, input.value);
+      }
+    });
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  private cancelMessageEdit(): void {
+    this.renderedMessages = undefined;
+    this.renderChat();
+  }
+
+  private async resendEditedMessage(index: number, content: string): Promise<void> {
+    if (this.busy) return;
+    const message = this.chat.messages[index];
+    const next = content.trim();
+    if (message?.role !== "user" || next.length === 0) {
+      this.notify("Write a message before sending.", "error");
+      return;
+    }
+    this.chat.messages = normalizeMessages(this.chat.messages.slice(0, index));
+    this.renderedMessages = undefined;
+    this.renderChat();
+    const input = this.elements["message-input"] as HTMLTextAreaElement;
+    input.value = next;
+    await this.sendMessage();
   }
 
   private scheduleChatScroll(): void {
@@ -497,7 +631,11 @@ export class AgentApp {
     this.chatScrollScheduled = true;
     const scroll = () => {
       this.chatScrollScheduled = false;
-      if (this.followChat) this.scrollChatToBottom();
+      if (this.followChat) {
+        const chat = this.elements["chat-log"];
+        if (chat !== undefined) chat.scrollTop = chat.scrollHeight;
+        this.updateScrollButton();
+      }
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(scroll);
     else setTimeout(scroll, 0);

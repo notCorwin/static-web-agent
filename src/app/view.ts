@@ -1,5 +1,5 @@
-import type { ModelMessage } from "../core/types.js";
-import { renderRichContent } from "./rich-content.js";
+import type { ModelMessage, ToolCallDelta } from "../core/types.js";
+import { bindCopyButton, renderRichContent } from "./rich-content.js";
 
 export type AppElements = Record<string, HTMLElement>;
 
@@ -55,6 +55,9 @@ export function renderShell(root: HTMLElement): AppElements {
             </div>
           </div>
         </section>
+        <button class="scroll-bottom-button" id="scroll-bottom-button" type="button" aria-label="Scroll to latest response" title="Scroll to latest response" hidden>
+          <span aria-hidden="true">↓</span>
+        </button>
         <div class="composer-wrap">
           <form class="composer" id="composer-form">
             <label class="sr-only" for="message-input">Message the agent</label>
@@ -71,10 +74,11 @@ export function renderShell(root: HTMLElement): AppElements {
   return elements;
 }
 
-export function messageElement(message: ModelMessage, pending = false): HTMLElement | null {
+export function messageElement(message: ModelMessage, pending = false, messageIndex?: number): HTMLElement | null {
   if (message.role === "tool") {
     const details = document.createElement("details");
     details.className = `tool-detail${pending ? " pending" : ""}`;
+    details.dataset.toolKey = message.callId;
     const summary = document.createElement("summary");
     summary.className = "tool-summary";
     summary.setAttribute("translate", "no");
@@ -90,14 +94,89 @@ export function messageElement(message: ModelMessage, pending = false): HTMLElem
 
   const article = document.createElement("article");
   article.className = `message ${message.role}${pending ? " pending" : ""}`;
-  const header = document.createElement("div");
-  header.className = "message-header";
-  header.textContent = message.role === "user" ? "You" : message.role === "assistant" ? "Agent" : "System";
-  article.append(header);
+  if (messageIndex !== undefined) article.dataset.messageIndex = String(messageIndex);
   const body = document.createElement("div");
   body.className = "message-body";
   if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
   else body.textContent = message.content;
   article.append(body);
+  if ((message.role === "assistant" || message.role === "user") && !pending) {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-action copy-message-button";
+    copy.setAttribute("aria-label", "Copy message");
+    copy.title = "Copy message";
+    copy.textContent = "⧉";
+    bindCopyButton(copy, message.content);
+    actions.append(copy);
+    if (message.role === "user" && messageIndex !== undefined) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "message-action edit-message-button";
+      edit.dataset.action = "edit-message";
+      edit.dataset.messageIndex = String(messageIndex);
+      edit.setAttribute("aria-label", "Edit and resend message");
+      edit.title = "Edit and resend";
+      edit.textContent = "✎";
+      actions.append(edit);
+    }
+    article.append(actions);
+  }
   return article;
+}
+
+export function toolGroupElement(items: readonly HTMLElement[], active = false): HTMLDetailsElement {
+  const details = document.createElement("details");
+  details.className = `tool-group${active ? " pending" : ""}`;
+  details.dataset.toolKey = "tool-group";
+  const summary = document.createElement("summary");
+  summary.className = "tool-group-summary";
+  summary.textContent = active
+    ? `Calling ${items.length} tool${items.length === 1 ? "" : "s"}…`
+    : `Called ${items.length} tool${items.length === 1 ? "" : "s"}`;
+  const body = document.createElement("div");
+  body.className = "tool-group-body";
+  body.append(...items);
+  details.append(summary, body);
+  details.addEventListener("toggle", () => {
+    for (const child of body.querySelectorAll<HTMLDetailsElement>(":scope > details.tool-detail")) child.open = details.open;
+  });
+  return details;
+}
+
+export function messageElements(messages: readonly ModelMessage[]): HTMLElement[] {
+  const result: HTMLElement[] = [];
+  let toolItems: HTMLElement[] = [];
+  const flushTools = (): void => {
+    if (toolItems.length > 0) result.push(toolGroupElement(toolItems));
+    toolItems = [];
+  };
+  messages.forEach((message, index) => {
+    const element = messageElement(message, false, index);
+    if (element === null) return;
+    if (message.role === "tool") toolItems.push(element);
+    else {
+      flushTools();
+      result.push(element);
+    }
+  });
+  flushTools();
+  return result;
+}
+
+export function streamingToolElement(delta: ToolCallDelta): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "tool-detail pending tool-call-stream";
+  details.dataset.toolKey = `stream-${delta.index}`;
+  const summary = document.createElement("summary");
+  summary.className = "tool-summary";
+  summary.setAttribute("translate", "no");
+  summary.textContent = `${delta.name?.trim() || "tool"} · preparing`;
+  const body = document.createElement("div");
+  body.className = "tool-detail-body";
+  body.textContent = delta.arguments?.trim() || "Waiting for arguments…";
+  details.append(summary, body);
+  return details;
 }

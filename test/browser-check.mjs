@@ -40,10 +40,11 @@ function contentType(path) {
 
 async function startStaticServer() {
   let toolRequests = 0;
+  let streamedToolRequests = 0;
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
-      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-scroll" || pathname === "/test-hang") {
+      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang") {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         if (pathname === "/test-scroll") {
           const chunks = [
@@ -78,10 +79,45 @@ async function startStaticServer() {
             "flowchart TD",
             "  Start[Start] --> Done[Done]",
             "```",
+            "",
+            "```javascript",
+            "const value = 1; // remove line comment",
+            "/* remove block comment */",
+            "console.log(value);",
+            "```",
           ].join("\n")
-          : pathname === "/test-tool"
+          : pathname === "/test-tool" || pathname === "/test-tool-stream"
             ? "tool complete"
             : "sse";
+        if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
+          const chunks = [
+            { index: 0, id: "browser-streamed-tool-call", function: { name: "runtime_" } },
+            { index: 0, function: { name: "javascript", arguments: '{"code":"' } },
+            { index: 0, function: { arguments: "return " } },
+            { index: 0, function: { arguments: "42\"}" } },
+            { index: 1, id: "browser-streamed-tool-call-2", function: { name: "runtime_" } },
+            { index: 1, function: { name: "javascript", arguments: '{"code":"' } },
+            { index: 1, function: { arguments: "return " } },
+            { index: 1, function: { arguments: "42\"}" } },
+          ];
+          let index = 0;
+          const sendToolChunk = () => {
+            if (response.destroyed) return;
+            if (index < chunks.length) {
+              response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [chunks[index]] } }] })}\n\n`);
+              index += 1;
+              setTimeout(sendToolChunk, 65);
+              return;
+            }
+            response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+            setTimeout(() => {
+              response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+              response.end("data: [DONE]\n\n");
+            }, 5);
+          };
+          sendToolChunk();
+          return;
+        }
         if (pathname === "/test-tool" && toolRequests++ === 0) {
           response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "browser-tool-call", type: "function", function: { name: "runtime_javascript", arguments: '{"code":"return 42"}' } }] } }] })}\n\n`);
           response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
@@ -274,6 +310,14 @@ try {
   assert.ok(connectionLayout.modelLabel.includes("password-manager username"), "the model name should be presented as the password-manager username");
   assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
   assert.ok(connectionLayout.composerHeight <= 66, "the message composer should stay compact");
+  const composerFocus = await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.focus();
+    const inputStyle = getComputedStyle(input);
+    const composerStyle = getComputedStyle(document.querySelector('.composer'));
+    return { outlineWidth: inputStyle.outlineWidth, composerShadow: composerStyle.boxShadow };
+  })()`);
+  assert.deepEqual(composerFocus, { outlineWidth: "0px", composerShadow: "none" });
 
   await page.evaluate(`(() => {
     window.__permissionPrompted = false;
@@ -339,8 +383,9 @@ try {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
   })()`);
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'sse'");
-  const messageStyles = await page.evaluate("(() => { const assistant = document.querySelector('.message.assistant .message-body'); const user = document.querySelector('.message.user .message-body'); const assistantStyle = getComputedStyle(assistant); const userStyle = getComputedStyle(user); return { assistantBorder: assistantStyle.borderTopWidth, assistantBackground: assistantStyle.backgroundColor, assistantPadding: assistantStyle.padding, userBorder: userStyle.borderTopWidth, userPadding: userStyle.padding }; })()");
-  assert.deepEqual(messageStyles, { assistantBorder: "0px", assistantBackground: "rgba(0, 0, 0, 0)", assistantPadding: "0px", userBorder: "1px", userPadding: "13px 15px" });
+  const messageStyles = await page.evaluate("(() => { const assistant = document.querySelector('.message.assistant'); const user = document.querySelector('.message.user'); const assistantBody = assistant.querySelector('.message-body'); const userBody = user.querySelector('.message-body'); const assistantStyle = getComputedStyle(assistant); const assistantBodyStyle = getComputedStyle(assistantBody); const userBodyStyle = getComputedStyle(userBody); return { assistantBorder: assistantBodyStyle.borderTopWidth, assistantBackground: assistantBodyStyle.backgroundColor, assistantPadding: assistantBodyStyle.padding, assistantAlign: assistantStyle.alignSelf, assistantWidth: assistantStyle.width, assistantHeaders: assistant.querySelectorAll('.message-header').length, userBorder: userBodyStyle.borderTopWidth, userPadding: userBodyStyle.padding, userHeaders: user.querySelectorAll('.message-header').length }; })()");
+  assert.deepEqual({ ...messageStyles, assistantWidth: undefined }, { assistantBorder: "0px", assistantBackground: "rgba(0, 0, 0, 0)", assistantPadding: "0px", assistantAlign: "center", assistantWidth: undefined, assistantHeaders: 0, userBorder: "1px", userPadding: "13px 15px", userHeaders: 0 });
+  assert.ok(Number.parseFloat(messageStyles.assistantWidth) > 900, "the assistant column should use the available wide layout");
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-rich';
     document.querySelector('#connection-form').requestSubmit();
@@ -354,6 +399,38 @@ try {
   await waitFor(page, "document.querySelector('.message.assistant:last-of-type .message-body h1')?.textContent === 'Rich response' && document.querySelector('.message.assistant:last-of-type .katex') !== null && document.querySelector('.message.assistant:last-of-type .mermaid-diagram svg') !== null", 20_000);
   const richFeatures = await page.evaluate("(() => { const assistant = Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1); const user = Array.from(document.querySelectorAll('.message.user .message-body')).at(-1); return { assistantMarkdown: assistant?.querySelector('h1')?.textContent === 'Rich response', assistantLatex: assistant?.querySelector('.katex') !== null, assistantMermaid: assistant?.querySelector('.mermaid-diagram svg') !== null, userMarkdown: user?.querySelector('h1')?.textContent === 'User rich', userLatex: user?.querySelector('.katex') !== null }; })()");
   assert.deepEqual(richFeatures, { assistantMarkdown: true, assistantLatex: true, assistantMermaid: true, userMarkdown: true, userLatex: true });
+  await waitFor(page, "document.querySelector('.message.assistant:last-of-type .code-copy-button') !== null");
+  await page.evaluate(`(() => {
+    window.__copiedCode = [];
+    const writeText = async (value) => window.__copiedCode.push(value);
+    try {
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    } catch {
+      navigator.clipboard.writeText = writeText;
+    }
+  })()`);
+  await page.evaluate("document.querySelector('.message.assistant:last-of-type .code-copy-button').click()");
+  await waitFor(page, "document.querySelector('.message.assistant:last-of-type .code-copy-button')?.textContent === 'Copied'");
+  const copiedSource = await page.evaluate("window.__copiedCode.at(-1)");
+  assert.ok(copiedSource.includes('remove line comment'), "the regular copy action should preserve comments");
+  await page.evaluate("document.querySelector('.message.assistant:last-of-type .code-copy-clean-button').click()");
+  await waitFor(page, "document.querySelector('.message.assistant:last-of-type .code-copy-clean-button')?.textContent === 'Copied'");
+  const copiedWithoutComments = await page.evaluate("window.__copiedCode.at(-1)");
+  assert.ok(!copiedWithoutComments.includes('remove line comment') && !copiedWithoutComments.includes('remove block comment'), "the comment-free copy action should remove line and block comments");
+  await page.evaluate("document.querySelector('.message.assistant:last-of-type .copy-message-button').click()");
+  await waitFor(page, "document.querySelector('.message.assistant:last-of-type .copy-message-button')?.textContent === 'Copied'");
+  assert.ok((await page.evaluate("window.__copiedCode.at(-1)")) .includes('# Rich response'), "the assistant message should have a copy action");
+  await page.evaluate(`document.querySelector('.message.user[data-message-index="2"] .copy-message-button').click()`);
+  await waitFor(page, `document.querySelector('.message.user[data-message-index="2"] .copy-message-button')?.textContent === 'Copied'`);
+  assert.ok((await page.evaluate("window.__copiedCode.at(-1)")) .includes('# User rich'), "the user message should have a copy action");
+  await page.evaluate(`document.querySelector('.message.user[data-message-index="2"] .edit-message-button').click()`);
+  await waitFor(page, "document.querySelector('.message-edit textarea') !== null");
+  await page.evaluate(`(() => {
+    const editor = document.querySelector('.message-edit textarea');
+    editor.value = '# Edited user rich\\n\\nUser math: $b^2$';
+    document.querySelector('.message-edit [data-action=save-edit]').click();
+  })()`);
+  await waitFor(page, "Array.from(document.querySelectorAll('.message.user .message-body')).at(-1)?.textContent.includes('Edited user rich') && document.querySelector('.message.assistant:last-of-type .message-body h1')?.textContent === 'Rich response'", 20_000);
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-hang';
     document.querySelector('#connection-form').requestSubmit();
@@ -387,33 +464,48 @@ try {
   assert.equal(midStreamScroll.overflow, true);
   assert.ok(midStreamScroll.distance <= 2, "the conversation should follow the bottom while the model streams");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.includes('The stream finished') && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
+  await waitFor(page, "(() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()", 5_000);
   const finishedStreamScroll = await page.evaluate(`(() => {
     const chat = document.querySelector('#chat-log');
     return chat.scrollHeight - chat.scrollTop - chat.clientHeight;
   })()`);
   assert.ok(finishedStreamScroll <= 2, "the conversation should remain at the bottom after streaming");
+  await page.evaluate("(() => { const chat = document.querySelector('#chat-log'); chat.scrollTop = 0; chat.dispatchEvent(new Event('scroll')); })()");
+  await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === false");
+  await page.evaluate("document.querySelector('#scroll-bottom-button').click()");
+  await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === true && (() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()");
 
   await page.evaluate(`(() => {
-    document.querySelector('#model-endpoint').value = location.origin + '/test-tool';
+    document.querySelector('#model-endpoint').value = location.origin + '/test-tool-stream';
     document.querySelector('#connection-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
-    input.value = 'tool request';
+    input.value = 'streaming tool request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
+  await waitFor(page, "document.querySelector('.tool-group .tool-call-stream') !== null", 20_000);
+  const streamingTool = await page.evaluate(`(() => ({
+    group: document.querySelector('.tool-group > .tool-group-summary')?.textContent,
+    preparing: document.querySelector('.tool-call-stream .tool-summary')?.textContent,
+  }))()`);
+  assert.equal(streamingTool.group, "Calling 1 tool…");
+  assert.ok(streamingTool.preparing?.includes("runtime_"));
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
   const hiddenTool = await page.evaluate(`(() => ({
     noToolCallList: document.querySelector('.tool-call-list') === null,
     noEmptyToolAssistant: Array.from(document.querySelectorAll('.message.assistant .message-body')).every((body) => body.textContent !== ''),
+    groupClosed: document.querySelector('.tool-group')?.open === false,
+    groupSummary: document.querySelector('.tool-group-summary')?.textContent,
+    groupItems: document.querySelectorAll('.tool-group-body > .tool-detail').length,
     detailsClosed: document.querySelector('.tool-detail')?.open === false,
     summary: document.querySelector('.tool-summary')?.textContent,
     bodyVisible: document.querySelector('.tool-detail-body')?.getBoundingClientRect().height > 0,
   }))()`);
-  assert.deepEqual(hiddenTool, { noToolCallList: true, noEmptyToolAssistant: true, detailsClosed: true, summary: "runtime.javascript", bodyVisible: false });
-  await page.evaluate("document.querySelector('.tool-summary').click()");
-  await waitFor(page, "document.querySelector('.tool-detail')?.open === true");
+  assert.deepEqual(hiddenTool, { noToolCallList: true, noEmptyToolAssistant: true, groupClosed: true, groupSummary: "Called 2 tools", groupItems: 2, detailsClosed: true, summary: "runtime.javascript", bodyVisible: false });
+  await page.evaluate("document.querySelector('.tool-group-summary').click()");
+  await waitFor(page, "document.querySelector('.tool-group')?.open === true && document.querySelector('.tool-detail')?.open === true");
   assert.equal(await page.evaluate("document.querySelector('.tool-detail-body')?.textContent.includes('42')"), true);
 
   const secondPageTime = await page.evaluate("performance.timeOrigin");
@@ -424,7 +516,7 @@ try {
     model: document.querySelector('#model-name')?.value,
     apiKey: document.querySelector('#model-key')?.value,
   })`);
-  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool`, model: "browser-test", apiKey: "browser-test-key" });
+  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool-stream`, model: "browser-test", apiKey: "browser-test-key" });
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {

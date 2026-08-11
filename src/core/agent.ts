@@ -13,6 +13,7 @@ import type {
   ModelMessage,
   ModelUsage,
   ToolCall,
+  ToolCallDelta,
   ToolExecutionResult,
   ToolError,
   ToolMessage,
@@ -76,6 +77,43 @@ function assertToolCall(call: ToolCall): void {
   ) {
     throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
   }
+}
+
+function assertToolCallDelta(delta: ToolCallDelta): void {
+  const candidate: unknown = delta;
+  if (typeof candidate !== "object" || candidate === null) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
+  const record = candidate as Record<string, unknown>;
+  if (!Number.isInteger(record.index) || Number(record.index) < 0) {
+    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
+  }
+  for (const key of ["id", "name", "arguments"] as const) {
+    if (record[key] !== undefined && typeof record[key] !== "string") {
+      throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
+    }
+  }
+}
+
+interface StreamedToolCallDraft {
+  id: string;
+  name: string;
+  arguments: string;
+}
+
+function completeStreamedToolCalls(drafts: ReadonlyMap<number, StreamedToolCallDraft>): ToolCall[] {
+  return [...drafts.entries()].sort(([left], [right]) => left - right).map(([index, draft]) => {
+    const name = draft.name.trim();
+    if (!name) throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${index + 1} did not include a name.`);
+    let argumentsValue: unknown = {};
+    if (draft.arguments.trim().length > 0) {
+      try {
+        argumentsValue = JSON.parse(draft.arguments) as unknown;
+      } catch {
+        throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned malformed arguments.`);
+      }
+    }
+    if (!isJsonValue(argumentsValue)) throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned non-JSON arguments.`);
+    return { id: draft.id || `call-${index + 1}`, name, arguments: argumentsValue };
+  });
 }
 
 function assertAssistant(message: AssistantMessage): void {
@@ -254,6 +292,7 @@ export class Agent {
       let completed: AssistantMessage | undefined;
       let streamedText = "";
       const streamedCalls: ToolCall[] = [];
+      const streamedCallDeltas = new Map<number, StreamedToolCallDraft>();
       let sawCompleted = false;
 
       const descriptors = this.tools.descriptors();
@@ -279,6 +318,7 @@ export class Agent {
                 next.value,
                 request.onEvent,
                 streamedCalls,
+                streamedCallDeltas,
                 (delta) => {
                   streamedText += delta;
                   if (streamedText.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
@@ -330,7 +370,9 @@ export class Agent {
       }
 
       if (!sawCompleted) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned no completed response." });
-      const calls = completed?.toolCalls === undefined || (completed.toolCalls.length === 0 && streamedCalls.length > 0) ? streamedCalls : [...completed.toolCalls];
+      const calls = completed?.toolCalls === undefined || (completed.toolCalls.length === 0 && (streamedCalls.length > 0 || streamedCallDeltas.size > 0))
+        ? streamedCalls.length > 0 ? streamedCalls : completeStreamedToolCalls(streamedCallDeltas)
+        : [...completed.toolCalls];
       if (calls.length > limits.maxToolCallsPerTurn) {
         return fail({ code: "TOOL_CALL_LIMIT_EXCEEDED", message: `A model turn may contain at most ${limits.maxToolCallsPerTurn} tool calls.` });
       }
@@ -385,6 +427,7 @@ export class Agent {
     event: ModelEvent,
     onEvent: AgentRunRequest["onEvent"],
     calls: ToolCall[],
+    callDeltas: Map<number, StreamedToolCallDraft>,
     addText: (delta: string) => void,
     setCompleted: (message: AssistantMessage) => void,
     addUsageValue: (usage: ModelUsage) => void,
@@ -398,9 +441,24 @@ export class Agent {
         addText(event.delta);
         this.emit(onEvent, event);
         break;
+      case "tool-call-delta": {
+        assertToolCallDelta(event.delta);
+        const previous = callDeltas.get(event.delta.index) ?? { id: `call-${event.delta.index + 1}`, name: "", arguments: "" };
+        callDeltas.set(event.delta.index, {
+          id: event.delta.id ?? previous.id,
+          name: `${previous.name}${event.delta.name ?? ""}`,
+          arguments: `${previous.arguments}${event.delta.arguments ?? ""}`,
+        });
+        this.emit(onEvent, event);
+        break;
+      }
       case "tool-call":
         assertToolCall(event.call);
         calls.push(event.call);
+        this.emit(onEvent, {
+          type: "tool-call-delta",
+          delta: { index: calls.length - 1, id: event.call.id, name: event.call.name, arguments: JSON.stringify(event.call.arguments) },
+        });
         break;
       case "usage":
         assertUsage(event.usage);

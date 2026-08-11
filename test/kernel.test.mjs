@@ -154,6 +154,30 @@ test("agent loops through multiple tool calls and normalizes tool errors", async
   assert.ok(result.messages.some((message) => message.role === "tool" && message.isError === true));
 });
 
+test("agent forwards streaming tool-call deltas and reconstructs their arguments", async () => {
+  const tools = new ToolRegistry(new CapabilityManager());
+  tools.register({
+    name: "test.echo",
+    description: "Echo a value.",
+    inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
+    execute: (input) => input,
+  });
+  const model = scriptedAdapter([
+    [
+      { type: "tool-call-delta", delta: { index: 0, id: "stream-call", name: "test.", arguments: '{"value":"' } },
+      { type: "tool-call-delta", delta: { index: 0, name: "echo", arguments: "ok\"}" } },
+      { type: "completed", message: { role: "assistant", content: "" } },
+    ],
+    [{ type: "completed", message: { role: "assistant", content: "done" } }],
+  ]);
+  const events = [];
+  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "echo" }], onEvent: (event) => events.push(event) });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.messages.find((message) => message.role === "assistant" && message.toolCalls !== undefined)?.toolCalls, [{ id: "stream-call", name: "test.echo", arguments: { value: "ok" } }]);
+  assert.equal(events.filter((event) => event.type === "tool-call-delta").length, 2);
+  assert.equal(events.find((event) => event.type === "tool-started")?.call.name, "test.echo");
+});
+
 test("agent termination is deterministic at max turns", async () => {
   const capabilities = new CapabilityManager({ decide: () => true });
   const tools = new ToolRegistry(capabilities);
@@ -600,4 +624,26 @@ test("OpenAI-compatible adapter parses a completed SSE response", async () => {
   for await (const event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) events.push(event);
   assert.equal(events.at(-1).type, "completed");
   assert.equal(events.at(-1).message.content, "hello");
+});
+
+test("OpenAI-compatible adapter emits normalized streaming tool-call deltas", async () => {
+  const body = [
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"runtime_","arguments":"{\\"code\\":\\""}}]}}]}',
+    "",
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"javascript","arguments":"return 42\\\"}"}}]}}]}',
+    "",
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/chat",
+    model: "demo",
+    fetcher: async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+  });
+  const events = [];
+  for await (const event of adapter.stream({ messages: [], tools: [{ name: "runtime.javascript", description: "run", inputSchema: { type: "object" }, requiredCapabilities: [] }], signal: noSignal() })) events.push(event);
+  assert.equal(events.filter((event) => event.type === "tool-call-delta").length, 2);
+  assert.deepEqual(events.at(-1).message.toolCalls, [{ id: "call-1", name: "runtime.javascript", arguments: { code: "return 42" } }]);
 });

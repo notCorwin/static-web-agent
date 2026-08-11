@@ -10,6 +10,7 @@ import type {
   ModelRequest,
   ModelUsage,
   ToolCall,
+  ToolCallDelta,
   ToolDescriptor,
 } from "../core/types.js";
 
@@ -369,11 +370,21 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
           const index = typeof call?.index === "number" && Number.isInteger(call.index) ? call.index : calls.size;
           const functionRecord = asRecord(call?.function);
           const previous = calls.get(index) ?? { id: `call-${index + 1}`, name: "", arguments: "" };
+          const id = asString(call?.id);
+          const name = asString(functionRecord?.name);
+          const argumentsDelta = asString(functionRecord?.arguments);
           calls.set(index, {
-            id: asString(call?.id) ?? previous.id,
-            name: `${previous.name}${asString(functionRecord?.name) ?? ""}`,
-            arguments: `${previous.arguments}${asString(functionRecord?.arguments) ?? ""}`,
+            id: id ?? previous.id,
+            name: `${previous.name}${name ?? ""}`,
+            arguments: `${previous.arguments}${argumentsDelta ?? ""}`,
           });
+          const delta: ToolCallDelta = {
+            index,
+            ...(id === undefined ? {} : { id }),
+            ...(name === undefined ? {} : { name }),
+            ...(argumentsDelta === undefined ? {} : { arguments: argumentsDelta }),
+          };
+          yield { type: "tool-call-delta", delta };
         }
       }
     }

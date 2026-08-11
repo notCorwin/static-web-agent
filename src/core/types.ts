@@ -142,6 +142,14 @@ export interface ToolCall {
   readonly arguments: JsonValue;
 }
 
+/** A provider-neutral fragment of a tool call received during model streaming. */
+export interface ToolCallDelta {
+  readonly index: number;
+  readonly id?: string;
+  readonly name?: string;
+  readonly arguments?: string;
+}
+
 export interface AssistantMessage {
   readonly role: "assistant";
   readonly content: string;
@@ -166,6 +174,7 @@ export interface ModelRequest {
 
 export type ModelEvent =
   | { readonly type: "text-delta"; readonly delta: string }
+  | { readonly type: "tool-call-delta"; readonly delta: ToolCallDelta }
   | { readonly type: "tool-call"; readonly call: ToolCall }
   | { readonly type: "usage"; readonly usage: ModelUsage }
   | { readonly type: "completed"; readonly message: AssistantMessage; readonly usage?: ModelUsage };
@@ -198,6 +207,7 @@ export type AgentEvent =
   | { readonly type: "run-started"; readonly runId: string }
   | { readonly type: "model-started"; readonly turn: number }
   | { readonly type: "text-delta"; readonly delta: string }
+  | { readonly type: "tool-call-delta"; readonly delta: ToolCallDelta }
   | { readonly type: "assistant-message"; readonly message: AssistantMessage }
   | { readonly type: "tool-started"; readonly call: ToolCall }
   | { readonly type: "tool-finished"; readonly call: ToolCall; readonly result: ToolExecutionResult }
