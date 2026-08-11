@@ -422,6 +422,51 @@ test("OpenAI-compatible adapter resolves versioned API bases to chat completions
   assert.equal(requestUrl, "https://openrouter.ai/api/v1/chat/completions");
 });
 
+test("OpenAI-compatible adapter normalizes provider tool names in both directions", async () => {
+  const tool = {
+    name: "runtime.javascript",
+    description: "Run JavaScript.",
+    inputSchema: {
+      type: "object",
+      properties: { code: { type: "string" } },
+      required: ["code"],
+      additionalProperties: false,
+    },
+    requiredCapabilities: [],
+  };
+  const requestBodies = [];
+  const adapter = new OpenAICompatibleAdapter({
+    endpoint: "https://example.test/v1",
+    model: "demo",
+    fetcher: async (_input, init) => {
+      requestBodies.push(JSON.parse(init.body));
+      const payload = requestBodies.length === 1
+        ? { choices: [{ message: { role: "assistant", content: "", tool_calls: [{ id: "call-1", type: "function", function: { name: "runtime_javascript", arguments: '{"code":"return 1"}' } }] } }] }
+        : { choices: [{ message: { role: "assistant", content: "done" } }] };
+      return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  });
+  const firstEvents = [];
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "run it" }], tools: [tool], signal: noSignal() })) firstEvents.push(event);
+  const firstMessage = firstEvents.at(-1).message;
+  assert.equal(firstMessage.toolCalls[0].name, "runtime.javascript");
+
+  const secondEvents = [];
+  for await (const event of adapter.stream({
+    messages: [
+      { role: "user", content: "run it" },
+      firstMessage,
+      { role: "tool", callId: "call-1", name: "runtime.javascript", content: '{"value":1}' },
+    ],
+    tools: [tool],
+    signal: noSignal(),
+  })) secondEvents.push(event);
+  assert.equal(secondEvents.at(-1).message.content, "done");
+  assert.equal(requestBodies[0].tools[0].function.name, "runtime_javascript");
+  assert.equal(requestBodies[1].messages[1].tool_calls[0].function.name, "runtime_javascript");
+  assert.equal(requestBodies[1].messages[2].name, "runtime_javascript");
+});
+
 test("OpenAI-compatible adapter rejects provider errors in HTTP 200 responses", async () => {
   const adapter = new OpenAICompatibleAdapter({
     endpoint: "https://example.test/chat",

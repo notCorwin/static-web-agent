@@ -37,6 +37,7 @@ const MAX_MODEL_REQUEST_CHARS = 500_000;
 const MAX_MODEL_RESPONSE_CHARS = 1_000_000;
 const MAX_SSE_EVENT_CHARS = 100_000;
 const MAX_MODEL_OUTPUT_CHARS = 64_000;
+const MAX_PROVIDER_TOOL_NAME_CHARS = 64;
 
 function asRecord(value: unknown): UnknownRecord | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as UnknownRecord : undefined;
@@ -75,18 +76,41 @@ function usage(value: unknown): ModelUsage | undefined {
   return Object.keys(result).length === 0 ? undefined : result;
 }
 
-function toolSchema(tool: ToolDescriptor): JsonObject {
+function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string, string> {
+  const used = new Set<string>();
+  const names = new Map<string, string>();
+  for (const [index, tool] of tools.entries()) {
+    const base = (tool.name.replace(/[^a-zA-Z0-9_-]/g, "_") || `tool_${index + 1}`).slice(0, MAX_PROVIDER_TOOL_NAME_CHARS);
+    let candidate = base;
+    let suffix = 2;
+    while (used.has(candidate)) {
+      const suffixText = `_${suffix}`;
+      candidate = `${base.slice(0, MAX_PROVIDER_TOOL_NAME_CHARS - suffixText.length)}${suffixText}`;
+      suffix += 1;
+    }
+    used.add(candidate);
+    names.set(tool.name, candidate);
+  }
+  return names;
+}
+
+function localToolName(providerName: string, names: ReadonlyMap<string, string>): string {
+  for (const [localName, mappedName] of names) if (mappedName === providerName) return localName;
+  return providerName;
+}
+
+function toolSchema(tool: ToolDescriptor, providerName: string): JsonObject {
   return {
     type: "function",
     function: {
-      name: tool.name,
+      name: providerName,
       description: tool.description,
       parameters: tool.inputSchema as JsonValue,
     },
   };
 }
 
-function messageBody(message: ModelMessage): JsonObject {
+function messageBody(message: ModelMessage, names: ReadonlyMap<string, string>): JsonObject {
   switch (message.role) {
     case "system":
     case "user":
@@ -101,12 +125,12 @@ function messageBody(message: ModelMessage): JsonObject {
               tool_calls: message.toolCalls.map((call) => ({
                 id: call.id,
                 type: "function",
-                function: { name: call.name, arguments: JSON.stringify(call.arguments) },
-              })),
-            }),
+                function: { name: names.get(call.name) ?? call.name, arguments: JSON.stringify(call.arguments) },
+            })),
+          }),
       };
     case "tool":
-      return { role: "tool", tool_call_id: message.callId, name: message.name, content: message.content };
+      return { role: "tool", tool_call_id: message.callId, name: names.get(message.name) ?? message.name, content: message.content };
   }
 }
 
@@ -127,7 +151,7 @@ function parseArguments(value: unknown): JsonValue {
   return value;
 }
 
-function parseToolCalls(value: unknown): ToolCall[] {
+function parseToolCalls(value: unknown, names: ReadonlyMap<string, string>): ToolCall[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new ModelAdapterError("Model returned invalid tool calls.", undefined, "MODEL_PROTOCOL_ERROR");
   return value.map((item, index) => {
@@ -137,7 +161,7 @@ function parseToolCalls(value: unknown): ToolCall[] {
     if (name === undefined || name.trim().length === 0) throw new ModelAdapterError("Model returned a tool call without a name.", undefined, "MODEL_PROTOCOL_ERROR");
     return {
       id: asString(record?.id) || `call-${index + 1}`,
-      name,
+      name: localToolName(name, names),
       arguments: parseArguments(functionRecord?.arguments),
     };
   });
@@ -285,12 +309,13 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
+    const names = providerToolNames(request.tools);
     const body: Record<string, JsonValue> = {
       model: this.model,
-      messages: request.messages.map(messageBody),
+      messages: request.messages.map((message) => messageBody(message, names)),
       stream: true,
     };
-    if (request.tools.length > 0) body.tools = request.tools.map(toolSchema);
+    if (request.tools.length > 0) body.tools = request.tools.map((tool) => toolSchema(tool, names.get(tool.name) ?? tool.name));
 
     const headers: Record<string, string> = {
       Accept: "text/event-stream, application/json",
@@ -322,7 +347,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
       const message = asRecord(choice?.message);
       if (message === undefined) throw new ModelAdapterError("Model response did not contain a message.", undefined, "MODEL_PROTOCOL_ERROR");
       const content = asString(message.content) ?? "";
-      const calls = parseToolCalls(message.tool_calls);
+      const calls = parseToolCalls(message.tool_calls, names);
       const normalizedUsage = usage(payload.usage);
       yield { type: "completed", message: completedMessage(content, calls), ...(normalizedUsage === undefined ? {} : { usage: normalizedUsage }) };
       return;
@@ -376,7 +401,7 @@ export class OpenAICompatibleAdapter implements ModelAdapter {
     if (!sawPayload || (!sawDone && !sawFinish)) throw new ModelAdapterError("Model SSE stream ended before completion.", undefined, "MODEL_SSE_INCOMPLETE");
     const normalizedCalls: ToolCall[] = [...calls.entries()].sort(([left], [right]) => left - right).map(([, call]) => ({
       id: call.id,
-      name: call.name,
+      name: localToolName(call.name, names),
       arguments: parseArguments(call.arguments),
     }));
     yield { type: "completed", message: completedMessage(content, normalizedCalls), ...(finalUsage === undefined ? {} : { usage: finalUsage }) };
