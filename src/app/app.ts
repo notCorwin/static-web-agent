@@ -37,6 +37,12 @@ interface NetworkCapability {
   readonly fetch: BrowserFetcher;
 }
 
+interface ConnectionValues {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly apiKey: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -136,10 +142,12 @@ export class AgentApp {
   private runtimeHandle: PluginHandle | undefined;
   private storageHandle: PluginHandle | undefined;
   private activeModelLabel = "Local demo";
+  private ready = false;
   private busy = false;
   private runController: AbortController | undefined;
   private pendingText = "";
   private pendingTool: ToolCall | undefined;
+  private chatRenderScheduled = false;
   private readonly elements: Record<string, HTMLElement> = {};
 
   constructor(root: HTMLElement) {
@@ -147,6 +155,7 @@ export class AgentApp {
   }
 
   async start(): Promise<void> {
+    if ("scrollRestoration" in window.history) window.history.scrollRestoration = "auto";
     this.renderShell();
     this.bindEvents();
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
@@ -173,6 +182,7 @@ export class AgentApp {
     this.plugins = new PluginManager(this.tools, this.capabilities);
     this.agent = new Agent(this.echo, this.tools);
     await this.loadConversations();
+    this.ready = true;
     this.renderAll();
     this.focusComposer();
   }
@@ -212,28 +222,46 @@ export class AgentApp {
 
           <details class="connection-details" id="connection-details">
             <summary>Connect a model adapter</summary>
-            <form class="connection-form" id="connection-form">
-              <div class="field"><label for="model-endpoint">OpenAI-compatible endpoint</label><input id="model-endpoint" name="endpoint" type="url" autocomplete="url" placeholder="https://provider.example/v1/chat/completions…" required /></div>
-              <div class="field"><label for="model-name">Model</label><input id="model-name" name="model" type="text" autocomplete="off" placeholder="model-name…" required /></div>
-              <div class="field"><label for="model-key">API key <span class="faint">(session only)</span></label><input id="model-key" name="apiKey" type="password" autocomplete="off" placeholder="Paste a key…" /></div>
+            <form class="connection-form" id="connection-form" novalidate>
+              <div class="field">
+                <label for="model-endpoint">OpenAI-compatible endpoint</label>
+                <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1/chat/completions…" />
+                <p class="field-error" id="endpoint-error" role="status" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="model-name">Model</label>
+                <input id="model-name" name="model" type="text" inputmode="text" autocomplete="off" aria-describedby="model-error" aria-invalid="false" placeholder="model-name…" />
+                <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="model-key">API key <span class="faint">(session only)</span></label>
+                <input id="model-key" name="apiKey" type="password" autocomplete="new-password" aria-describedby="key-help" placeholder="Paste a key…" />
+                <p class="field-help" id="key-help">Accepted by the endpoint, never saved here.</p>
+              </div>
               <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Use remote</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
               <button class="secondary-button" id="use-local" type="button">Use local</button>
               <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; the API key is never persisted.</p>
-              <p class="connection-status" id="connection-status" role="status" aria-live="polite"></p>
+              <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
             </form>
           </details>
 
-          <section class="chat-scroll" id="chat-log" aria-label="Conversation"></section>
+          <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
+            <div class="loading-state" role="status" aria-live="polite">
+              <span class="loading-line loading-line-wide" aria-hidden="true"></span>
+              <span class="loading-line loading-line-short" aria-hidden="true"></span>
+              <span class="loading-label">Loading local sessions…</span>
+            </div>
+          </section>
           <div class="composer-wrap">
             <form class="composer" id="composer-form">
               <label class="sr-only" for="message-input">Message the agent</label>
-              <textarea id="message-input" name="message" rows="3" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
+              <textarea id="message-input" name="message" rows="3" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
               <button class="primary-button send-button" id="send-button" type="submit" aria-label="Send message"><span class="button-content"><span class="button-label">Send</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
               <div class="composer-actions">
                 <p class="composer-hint">Enter adds a line · ⌘/Ctrl&nbsp;+&nbsp;Enter sends</p>
                 <button class="secondary-button danger cancel-button" id="cancel-button" type="button" hidden>Cancel run</button>
               </div>
-              <p class="status-message" id="run-status" role="status" aria-live="polite"></p>
+              <p class="status-message" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
             </form>
           </div>
         </main>
@@ -278,6 +306,14 @@ export class AgentApp {
       void this.connectRemote(event.currentTarget as HTMLFormElement);
     });
     this.elements["use-local"]?.addEventListener("click", () => this.useLocalModel());
+    this.elements["connection-details"]?.addEventListener("toggle", () => {
+      const details = this.elements["connection-details"] as HTMLDetailsElement;
+      const urlOpen = new URL(window.location.href).searchParams.get("connect") === "1";
+      if (details.open !== urlOpen) this.updateUrl(true);
+    });
+    for (const field of ["model-endpoint", "model-name"]) {
+      this.elements[field]?.addEventListener("input", () => this.clearFieldError(field));
+    }
     window.addEventListener("popstate", () => void this.selectFromUrl());
     window.addEventListener("beforeunload", (event) => {
       const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
@@ -300,6 +336,7 @@ export class AgentApp {
     }
     const requested = new URLSearchParams(window.location.search).get("session");
     this.activeId = requested !== null && this.conversations.has(requested) ? requested : this.sortedConversations()[0]?.id ?? "";
+    this.syncConnectionPanelFromUrl();
     this.updateUrl(false);
   }
 
@@ -327,7 +364,7 @@ export class AgentApp {
   }
 
   private async createSession(): Promise<void> {
-    if (this.busy || !this.confirmDraft()) return;
+    if (!this.ready || this.busy || !this.confirmDraft()) return;
     const conversation = this.makeConversation();
     this.conversations.set(conversation.id, conversation);
     this.activeId = conversation.id;
@@ -335,10 +372,12 @@ export class AgentApp {
     this.updateUrl(true);
     this.renderAll();
     this.notify("New session ready.", "success");
-    this.focusComposer();
+    this.focusComposer(true);
   }
 
   private async selectFromUrl(): Promise<void> {
+    if (!this.ready) return;
+    this.syncConnectionPanelFromUrl();
     const requested = new URLSearchParams(window.location.search).get("session");
     if (requested === this.activeId) return;
     if (requested === null || !this.conversations.has(requested)) {
@@ -353,24 +392,80 @@ export class AgentApp {
     this.pendingText = "";
     this.pendingTool = undefined;
     this.renderAll();
-    this.focusComposer();
+    this.focusComposer(true);
   }
 
   private async selectSession(id: string): Promise<void> {
-    if (this.busy || !this.conversations.has(id) || id === this.activeId || !this.confirmDraft()) return;
+    if (!this.ready || this.busy || !this.conversations.has(id) || id === this.activeId || !this.confirmDraft()) return;
     this.activeId = id;
     this.pendingText = "";
     this.pendingTool = undefined;
     this.updateUrl(true);
     this.renderAll();
-    this.focusComposer();
+    this.focusComposer(true);
   }
 
   private updateUrl(push: boolean): void {
     const url = new URL(window.location.href);
     url.searchParams.set("session", this.activeId);
+    const details = this.elements["connection-details"] as HTMLDetailsElement | undefined;
+    if (details?.open === true) url.searchParams.set("connect", "1");
+    else url.searchParams.delete("connect");
     if (push) window.history.pushState({}, "", url);
     else window.history.replaceState({}, "", url);
+  }
+
+  private syncConnectionPanelFromUrl(): void {
+    const details = this.elements["connection-details"] as HTMLDetailsElement | undefined;
+    if (details !== undefined) details.open = new URL(window.location.href).searchParams.get("connect") === "1";
+  }
+
+  private clearFieldError(fieldId: string): void {
+    const input = this.elements[fieldId] as HTMLInputElement | undefined;
+    const error = this.elements[`${fieldId === "model-endpoint" ? "endpoint" : "model"}-error`] as HTMLElement | undefined;
+    if (input === undefined || error === undefined) return;
+    input.setAttribute("aria-invalid", "false");
+    error.textContent = "";
+  }
+
+  private setFieldError(fieldId: string, message: string): void {
+    const input = this.elements[fieldId] as HTMLInputElement | undefined;
+    const error = this.elements[`${fieldId === "model-endpoint" ? "endpoint" : "model"}-error`] as HTMLElement | undefined;
+    if (input === undefined || error === undefined) return;
+    input.setAttribute("aria-invalid", "true");
+    error.textContent = message;
+  }
+
+  private connectionValues(form: HTMLFormElement): ConnectionValues | undefined {
+    this.clearFieldError("model-endpoint");
+    this.clearFieldError("model-name");
+    const data = new FormData(form);
+    const endpoint = String(data.get("endpoint") ?? "").trim();
+    const model = String(data.get("model") ?? "").trim();
+    const apiKey = String(data.get("apiKey") ?? "");
+    let firstInvalid: HTMLInputElement | undefined;
+    if (!endpoint) {
+      this.setFieldError("model-endpoint", "Enter the model endpoint.");
+      firstInvalid ??= this.elements["model-endpoint"] as HTMLInputElement;
+    } else {
+      try {
+        const url = new URL(endpoint);
+        if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
+      } catch {
+        this.setFieldError("model-endpoint", "Use an http:// or https:// endpoint.");
+        firstInvalid ??= this.elements["model-endpoint"] as HTMLInputElement;
+      }
+    }
+    if (!model) {
+      this.setFieldError("model-name", "Enter a model name.");
+      firstInvalid ??= this.elements["model-name"] as HTMLInputElement;
+    }
+    if (firstInvalid !== undefined) {
+      firstInvalid.focus();
+      this.notify("Check the highlighted connection fields.", "error");
+      return undefined;
+    }
+    return { endpoint, model, apiKey };
   }
 
   private confirmDraft(): boolean {
@@ -380,6 +475,10 @@ export class AgentApp {
   }
 
   private async sendMessage(): Promise<void> {
+    if (!this.ready) {
+      this.notify("Loading local sessions…");
+      return;
+    }
     if (this.busy) return;
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     const content = input.value.trim();
@@ -426,6 +525,7 @@ export class AgentApp {
       this.runController = undefined;
       this.setBusy(false);
       this.renderAll();
+      this.focusComposer(true);
     }
   }
 
@@ -434,7 +534,7 @@ export class AgentApp {
       case "text-delta":
         this.pendingText += event.delta;
         this.notify("Thinking…");
-        this.renderChat();
+        this.scheduleChatRender();
         break;
       case "model-started":
         this.notify(`Thinking · turn ${event.turn}…`);
@@ -468,6 +568,7 @@ export class AgentApp {
     const cancel = this.elements["cancel-button"] as HTMLButtonElement;
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     send.disabled = value;
+    send.setAttribute("aria-busy", String(value));
     cancel.hidden = !value;
     input.disabled = value;
     const spinner = send.querySelector<HTMLElement>(".spinner");
@@ -519,16 +620,30 @@ export class AgentApp {
     this.element("session-count").textContent = String(this.conversations.size);
   }
 
+  private scheduleChatRender(): void {
+    if (this.chatRenderScheduled) return;
+    this.chatRenderScheduled = true;
+    const render = () => {
+      this.chatRenderScheduled = false;
+      if (this.ready) this.renderChat();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(render);
+    else setTimeout(render, 0);
+  }
+
   private renderChat(): void {
     const chat = this.elements["chat-log"];
     if (chat === undefined) return;
     const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
+    chat.setAttribute("aria-busy", String(this.busy));
     chat.replaceChildren();
     const conversation = this.activeConversation();
     if (conversation.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
       const empty = document.createElement("div");
       empty.className = "empty-state";
-      empty.append(textElement("div", "✦", "empty-icon"), textElement("h2", "A quiet place to think."), textElement("p", "Start with a question, a draft, or a small task. Your sessions stay in this browser by default."));
+      const icon = textElement("div", "✦", "empty-icon");
+      icon.setAttribute("aria-hidden", "true");
+      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Start with a question, a draft, or a small task. Your sessions stay in this browser by default."));
       chat.append(empty);
     } else {
       for (const message of conversation.messages) chat.append(this.messageElement(message));
@@ -547,6 +662,7 @@ export class AgentApp {
     const header = document.createElement("div");
     header.className = "message-header";
     header.textContent = message.role === "user" ? "You" : message.role === "assistant" ? "Agent" : message.role === "tool" ? message.name : "System";
+    if (message.role === "tool") header.setAttribute("translate", "no");
     article.append(header);
     const body = document.createElement("div");
     body.className = "message-body";
@@ -556,7 +672,11 @@ export class AgentApp {
     if (message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0) {
       const calls = document.createElement("div");
       calls.className = "tool-call-list";
-      for (const call of message.toolCalls) calls.append(textElement("span", call.name, "tool-call-tag"));
+      for (const call of message.toolCalls) {
+        const tag = textElement("span", call.name, "tool-call-tag");
+        tag.setAttribute("translate", "no");
+        calls.append(tag);
+      }
       article.append(calls);
     }
     return article;
@@ -579,7 +699,9 @@ export class AgentApp {
     for (const descriptor of this.tools.descriptors()) {
       const entry = document.createElement("div");
       entry.className = "tool-entry";
-      entry.append(textElement("strong", descriptor.name, "tool-name"), textElement("span", descriptor.description));
+      const name = textElement("strong", descriptor.name, "tool-name");
+      name.setAttribute("translate", "no");
+      entry.append(name, textElement("span", descriptor.description));
       for (const capability of descriptor.requiredCapabilities) entry.append(textElement("span", `Requires · ${capability}`, "capability-chip"));
       list.append(entry);
     }
@@ -587,7 +709,7 @@ export class AgentApp {
   }
 
   private async toggleRuntime(): Promise<void> {
-    if (this.busy) return;
+    if (!this.ready || this.busy) return;
     const button = this.elements["runtime-action"] as HTMLButtonElement;
     button.disabled = true;
     try {
@@ -608,7 +730,7 @@ export class AgentApp {
   }
 
   private async toggleStorage(): Promise<void> {
-    if (this.busy) return;
+    if (!this.ready || this.busy) return;
     const button = this.elements["storage-action"] as HTMLButtonElement;
     button.disabled = true;
     try {
@@ -629,14 +751,14 @@ export class AgentApp {
   }
 
   private async connectRemote(form: HTMLFormElement): Promise<void> {
+    if (!this.ready) return;
     const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
     const spinner = submit?.querySelector<HTMLElement>(".spinner");
+    const values = this.connectionValues(form);
+    if (values === undefined) return;
+    const { endpoint, model, apiKey } = values;
     if (submit !== null && submit !== undefined) submit.disabled = true;
     if (spinner !== null && spinner !== undefined) spinner.hidden = false;
-    const data = new FormData(form);
-    const endpoint = String(data.get("endpoint") ?? "").trim();
-    const model = String(data.get("model") ?? "").trim();
-    const apiKey = String(data.get("apiKey") ?? "");
     try {
       await this.capabilities.request("model-client", [{ name: "network", reason: "Send conversation messages to the configured model endpoint." }]);
       const network = await this.capabilities.get<NetworkCapability>("model-client", "network");
@@ -656,7 +778,7 @@ export class AgentApp {
   }
 
   private useLocalModel(): void {
-    if (this.busy) return;
+    if (!this.ready || this.busy) return;
     this.agent.setModel(this.echo);
     this.capabilities.revoke("model-client");
     this.activeModelLabel = "Local demo";
@@ -671,8 +793,14 @@ export class AgentApp {
     status.className = `status-message ${kind === "normal" ? "" : kind}`;
   }
 
-  private focusComposer(): void {
-    queueMicrotask(() => (this.elements["message-input"] as HTMLTextAreaElement | undefined)?.focus());
+  private focusComposer(force = false): void {
+    if (!force && window.matchMedia("(max-width: 720px)").matches) return;
+    queueMicrotask(() => {
+      const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
+      const active = document.activeElement;
+      if (input === undefined || (!force && active !== document.body && active !== this.root)) return;
+      input.focus();
+    });
   }
 }
 
