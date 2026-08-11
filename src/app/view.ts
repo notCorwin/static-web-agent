@@ -12,20 +12,6 @@ export function textElement(tag: keyof HTMLElementTagNameMap, text: string, clas
 export function renderShell(root: HTMLElement): AppElements {
   root.innerHTML = `
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Workspace navigation">
-        <div class="brand">
-          <div class="brand-mark" aria-hidden="true">∿</div>
-          <div>
-            <div class="brand-name" translate="no">Static Web Agent</div>
-            <p class="brand-subtitle">Browser-native workspace</p>
-          </div>
-        </div>
-        <div class="sidebar-footer">
-          <div class="storage-status"><span class="status-dot" aria-hidden="true"></span><span id="storage-label">In-memory chat</span></div>
-          <span>Chat records clear when you refresh.</span>
-        </div>
-      </aside>
-
       <main class="workspace" id="main-content" tabindex="-1">
         <header class="topbar">
           <div class="title-wrap">
@@ -33,7 +19,7 @@ export function renderShell(root: HTMLElement): AppElements {
             <p id="conversation-meta">In memory · clears on refresh</p>
           </div>
           <div class="topbar-actions">
-            <span class="model-chip" id="model-chip">Model · <strong>Offline assistant</strong></span>
+            <span class="model-chip" id="model-chip">Model · <strong>No model connected</strong></span>
           </div>
         </header>
 
@@ -56,11 +42,12 @@ export function renderShell(root: HTMLElement): AppElements {
               <p class="field-help" id="key-help">Stored only in this browser's local storage.</p>
             </div>
             <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Use remote</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
-            <button class="secondary-button" id="use-local" type="button">Use offline</button>
             <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
             <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </form>
         </details>
+
+        <div class="extension-host" id="extension-host" aria-label="Plugin extensions"></div>
 
         <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
           <div class="loading-state" role="status" aria-live="polite">
@@ -72,7 +59,7 @@ export function renderShell(root: HTMLElement): AppElements {
         <div class="composer-wrap">
           <form class="composer" id="composer-form">
             <label class="sr-only" for="message-input">Message the agent</label>
-            <textarea id="message-input" name="message" rows="3" maxlength="20000" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
+            <textarea id="message-input" name="message" rows="2" maxlength="20000" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
             <button class="primary-button send-button" id="send-button" type="submit" aria-label="Send message"><span class="button-content"><span class="button-label">Send</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
             <div class="composer-actions">
               <p class="composer-hint">Enter adds a line · ⌘/Ctrl&nbsp;+&nbsp;Enter sends</p>
@@ -82,23 +69,6 @@ export function renderShell(root: HTMLElement): AppElements {
           </form>
         </div>
       </main>
-
-      <aside class="tools-panel" aria-label="Runtime surface">
-        <div class="panel-heading"><h2>Capabilities</h2><span class="count" id="enabled-count">0</span></div>
-        <p class="panel-intro">Tools and extensions are opt-in. Each plugin must request its browser capabilities.</p>
-        <div class="permission-card" id="runtime-card">
-          <h3>JavaScript runtime</h3>
-          <p>Run small transformations in a time-limited worker. This is not a security sandbox.</p>
-          <button class="secondary-button" id="runtime-action" type="button">Enable plugin</button>
-        </div>
-        <div class="permission-card" id="storage-card">
-          <h3>Local storage tool</h3>
-          <p>Give the agent a namespaced key-value store backed by this browser's local state.</p>
-          <button class="secondary-button" id="storage-action" type="button">Enable plugin</button>
-        </div>
-        <div class="extension-host" id="extension-host" aria-label="Plugin extensions"></div>
-        <div class="tool-list" id="tool-list" aria-label="Enabled tools"></div>
-      </aside>
     </div>
   `;
   const elements: AppElements = {};

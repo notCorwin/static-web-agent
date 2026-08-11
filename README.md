@@ -1,6 +1,6 @@
 # Static Web Agent
 
-Static Web Agent is a browser-native agent workspace. Conversation state, orchestration, tools, plugins, and workers run in the page. Chat history is held in memory and clears when the page is refreshed. A remote model is optional and is called directly from the browser; there is no application backend, localhost service, extension, or native helper.
+Static Web Agent is a browser-native agent workspace. Conversation state, orchestration, tools, plugins, and workers run in the page. Chat history is held in memory and clears when the page is refreshed. A remote model is connected directly from the browser; there is no application backend, localhost service, extension, or native helper.
 
 ## Run
 
@@ -19,16 +19,9 @@ npm run test:browser
 
 The browser checks use `BROWSER_PATH` or a detected Chromium/Chrome binary. If no browser is installed they print an explicit skip message; set `BROWSER_PATH` in CI when browser coverage is required (and `REQUIRE_BROWSER=1` to turn absence into a failure).
 
-## What works without a model
+## Connect a model
 
-The default adapter is the bounded **Offline assistant**, not a language-model simulator. It supports:
-
-- `/help`
-- `/calc 2 * (3 + 4)` using a parser rather than `eval`
-- `/time`
-- `/tools`
-
-It does not pretend to answer open-ended questions. Connect a remote model for general reasoning and tool planning.
+The workspace requires an OpenAI-compatible remote model for chat. Requests are sent directly from the browser after you configure the endpoint, model, and API key.
 
 ## Remote models
 
@@ -63,7 +56,7 @@ Important modules:
 
 Plugins are code-loaded modules, not discovered or downloaded by the application. Consumers can provide trusted plugins through `startApp(root, { plugins, initialModelId })`. A plugin can register a model adapter, processor, or UI contribution; the application uses the adapter registry, runs processors on outgoing user-message envelopes, and mounts UI contributions in the extension host. Plugin setup registers contributions; capability access is available after installation (tools normally request it during execution). Uninstalling a plugin removes all of its contributions and closes its registration context.
 
-The built-in JavaScript runtime and local storage plugins are opt-in. The permission policy is explicit and the default UI asks before granting a capability. The application limits work to 200 messages per chat, 20,000 characters per message, 250,000 characters per conversation/model request, 16 tool calls per turn, and 16,000-character tool output. Chat history is never written to the browser state store; the optional local storage plugin keeps its own namespaced values independently.
+The built-in JavaScript runtime and local storage plugins are enabled by default. The permission policy automatically grants those two built-in capabilities; extensions still require an explicit browser permission prompt. The application limits work to 200 messages per chat, 20,000 characters per message, 250,000 characters per conversation/model request, 16 tool calls per turn, and 16,000-character tool output. Chat history is never written to the browser state store; the local storage plugin keeps its own namespaced values independently.
 
 ## Security boundaries
 

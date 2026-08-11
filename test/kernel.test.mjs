@@ -5,7 +5,6 @@ import {
   CapabilityManager,
   CHAT_LIMITS,
   CONNECTION_SETTINGS_KEY,
-  LocalModelAdapter,
   MemoryStateStore,
   OpenAICompatibleAdapter,
   PluginManager,
@@ -493,10 +492,4 @@ test("OpenAI-compatible adapter parses a completed SSE response", async () => {
   for await (const event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) events.push(event);
   assert.equal(events.at(-1).type, "completed");
   assert.equal(events.at(-1).message.content, "hello");
-});
-
-test("the default local model provides bounded offline commands instead of echoing", async () => {
-  const events = [];
-  for await (const event of new LocalModelAdapter().stream({ messages: [{ role: "user", content: "/calc 2 * (3 + 4)" }], tools: [], signal: noSignal() })) events.push(event);
-  assert.equal(events.at(-1).message.content, "Result: 14");
 });

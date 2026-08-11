@@ -5,7 +5,6 @@ import { BrowserWorkerRuntime } from "../core/runtime.js";
 import { createBrowserStateStore, PrefixedStateStore } from "../core/state.js";
 import { ToolRegistry } from "../core/tool-registry.js";
 import { createJavaScriptRuntimePlugin } from "../plugins/javascript-runtime.js";
-import { createLocalModelPlugin } from "../plugins/local-model.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { CHAT_LIMITS, createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
@@ -33,14 +32,13 @@ export class AgentApp {
   private capabilities!: CapabilityManager;
   private tools!: ToolRegistry;
   private plugins!: PluginManager;
-  private agent!: Agent;
-  private localHandle: PluginHandle | undefined;
+  private agent: Agent | undefined;
   private remoteHandle: PluginHandle | undefined;
   private runtimeHandle: PluginHandle | undefined;
   private storageHandle: PluginHandle | undefined;
   private readonly extensionHandles: PluginHandle[] = [];
   private uiCleanup: (() => void) | undefined;
-  private activeModelLabel = "Offline assistant";
+  private activeModelLabel = "No model connected";
   private ready = false;
   private busy = false;
   private runController: AbortController | undefined;
@@ -63,9 +61,10 @@ export class AgentApp {
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
     this.applyConnectionSettings(await loadConnectionSettings(this.store));
     this.capabilities = new CapabilityManager({
-      decide: ({ pluginId, name, reason }) => {
+      decide: ({ pluginId, reason }) => {
+        if (pluginId === "javascript-runtime" || pluginId === "local-storage") return true;
         if (typeof window.confirm !== "function") return false;
-        return window.confirm(`Allow “${pluginId}” to use the “${name}” capability?\n\n${reason}`);
+        return window.confirm(`Allow “${pluginId}” to use a browser capability?\n\n${reason}`);
       },
     });
     this.capabilities.register("runtime", { provide: () => this.runtime });
@@ -85,23 +84,25 @@ export class AgentApp {
     });
     this.tools = new ToolRegistry(this.capabilities, { maxInputChars: 16_000, maxOutputChars: 16_000 });
     this.plugins = new PluginManager(this.tools, this.capabilities);
-    this.localHandle = await this.plugins.install(createLocalModelPlugin());
     try {
+      this.runtimeHandle = await this.plugins.install(createJavaScriptRuntimePlugin());
+      this.storageHandle = await this.plugins.install(createStoragePlugin());
       for (const plugin of this.options.plugins ?? []) this.extensionHandles.push(await this.plugins.install(plugin));
     } catch (error) {
+      if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
+      this.storageHandle = undefined;
+      if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
+      this.runtimeHandle = undefined;
       for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
-      await this.localHandle.uninstall();
-      this.localHandle = undefined;
       throw error;
     }
-    const modelId = this.options.initialModelId ?? "local";
-    const model = this.plugins.modelAdapter(modelId) ?? this.plugins.modelAdapter("local");
-    if (model === undefined) throw new Error("No model adapter is available.");
-    this.activeModelLabel = model.id === "local" ? "Offline assistant" : model.id;
-    this.agent = new Agent(model, this.tools);
+    const model = this.options.initialModelId === undefined ? undefined : this.plugins.modelAdapter(this.options.initialModelId);
+    if (this.options.initialModelId !== undefined && model === undefined) throw new Error(`Model adapter “${this.options.initialModelId}” is not available.`);
+    this.activeModelLabel = model?.id ?? "No model connected";
+    if (model !== undefined) this.agent = new Agent(model, this.tools);
     this.plugins.subscribe(() => {
       if (this.ready) {
-        this.renderTools();
+        this.renderExtensions();
         this.renderHeader();
       }
     });
@@ -120,7 +121,7 @@ export class AgentApp {
     if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
     if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
     for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
-    if (this.localHandle !== undefined) await this.localHandle.uninstall();
+    this.agent = undefined;
     this.ready = false;
   }
 
@@ -136,13 +137,10 @@ export class AgentApp {
       }
     });
     this.elements["cancel-button"]?.addEventListener("click", () => this.runController?.abort());
-    this.elements["runtime-action"]?.addEventListener("click", () => void this.toggleRuntime());
-    this.elements["storage-action"]?.addEventListener("click", () => void this.toggleStorage());
     this.elements["connection-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.connectRemote(event.currentTarget as HTMLFormElement);
     });
-    this.elements["use-local"]?.addEventListener("click", () => void this.useLocalModel());
     this.elements["connection-details"]?.addEventListener("toggle", () => {
       const details = this.elements["connection-details"] as HTMLDetailsElement;
       const urlOpen = new URL(window.location.href).searchParams.get("connect") === "1";
@@ -248,6 +246,11 @@ export class AgentApp {
       return;
     }
     if (this.busy) return;
+    const agent = this.agent;
+    if (agent === undefined) {
+      this.notify("Connect a remote model before sending.", "error");
+      return;
+    }
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     const rawContent = input.value.trim();
     if (!rawContent) {
@@ -275,7 +278,7 @@ export class AgentApp {
       this.pendingText = "";
       this.pendingTool = undefined;
       this.renderAll();
-      const result = await this.agent.run({
+      const result = await agent.run({
         messages: this.chat.messages,
         signal: controller.signal,
         maxTurns: 8,
@@ -350,7 +353,6 @@ export class AgentApp {
     input.disabled = value;
     const spinner = send.querySelector<HTMLElement>(".spinner");
     if (spinner !== null) spinner.hidden = !value;
-    this.renderTools();
   }
 
   private element<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -362,7 +364,7 @@ export class AgentApp {
   private renderAll(): void {
     this.renderHeader();
     this.renderChat();
-    this.renderTools();
+    this.renderExtensions();
   }
 
   private renderHeader(): void {
@@ -394,7 +396,7 @@ export class AgentApp {
       empty.className = "empty-state";
       const icon = textElement("div", "✦", "empty-icon");
       icon.setAttribute("aria-hidden", "true");
-      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Start with /help for offline commands, or connect a model for open-ended answers. This chat clears when you refresh."));
+      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Connect a model to start chatting. This chat clears when you refresh."));
       chat.append(empty);
     } else {
       for (const message of this.chat.messages) chat.append(messageElement(message));
@@ -407,76 +409,14 @@ export class AgentApp {
     if (nearBottom || this.chat.messages.length === 0) chat.scrollTop = chat.scrollHeight;
   }
 
-  private renderTools(): void {
+  private renderExtensions(): void {
     if (this.plugins === undefined) return;
-    const runtimeAction = this.elements["runtime-action"] as HTMLButtonElement;
-    const storageAction = this.elements["storage-action"] as HTMLButtonElement;
-    runtimeAction.textContent = this.runtimeHandle === undefined ? "Enable plugin" : "Disable plugin";
-    storageAction.textContent = this.storageHandle === undefined ? "Enable plugin" : "Disable plugin";
-    runtimeAction.disabled = this.busy;
-    storageAction.disabled = this.busy;
-    this.element("runtime-card").setAttribute("aria-busy", String(runtimeAction.disabled));
-    this.element("storage-card").setAttribute("aria-busy", String(storageAction.disabled));
+    const extensionHost = this.elements["extension-host"];
+    if (extensionHost === undefined) return;
     this.uiCleanup?.();
     this.uiCleanup = undefined;
-    const extensionHost = this.element("extension-host");
     extensionHost.replaceChildren();
     this.uiCleanup = this.plugins.mountUi(extensionHost);
-    const list = this.element("tool-list");
-    list.replaceChildren();
-    const descriptors = this.tools.descriptors();
-    for (const descriptor of descriptors) {
-      const entry = document.createElement("div");
-      entry.className = "tool-entry";
-      const name = textElement("strong", descriptor.name, "tool-name");
-      name.setAttribute("translate", "no");
-      entry.append(name, textElement("span", descriptor.description));
-      for (const capability of descriptor.requiredCapabilities) entry.append(textElement("span", `Requires · ${capability}`, "capability-chip"));
-      list.append(entry);
-    }
-    this.element("enabled-count").textContent = String(descriptors.length);
-  }
-
-  private async toggleRuntime(): Promise<void> {
-    if (!this.ready || this.busy) return;
-    const button = this.elements["runtime-action"] as HTMLButtonElement;
-    button.disabled = true;
-    try {
-      if (this.runtimeHandle !== undefined) {
-        await this.runtimeHandle.uninstall();
-        this.runtimeHandle = undefined;
-        this.notify("JavaScript runtime disabled.", "success");
-      } else {
-        this.runtimeHandle = await this.plugins.install(createJavaScriptRuntimePlugin());
-        this.notify("JavaScript runtime enabled.", "success");
-      }
-    } catch (error) {
-      this.notify(error instanceof Error ? error.message : "Could not change the runtime plugin.", "error");
-    } finally {
-      button.disabled = false;
-      this.renderTools();
-    }
-  }
-
-  private async toggleStorage(): Promise<void> {
-    if (!this.ready || this.busy) return;
-    const button = this.elements["storage-action"] as HTMLButtonElement;
-    button.disabled = true;
-    try {
-      if (this.storageHandle !== undefined) {
-        await this.storageHandle.uninstall();
-        this.storageHandle = undefined;
-        this.notify("Local storage tool disabled.", "success");
-      } else {
-        this.storageHandle = await this.plugins.install(createStoragePlugin());
-        this.notify("Local storage tool enabled.", "success");
-      }
-    } catch (error) {
-      this.notify(error instanceof Error ? error.message : "Could not change the storage plugin.", "error");
-    } finally {
-      button.disabled = false;
-      this.renderTools();
-    }
   }
 
   private async connectRemote(form: HTMLFormElement): Promise<void> {
@@ -492,43 +432,26 @@ export class AgentApp {
         await this.remoteHandle.uninstall();
         this.remoteHandle = undefined;
       }
+      this.agent = undefined;
       const handle = await this.plugins.install(createRemoteModelPlugin(values));
       const adapter = this.plugins.modelAdapter("remote-model");
       if (adapter === undefined) throw new Error("The remote model plugin did not register an adapter.");
       this.remoteHandle = handle;
-      this.agent.setModel(adapter);
+      this.agent = new Agent(adapter, this.tools);
       this.activeModelLabel = `Remote · ${values.model}`;
       await saveConnectionSettings(this.store, values);
       this.element("connection-status").textContent = "Remote model selected. Connection settings saved in this browser.";
       this.renderHeader();
       this.notify("Remote model selected.", "success");
     } catch (error) {
-      this.agent.setModel(this.plugins.modelAdapter("local")!);
-      this.activeModelLabel = "Offline assistant";
+      this.agent = undefined;
+      this.activeModelLabel = "No model connected";
       this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not select the model.";
       this.notify(this.element("connection-status").textContent, "error");
     } finally {
       if (submit !== null && submit !== undefined) submit.disabled = false;
       if (spinner !== null && spinner !== undefined) spinner.hidden = true;
     }
-  }
-
-  private async useLocalModel(): Promise<void> {
-    if (!this.ready || this.busy) return;
-    if (this.remoteHandle !== undefined) {
-      await this.remoteHandle.uninstall();
-      this.remoteHandle = undefined;
-    }
-    const local = this.plugins.modelAdapter("local");
-    if (local === undefined) {
-      this.notify("The offline model is unavailable.", "error");
-      return;
-    }
-    this.agent.setModel(local);
-    this.activeModelLabel = "Offline assistant";
-    this.element("connection-status").textContent = "Using the offline assistant. No model request leaves this browser.";
-    this.renderHeader();
-    this.notify("Offline model selected.", "success");
   }
 
   private notify(message: string, kind: "normal" | "success" | "error" = "normal"): void {

@@ -43,7 +43,7 @@ export function createStoragePlugin(): Plugin {
       id: "local-storage",
       name: "Local storage",
       version: "1.0.0",
-      description: "An opt-in, namespaced tool for local browser state.",
+      description: "A namespaced tool for local browser state.",
       permissions: [{ name: "storage", reason: "Read and write values in this plugin's local namespace." }],
     },
     setup(context) {

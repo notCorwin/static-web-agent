@@ -187,26 +187,38 @@ try {
   page = new CdpPage(target.webSocketDebuggerUrl);
   await page.send("Runtime.enable");
   await page.send("Page.enable");
-  await waitFor(page, "document.querySelector('.app-shell') !== null && document.querySelector('#message-input')?.disabled === false && !document.querySelector('.loading-state')");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1035, height: 922, deviceScaleFactor: 1, mobile: false });
+  await waitFor(page, "document.querySelector('.app-shell') !== null && document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('#storage-action') === null && document.querySelector('.sidebar') === null && document.querySelector('.tools-panel') === null && !document.querySelector('.loading-state')");
+
+  const initialUi = await page.evaluate(`({
+    noWorkspaceNavigation: document.querySelector('.sidebar') === null,
+    noRuntimeSurface: document.querySelector('.tools-panel') === null,
+    noOfflineControl: document.querySelector('#use-local') === null,
+    compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
+  })`);
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, compactComposer: true });
+  const connectionLayout = await page.evaluate(`(() => {
+    document.querySelector('#connection-details').open = true;
+    const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
+    const buttonTop = document.querySelector('#connection-form > .primary-button').getBoundingClientRect().top;
+    return { inputTops, buttonTop, composerHeight: document.querySelector('#message-input').getBoundingClientRect().height };
+  })()`);
+  assert.ok(Math.max(...connectionLayout.inputTops) - Math.min(...connectionLayout.inputTops) <= 1, "connection inputs should share a top alignment");
+  assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[0]) <= 2, "connection button should align with the inputs");
+  assert.ok(connectionLayout.composerHeight <= 66, "the message composer should stay compact");
 
   await page.evaluate("window.confirm = () => true");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
-    input.value = '/calc 2 * (3 + 4)';
+    input.value = 'message before connecting';
     input.dispatchEvent(new Event('input', { bubbles: true }));
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  try {
-    await waitFor(page, "document.querySelector('.message.assistant .message-body')?.textContent === 'Result: 14'");
-  } catch (error) {
-    console.log("Browser UI state:", await page.evaluate("({ chat: document.querySelector('#chat-log')?.textContent, status: document.querySelector('#run-status')?.textContent, busy: document.querySelector('#send-button')?.disabled })"));
-    throw error;
-  }
+  await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('Connect a remote model')");
+  await page.evaluate("document.querySelector('#message-input').value = ''");
 
-  const persisted = await page.evaluate("document.querySelector('.message.user .message-body')?.textContent === '/calc 2 * (3 + 4)'");
-  assert.equal(persisted, true, "the browser UI should render the sent message before reload");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, "document.querySelector('#runtime-action') !== null && document.querySelector('#runtime-action')?.disabled === false && document.querySelector('.empty-state') !== null && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')");
+  await waitFor(page, "document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')");
   const resetState = await page.evaluate(`({
     noSessionControls: document.querySelector('#new-session') === null && document.querySelector('#session-list') === null && document.querySelector('#session-count') === null,
     noSessionUrl: !new URL(location.href).searchParams.has('session'),
@@ -215,20 +227,6 @@ try {
   })`);
   assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, emptyChat: true });
   await page.evaluate("window.confirm = () => true");
-
-  await page.evaluate("document.querySelector('#runtime-action').click()");
-  try {
-    await waitFor(page, "document.querySelector('#tool-list')?.textContent.includes('runtime.javascript')");
-  } catch (error) {
-    console.log("Plugin UI state:", await page.evaluate("({ action: document.querySelector('#runtime-action')?.textContent, tools: document.querySelector('#tool-list')?.textContent, status: document.querySelector('#run-status')?.textContent })"));
-    throw error;
-  }
-  await page.evaluate("document.querySelector('#runtime-action').click()");
-  await waitFor(page, "!document.querySelector('#tool-list')?.textContent.includes('runtime.javascript')");
-  await page.evaluate("document.querySelector('#storage-action').click()");
-  await waitFor(page, "document.querySelector('#tool-list')?.textContent.includes('storage.local')");
-  await page.evaluate("document.querySelector('#storage-action').click()");
-  await waitFor(page, "!document.querySelector('#tool-list')?.textContent.includes('storage.local')");
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-sse';
@@ -258,7 +256,7 @@ try {
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
 
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, "document.querySelector('#runtime-action') !== null && document.querySelector('#runtime-action')?.disabled === false && document.querySelector('.empty-state') !== null && !document.querySelector('.loading-state')");
+  await waitFor(page, "document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && !document.querySelector('.loading-state')");
   const savedConnection = await page.evaluate(`({
     endpoint: document.querySelector('#model-endpoint')?.value,
     model: document.querySelector('#model-name')?.value,
@@ -327,6 +325,8 @@ try {
     const app = new AgentApp(appRoot, { plugins: [appPlugin] });
     await app.start();
     const appExtension = appRoot.textContent.includes('app extension');
+    const defaultTools = app.tools.descriptors().map((descriptor) => descriptor.name);
+    const defaultPlugins = app.runtimeHandle !== undefined && app.storageHandle !== undefined;
     await app.stop();
     appRoot.remove();
 
@@ -336,14 +336,26 @@ try {
       indexedDb: stored?.ok === true,
       sse: events.at(-1)?.type === 'completed' && events.at(-1)?.message.content === 'sse',
       cancelled: cancellation.status === 'cancelled' && cancelled,
+      defaultPlugins: defaultPlugins && defaultTools.includes('runtime.javascript') && defaultTools.includes('storage.local'),
       pluginUi: mounted && processed === 'ok!' && removedOnUninstall && pluginTools.get('browser.tool') === undefined && extensionRoot.textContent === '' && appExtension,
     };
   })()`);
-  assert.deepEqual(browserBoundaries, { worker: true, workerTimeout: true, indexedDb: true, sse: true, cancelled: true, pluginUi: true });
-  console.log("Browser checks passed: UI, in-memory reset, plugin toggle, Worker, IndexedDB, SSE, and cancellation.");
+  assert.deepEqual(browserBoundaries, { worker: true, workerTimeout: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
+  console.log("Browser checks passed: compact UI, remote-only chat, default plugins, IndexedDB, SSE, and cancellation.");
 } finally {
   await page?.close();
-  child.kill("SIGTERM");
+  const childExited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve();
+    }, 2_000);
+    child.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  if (child.exitCode === null) child.kill("SIGTERM");
+  await childExited;
   await rm(profile, { recursive: true, force: true });
   await new Promise((resolve) => server.close(resolve));
 }

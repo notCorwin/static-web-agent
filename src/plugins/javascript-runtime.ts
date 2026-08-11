@@ -38,7 +38,7 @@ export function createJavaScriptRuntimePlugin(): Plugin {
       id: "javascript-runtime",
       name: "JavaScript runtime",
       version: "1.0.0",
-      description: "An opt-in worker runtime for small JavaScript transformations.",
+      description: "A worker runtime for small JavaScript transformations.",
       permissions: [{ name: "runtime", reason: "Execute code supplied by the agent in a time-limited worker." }],
     },
     setup(context) {
