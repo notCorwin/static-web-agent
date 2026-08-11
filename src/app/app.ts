@@ -10,7 +10,7 @@ import { createBrowserApiPlugin } from "../plugins/browser-api.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
-import { loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
+import { isConnectionSettings, loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
 import { messageElement, renderShell, textElement, type AppElements } from "./view.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/openai-compatible.js";
@@ -20,9 +20,21 @@ interface NetworkCapability {
   readonly fetch: BrowserFetcher;
 }
 
+interface BrowserCredentialManager {
+  readonly get?: (options: { readonly password: true; readonly mediation: "silent" }) => Promise<unknown>;
+  readonly store?: (credential: unknown) => Promise<unknown>;
+}
+
+interface BrowserPasswordCredentialData {
+  readonly id?: unknown;
+  readonly name?: unknown;
+  readonly password?: unknown;
+}
+
 export interface AgentAppOptions {
   readonly plugins?: readonly Plugin[];
   readonly initialModelId?: string;
+  readonly autoConnect?: boolean;
 }
 
 export class AgentApp {
@@ -48,6 +60,8 @@ export class AgentApp {
   private pendingText = "";
   private pendingTool: ToolCall | undefined;
   private chatRenderScheduled = false;
+  private connectionEditing = false;
+  private autoConnectStarted = false;
   private readonly elements: AppElements;
 
   constructor(root: HTMLElement, options: AgentAppOptions = {}) {
@@ -62,7 +76,8 @@ export class AgentApp {
     this.bindEvents();
     this.chat = createChatState();
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
-    this.applyConnectionSettings(await loadConnectionSettings(this.store));
+    const savedSettings = await loadConnectionSettings(this.store);
+    this.applyConnectionSettings(savedSettings);
     this.capabilities = new CapabilityManager({ decide: () => true });
     this.capabilities.register("runtime", { provide: () => this.runtime });
     this.capabilities.register("network", {
@@ -105,11 +120,11 @@ export class AgentApp {
         this.renderExtensions();
       }
     });
-    this.syncConnectionPanelFromUrl();
     this.normalizeUrl(false);
     this.ready = true;
     this.renderAll();
     this.focusComposer();
+    if (this.options.autoConnect !== false) void this.autoConnect(savedSettings);
   }
 
   async stop(): Promise<void> {
@@ -122,6 +137,8 @@ export class AgentApp {
     if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
     for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
     this.agent = undefined;
+    this.connectionEditing = false;
+    this.autoConnectStarted = false;
     this.ready = false;
   }
 
@@ -141,16 +158,10 @@ export class AgentApp {
       event.preventDefault();
       void this.connectRemote(event.currentTarget as HTMLFormElement);
     });
-    this.elements["connection-details"]?.addEventListener("toggle", () => {
-      const details = this.elements["connection-details"] as HTMLDetailsElement;
-      const urlOpen = new URL(window.location.href).searchParams.get("connect") === "1";
-      if (details.open !== urlOpen) this.normalizeUrl(true);
-    });
     for (const field of ["model-endpoint", "model-name"]) {
       this.elements[field]?.addEventListener("input", () => this.clearFieldError(field));
     }
     window.addEventListener("popstate", () => {
-      this.syncConnectionPanelFromUrl();
       this.normalizeUrl(false);
     });
     window.addEventListener("beforeunload", (event) => {
@@ -164,16 +175,9 @@ export class AgentApp {
   private normalizeUrl(push: boolean): void {
     const url = new URL(window.location.href);
     url.searchParams.delete("session");
-    const details = this.elements["connection-details"] as HTMLDetailsElement | undefined;
-    if (details?.open === true) url.searchParams.set("connect", "1");
-    else url.searchParams.delete("connect");
+    url.searchParams.delete("connect");
     if (push) window.history.pushState({}, "", url);
     else window.history.replaceState({}, "", url);
-  }
-
-  private syncConnectionPanelFromUrl(): void {
-    const details = this.elements["connection-details"] as HTMLDetailsElement | undefined;
-    if (details !== undefined) details.open = new URL(window.location.href).searchParams.get("connect") === "1";
   }
 
   private applyConnectionSettings(settings: ConnectionSettings | undefined): void {
@@ -365,23 +369,38 @@ export class AgentApp {
 
   private renderChat(): void {
     const chat = this.elements["chat-log"];
-    if (chat === undefined) return;
+    const conversation = this.elements["conversation-content"];
+    const connectionCard = this.elements["connection-card"];
+    if (chat === undefined || conversation === undefined || connectionCard === undefined) return;
     const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
     chat.setAttribute("aria-busy", String(this.busy));
-    chat.replaceChildren();
+    connectionCard.hidden = this.agent !== undefined && !this.connectionEditing;
+    conversation.replaceChildren();
     if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      const icon = textElement("div", "✦", "empty-icon");
-      icon.setAttribute("aria-hidden", "true");
-      empty.append(icon, textElement("h2", "A quiet place to think."), textElement("p", "Connect a model to start chatting. This chat clears when you refresh."));
-      chat.append(empty);
+      if (this.agent !== undefined) {
+        const welcome = document.createElement("div");
+        welcome.className = "empty-state";
+        const icon = textElement("div", "✦", "empty-icon");
+        icon.setAttribute("aria-hidden", "true");
+        welcome.append(icon, textElement("h2", "Welcome"), textElement("p", "Your cloud model is connected. Ask anything to begin."));
+        const change = document.createElement("button");
+        change.className = "secondary-button";
+        change.type = "button";
+        change.textContent = "Change connection";
+        change.addEventListener("click", () => {
+          this.connectionEditing = true;
+          this.renderChat();
+          queueMicrotask(() => this.element<HTMLInputElement>("model-endpoint").focus());
+        });
+        welcome.append(change);
+        conversation.append(welcome);
+      }
     } else {
-      for (const message of this.chat.messages) chat.append(messageElement(message));
-      if (this.pendingText.length > 0) chat.append(messageElement({ role: "assistant", content: this.pendingText }, true));
+      for (const message of this.chat.messages) conversation.append(messageElement(message));
+      if (this.pendingText.length > 0) conversation.append(messageElement({ role: "assistant", content: this.pendingText }, true));
       if (this.pendingTool !== undefined) {
         const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
-        chat.append(messageElement(toolMessage, true));
+        conversation.append(messageElement(toolMessage, true));
       }
     }
     if (nearBottom || this.chat.messages.length === 0) chat.scrollTop = chat.scrollHeight;
@@ -397,12 +416,13 @@ export class AgentApp {
     this.uiCleanup = this.plugins.mountUi(extensionHost);
   }
 
-  private async connectRemote(form: HTMLFormElement): Promise<void> {
+  private async connectRemote(form: HTMLFormElement, automatic = false): Promise<void> {
     if (!this.ready || this.busy) return;
     const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
     const spinner = submit?.querySelector<HTMLElement>(".spinner");
     const values = this.connectionValues(form);
     if (values === undefined) return;
+    if (automatic) this.element("connection-status").textContent = "Restoring your saved cloud model…";
     if (submit !== null && submit !== undefined) submit.disabled = true;
     if (spinner !== null && spinner !== undefined) spinner.hidden = false;
     try {
@@ -417,15 +437,88 @@ export class AgentApp {
       this.remoteHandle = handle;
       this.agent = new Agent(adapter, this.tools);
       await saveConnectionSettings(this.store, values);
+      await this.saveBrowserCredential(values);
+      this.connectionEditing = false;
       this.element("connection-status").textContent = "Remote model selected. Connection settings saved in this browser.";
       this.notify("Remote model selected.", "success");
     } catch (error) {
       this.agent = undefined;
+      this.connectionEditing = true;
       this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not select the model.";
       this.notify(this.element("connection-status").textContent, "error");
     } finally {
       if (submit !== null && submit !== undefined) submit.disabled = false;
       if (spinner !== null && spinner !== undefined) spinner.hidden = true;
+      this.renderChat();
+    }
+  }
+
+  private async autoConnect(savedSettings: ConnectionSettings | undefined): Promise<void> {
+    if (this.autoConnectStarted || !this.ready) return;
+    this.autoConnectStarted = true;
+    const credentialSettings = await this.readBrowserCredential();
+    if (!this.ready || this.agent !== undefined) return;
+    const settings = credentialSettings ?? savedSettings;
+    if (settings === undefined) return;
+    this.applyConnectionSettings(settings);
+    const form = this.elements["connection-form"];
+    if (!(form instanceof HTMLFormElement)) return;
+    if (credentialSettings !== undefined) {
+      this.element("credential-status").textContent = "Restoring a saved connection from this browser's password manager.";
+    } else {
+      this.element("credential-status").textContent = "Restoring a saved connection from this browser's local settings.";
+    }
+    await this.connectRemote(form, true);
+  }
+
+  private browserCredentialManager(): BrowserCredentialManager | undefined {
+    const credentials = (navigator as Navigator & { readonly credentials?: unknown }).credentials;
+    if (typeof credentials !== "object" || credentials === null) return undefined;
+    const manager = credentials as BrowserCredentialManager;
+    if (typeof manager.get !== "function" && typeof manager.store !== "function") return undefined;
+    return manager;
+  }
+
+  private async readBrowserCredential(): Promise<ConnectionSettings | undefined> {
+    const credentials = this.browserCredentialManager();
+    const get = credentials?.get;
+    if (credentials === undefined || get === undefined) return undefined;
+    try {
+      const value = await get.call(credentials, { password: true, mediation: "silent" });
+      if (typeof value !== "object" || value === null) return undefined;
+      const data = value as BrowserPasswordCredentialData;
+      const endpoint = typeof data.id === "string" ? data.id.trim() : "";
+      const model = typeof data.name === "string" ? data.name.trim() : "";
+      const apiKey = typeof data.password === "string" ? data.password : "";
+      if (endpoint && model && apiKey) return { endpoint, model, apiKey };
+      if (typeof data.id === "string") {
+        try {
+          const parsed: unknown = JSON.parse(data.id);
+          if (isConnectionSettings(parsed) && parsed.endpoint && parsed.model && parsed.apiKey) return parsed;
+        } catch {
+          // The browser did not return a credential with the expected shape.
+        }
+      }
+    } catch {
+      // Credential Management is optional and may be unavailable in this context.
+    }
+    return undefined;
+  }
+
+  private async saveBrowserCredential(settings: ConnectionSettings): Promise<void> {
+    if (!settings.apiKey) return;
+    const credentials = this.browserCredentialManager();
+    const store = credentials?.store;
+    const PasswordCredential = (globalThis as typeof globalThis & {
+      readonly PasswordCredential?: new (data: { readonly id: string; readonly name: string; readonly password: string }) => unknown;
+    }).PasswordCredential;
+    if (credentials === undefined || store === undefined || PasswordCredential === undefined) return;
+    try {
+      const credential = new PasswordCredential({ id: settings.endpoint, name: settings.model, password: settings.apiKey });
+      await store.call(credentials, credential);
+      this.element("credential-status").textContent = "Saved to this browser's password manager and local settings.";
+    } catch {
+      // A password manager may reject programmatic storage; local settings remain available.
     }
   }
 

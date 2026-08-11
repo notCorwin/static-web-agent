@@ -23,11 +23,11 @@ The browser checks use `BROWSER_PATH` or a detected Chromium/Chrome binary. If n
 
 ## Connect a model
 
-The workspace requires an OpenAI-compatible remote model for chat. Requests are sent directly from the browser after you configure the endpoint, model, and API key.
+The workspace requires an OpenAI-compatible remote model for chat. Enter the endpoint, model, and API key in the welcome area; the connection form is shown until a model is selected, then the connected welcome message replaces it. Requests are sent directly from the browser.
 
 ## Remote models
 
-The connection panel installs a model plugin for the current tab. It accepts an OpenAI-compatible API base such as `https://openrouter.ai/api/v1` or a full `/chat/completions` endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. Versioned API bases automatically receive the `/chat/completions` suffix. The first message verifies the endpoint; selecting the model itself does not make a network request. After a successful selection, the endpoint, model, and API key are saved in this browser's local IndexedDB and restored into the connection form on the next visit. The key is not sent anywhere except the configured endpoint; treat it as sensitive data because same-origin page code can read browser storage.
+The connection form installs a model plugin for the current tab. It accepts an OpenAI-compatible API base such as `https://openrouter.ai/api/v1` or a full `/chat/completions` endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. Versioned API bases automatically receive the `/chat/completions` suffix. The first message verifies the endpoint; selecting the model itself does not make a network request. After a successful selection, the endpoint, model, and API key are saved in this browser's local IndexedDB. When the Credential Management API and a browser password manager are available, the same values are also stored as a password credential and silently restored on the next visit; IndexedDB remains the fallback. The key is not sent anywhere except the configured endpoint; treat it as sensitive data because same-origin page code can read browser storage.
 
 Provider failures, HTTP errors, empty responses, malformed tool arguments, malformed SSE, incomplete SSE streams, and cancellation are returned as structured model errors. The application does not add a default model deadline; the provider, browser, or an explicit caller cancellation can still end a request.
 

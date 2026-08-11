@@ -13,37 +13,45 @@ export function renderShell(root: HTMLElement): AppElements {
   root.innerHTML = `
     <div class="app-shell">
       <main class="workspace" id="main-content" tabindex="-1" aria-label="Chat workspace">
-        <details class="connection-details" id="connection-details">
-          <summary>Connect an OpenAI-compatible model</summary>
-          <form class="connection-form" id="connection-form" novalidate>
-            <div class="field">
-              <label for="model-endpoint">OpenAI-compatible endpoint or API base</label>
-              <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1 or …/chat/completions" />
-              <p class="field-error" id="endpoint-error" role="status" aria-live="polite"></p>
-            </div>
-            <div class="field">
-              <label for="model-name">Model</label>
-              <input id="model-name" name="model" type="text" inputmode="text" autocomplete="off" aria-describedby="model-error" aria-invalid="false" placeholder="model-name…" />
-              <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
-            </div>
-            <div class="field">
-              <label for="model-key">API key <span class="faint">(saved locally)</span></label>
-              <input id="model-key" name="apiKey" type="password" autocomplete="new-password" aria-describedby="key-help" placeholder="Paste a key…" />
-              <p class="field-help" id="key-help">Stored only in this browser's local storage.</p>
-            </div>
-            <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Use remote</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
-            <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
-            <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
-          </form>
-        </details>
-
         <div class="extension-host" id="extension-host" aria-label="Plugin extensions"></div>
 
         <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
-          <div class="loading-state" role="status" aria-live="polite">
-            <span class="loading-line loading-line-wide" aria-hidden="true"></span>
-            <span class="loading-line loading-line-short" aria-hidden="true"></span>
-            <span class="loading-label">Starting chat…</span>
+          <section class="connection-card" id="connection-card" aria-labelledby="connection-title">
+            <div class="connection-intro">
+              <div class="connection-icon" aria-hidden="true">✦</div>
+              <div>
+                <h2 id="connection-title">Connect your cloud model</h2>
+                <p>Enter your OpenAI-compatible endpoint, model, and API key. This connection can be restored automatically by your browser.</p>
+              </div>
+            </div>
+            <form class="connection-form" id="connection-form" novalidate>
+              <div class="field">
+                <label for="model-endpoint">OpenAI-compatible endpoint or API base</label>
+                <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1 or …/chat/completions" />
+                <p class="field-error" id="endpoint-error" role="status" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="model-name">Model</label>
+                <input id="model-name" name="model" type="text" inputmode="text" autocomplete="username" aria-describedby="model-error" aria-invalid="false" placeholder="model-name…" />
+                <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
+              </div>
+              <div class="field">
+                <label for="model-key">API key <span class="faint">(saved locally)</span></label>
+                <input id="model-key" name="apiKey" type="password" autocomplete="current-password" aria-describedby="key-help" placeholder="Paste a key…" />
+                <p class="field-help" id="key-help">Stored locally and offered to the browser password manager when supported.</p>
+              </div>
+              <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Connect model</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
+              <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
+              <p class="credential-status" id="credential-status" role="status" aria-live="polite">Browser password manager auto-connect is enabled when available.</p>
+              <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
+            </form>
+          </section>
+          <div class="conversation-content" id="conversation-content">
+            <div class="loading-state" role="status" aria-live="polite">
+              <span class="loading-line loading-line-wide" aria-hidden="true"></span>
+              <span class="loading-line loading-line-short" aria-hidden="true"></span>
+              <span class="loading-label">Starting chat…</span>
+            </div>
           </div>
         </section>
         <div class="composer-wrap">

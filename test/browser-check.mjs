@@ -196,9 +196,11 @@ try {
     noRuntimeSurface: document.querySelector('.tools-panel') === null,
     noOfflineControl: document.querySelector('#use-local') === null,
     noChatHeader: document.querySelector('.topbar') === null && document.querySelector('#conversation-title') === null && document.querySelector('#model-chip') === null,
+    noConnectionBar: document.querySelector('#connection-details') === null && document.querySelector('#connection-card') !== null,
+    connectionCardVisible: document.querySelector('#connection-card')?.hidden === false,
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, compactComposer: true });
   assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
   const composerLayout = await page.evaluate(`(() => {
     const shell = document.querySelector('.app-shell').getBoundingClientRect();
@@ -207,13 +209,14 @@ try {
   })()`);
   assert.ok(composerLayout.bottomGap <= 1, "the composer should stay at the bottom of the workspace");
   const connectionLayout = await page.evaluate(`(() => {
-    document.querySelector('#connection-details').open = true;
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
     const buttonTop = document.querySelector('#connection-form > .primary-button').getBoundingClientRect().top;
-    return { inputTops, buttonTop, composerHeight: document.querySelector('#message-input').getBoundingClientRect().height };
+    return { inputTops, buttonTop, composerHeight: document.querySelector('#message-input').getBoundingClientRect().height, modelAutocomplete: document.querySelector('#model-name').autocomplete, keyAutocomplete: document.querySelector('#model-key').autocomplete };
   })()`);
-  assert.ok(Math.max(...connectionLayout.inputTops) - Math.min(...connectionLayout.inputTops) <= 1, "connection inputs should share a top alignment");
-  assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[0]) <= 2, "connection button should align with the inputs");
+  assert.ok(Math.abs(connectionLayout.inputTops[1] - connectionLayout.inputTops[2]) <= 1, "model and API key inputs should share a top alignment");
+  assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[1]) <= 2, "connection button should align with the model fields");
+  assert.equal(connectionLayout.modelAutocomplete, "username");
+  assert.equal(connectionLayout.keyAutocomplete, "current-password");
   assert.ok(connectionLayout.composerHeight <= 66, "the message composer should stay compact");
 
   await page.evaluate(`(() => {
@@ -234,14 +237,15 @@ try {
 
   const firstPageTime = await page.evaluate("performance.timeOrigin");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, `performance.timeOrigin > ${firstPageTime} && document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')`);
+  await waitFor(page, `performance.timeOrigin > ${firstPageTime} && document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('#connection-card')?.hidden === false && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')`);
   const resetState = await page.evaluate(`({
     noSessionControls: document.querySelector('#new-session') === null && document.querySelector('#session-list') === null && document.querySelector('#session-count') === null,
     noSessionUrl: !new URL(location.href).searchParams.has('session'),
     lightTheme: getComputedStyle(document.documentElement).colorScheme === 'light',
-    emptyChat: document.querySelector('.empty-state') !== null,
+    noDisconnectedWelcome: document.querySelector('.empty-state') === null,
+    connectionCardVisible: document.querySelector('#connection-card')?.hidden === false,
   })`);
-  assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, emptyChat: true });
+  assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, noDisconnectedWelcome: true, connectionCardVisible: true });
   await page.evaluate(`(() => {
     window.__permissionPrompted = false;
     window.confirm = () => {
@@ -280,7 +284,7 @@ try {
 
   const secondPageTime = await page.evaluate("performance.timeOrigin");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, `performance.timeOrigin > ${secondPageTime} && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && !document.querySelector('.loading-state')`);
+  await waitFor(page, `performance.timeOrigin > ${secondPageTime} && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && document.querySelector('#connection-card')?.hidden === true && !document.querySelector('.loading-state')`);
   const savedConnection = await page.evaluate(`({
     endpoint: document.querySelector('#model-endpoint')?.value,
     model: document.querySelector('#model-name')?.value,
@@ -375,7 +379,7 @@ try {
         context.registerUi({ id: 'app.browser.ui', mount: (container) => { container.textContent = 'app extension'; } });
       },
     };
-    const app = new AgentApp(appRoot, { plugins: [appPlugin] });
+    const app = new AgentApp(appRoot, { plugins: [appPlugin], autoConnect: false });
     await app.start();
     const appExtension = appRoot.textContent.includes('app extension');
     const defaultTools = app.tools.descriptors().map((descriptor) => descriptor.name);
