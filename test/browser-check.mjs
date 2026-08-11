@@ -226,8 +226,9 @@ try {
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('Connect a remote model')");
   await page.evaluate("document.querySelector('#message-input').value = ''");
 
+  const firstPageTime = await page.evaluate("performance.timeOrigin");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, "document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')");
+  await waitFor(page, `performance.timeOrigin > ${firstPageTime} && document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && document.querySelectorAll('.message').length === 0 && !document.querySelector('.loading-state')`);
   const resetState = await page.evaluate(`({
     noSessionControls: document.querySelector('#new-session') === null && document.querySelector('#session-list') === null && document.querySelector('#session-count') === null,
     noSessionUrl: !new URL(location.href).searchParams.has('session'),
@@ -264,8 +265,9 @@ try {
   await page.evaluate("document.querySelector('#cancel-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
 
+  const secondPageTime = await page.evaluate("performance.timeOrigin");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, "document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && !document.querySelector('.loading-state')");
+  await waitFor(page, `performance.timeOrigin > ${secondPageTime} && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && !document.querySelector('.loading-state')`);
   const savedConnection = await page.evaluate(`({
     endpoint: document.querySelector('#model-endpoint')?.value,
     model: document.querySelector('#model-name')?.value,
