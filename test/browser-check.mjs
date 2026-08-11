@@ -290,11 +290,33 @@ try {
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {
-    const { Agent, AgentApp, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, OpenAICompatibleAdapter, PluginManager, ToolRegistry } = await import('/dist/index.js');
+    const { Agent, AgentApp, BrowserPageRuntime, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, OpenAICompatibleAdapter, PluginManager, ToolRegistry, createBrowserApiPlugin } = await import('/dist/index.js');
     const runtime = new BrowserWorkerRuntime();
     const value = await runtime.execute('return input.value + 1', { value: 2 });
     let timedOut = false;
     try { await runtime.execute('await new Promise(() => {})', null, { timeoutMs: 10 }); } catch (error) { timedOut = error.code === 'RUNTIME_TIMEOUT'; }
+
+    const pageRuntime = new BrowserPageRuntime();
+    const pageValue = await pageRuntime.execute("console.log('page-runtime'); return { value: input.value + 1, title: document.title, hasFetch: typeof fetch === 'function' }", { value: 2 });
+    const pageCapabilities = new CapabilityManager({ decide: () => true });
+    pageCapabilities.register('page', { provide: () => pageRuntime });
+    const pageTools = new ToolRegistry(pageCapabilities);
+    const pagePlugins = new PluginManager(pageTools, pageCapabilities);
+    const pagePluginHandle = await pagePlugins.install(createBrowserApiPlugin());
+    const inspected = await pageTools.execute('browser.inspect', {});
+    const evaluated = await pageTools.execute('browser.evaluate', { code: "console.log('browser-tool'); return { value: input.value + 1, title: document.title }", input: { value: 41 } });
+    let webTurn = 0;
+    const webModel = { id: 'page-tool-agent', async *stream({ messages }) {
+      if (webTurn++ === 0) {
+        yield { type: 'completed', message: { role: 'assistant', content: '', toolCalls: [{ id: 'page-call', name: 'browser.evaluate', arguments: { code: 'return input.value + 1', input: { value: 41 } } }] } };
+      } else {
+        yield { type: 'completed', message: { role: 'assistant', content: messages.at(-1)?.content.includes('42') ? 'page tool result: 42' : 'page tool failed' } };
+      }
+    }};
+    const webAgentResult = await new Agent(webModel, pageTools).run({ messages: [{ role: 'user', content: 'Use the page tool.' }] });
+    const inspectedValue = inspected.ok ? inspected.value : undefined;
+    const evaluatedValue = evaluated.ok ? evaluated.value : undefined;
+    await pagePluginHandle.uninstall();
 
     const databaseName = 'browser-test-' + crypto.randomUUID();
     const state = new IndexedDbStateStore({ databaseName, objectStoreName: 'state' });
@@ -350,13 +372,17 @@ try {
     await app.start();
     const appExtension = appRoot.textContent.includes('app extension');
     const defaultTools = app.tools.descriptors().map((descriptor) => descriptor.name);
-    const defaultPlugins = app.runtimeHandle !== undefined && app.storageHandle !== undefined;
+    const defaultPlugins = app.runtimeHandle !== undefined && app.storageHandle !== undefined && app.browserHandle !== undefined;
     await app.stop();
     appRoot.remove();
 
     return {
       worker: value.value === 3,
       workerTimeout: timedOut,
+      pageRuntime: pageValue.value?.value === 3 && typeof pageValue.value?.title === 'string' && pageValue.value?.hasFetch === true && pageValue.logs.includes('page-runtime'),
+      browserInspect: inspected.ok && inspectedValue?.apis?.fetch === true && typeof inspectedValue?.url === 'string',
+      browserEvaluate: evaluated.ok && evaluatedValue?.value?.value === 42 && evaluatedValue?.logs.includes('browser-tool'),
+      browserAgent: webAgentResult.status === 'completed' && webAgentResult.response?.content === 'page tool result: 42',
       indexedDb: stored?.ok === true,
       sse: events.at(-1)?.type === 'completed' && events.at(-1)?.message.content === 'sse',
       cancelled: cancellation.status === 'cancelled' && cancelled,
@@ -364,8 +390,8 @@ try {
       pluginUi: mounted && processed === 'ok!' && removedOnUninstall && pluginTools.get('browser.tool') === undefined && extensionRoot.textContent === '' && appExtension,
     };
   })()`);
-  assert.deepEqual(browserBoundaries, { worker: true, workerTimeout: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
-  console.log("Browser checks passed: compact UI, remote-only chat, default plugins, IndexedDB, SSE, and cancellation.");
+  assert.deepEqual(browserBoundaries, { worker: true, workerTimeout: true, pageRuntime: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
+  console.log("Browser checks passed: compact UI, page Web APIs, remote-only chat, default plugins, IndexedDB, SSE, and cancellation.");
 } finally {
   await page?.close();
   const childExited = child.exitCode !== null ? Promise.resolve() : new Promise((resolve) => {

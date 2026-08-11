@@ -269,6 +269,15 @@ export interface JavaScriptRuntime {
   ) => Promise<JavaScriptRuntimeResult>;
 }
 
+/** Executes code in the current page realm, where the page's actual Web APIs are available. */
+export interface PageRuntime {
+  readonly execute: (
+    code: string,
+    input: JsonValue,
+    options?: { readonly signal?: AbortSignal },
+  ) => Promise<JavaScriptRuntimeResult>;
+}
+
 export interface StorageCapability {
   readonly get: (key: string) => Promise<JsonValue | undefined>;
   readonly set: (key: string, value: JsonValue) => Promise<void>;

@@ -1,10 +1,12 @@
 import { Agent } from "../core/agent.js";
 import { CapabilityManager } from "../core/capabilities.js";
+import { BrowserPageRuntime } from "../core/page-runtime.js";
 import { PluginManager } from "../core/plugin-manager.js";
 import { BrowserWorkerRuntime } from "../core/runtime.js";
 import { createBrowserStateStore, PrefixedStateStore } from "../core/state.js";
 import { ToolRegistry } from "../core/tool-registry.js";
 import { createJavaScriptRuntimePlugin } from "../plugins/javascript-runtime.js";
+import { createBrowserApiPlugin } from "../plugins/browser-api.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { CHAT_LIMITS, createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
@@ -27,6 +29,7 @@ export class AgentApp {
   private readonly root: HTMLElement;
   private readonly options: AgentAppOptions;
   private readonly runtime = new BrowserWorkerRuntime();
+  private readonly pageRuntime = new BrowserPageRuntime();
   private chat: ChatState = createChatState();
   private store!: StateStore;
   private capabilities!: CapabilityManager;
@@ -36,6 +39,7 @@ export class AgentApp {
   private remoteHandle: PluginHandle | undefined;
   private runtimeHandle: PluginHandle | undefined;
   private storageHandle: PluginHandle | undefined;
+  private browserHandle: PluginHandle | undefined;
   private readonly extensionHandles: PluginHandle[] = [];
   private uiCleanup: (() => void) | undefined;
   private ready = false;
@@ -61,7 +65,7 @@ export class AgentApp {
     this.applyConnectionSettings(await loadConnectionSettings(this.store));
     this.capabilities = new CapabilityManager({
       decide: ({ pluginId, reason }) => {
-        if (pluginId === "javascript-runtime" || pluginId === "local-storage" || pluginId === "remote-model") return true;
+        if (pluginId === "javascript-runtime" || pluginId === "local-storage" || pluginId === "browser-api" || pluginId === "remote-model") return true;
         if (typeof window.confirm !== "function") return false;
         return window.confirm(`Allow “${pluginId}” to use a browser capability?\n\n${reason}`);
       },
@@ -70,6 +74,7 @@ export class AgentApp {
     this.capabilities.register("network", {
       provide: (): NetworkCapability => ({ fetch: globalThis.fetch.bind(globalThis) }),
     });
+    this.capabilities.register("page", { provide: () => this.pageRuntime });
     this.capabilities.register("storage", {
       provide: ({ pluginId }): StorageCapability => {
         const scoped = new PrefixedStateStore(this.store, `plugin:${pluginId}`);
@@ -86,10 +91,13 @@ export class AgentApp {
     try {
       this.runtimeHandle = await this.plugins.install(createJavaScriptRuntimePlugin());
       this.storageHandle = await this.plugins.install(createStoragePlugin());
+      this.browserHandle = await this.plugins.install(createBrowserApiPlugin());
       for (const plugin of this.options.plugins ?? []) this.extensionHandles.push(await this.plugins.install(plugin));
     } catch (error) {
       if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
       this.storageHandle = undefined;
+      if (this.browserHandle !== undefined) await this.browserHandle.uninstall();
+      this.browserHandle = undefined;
       if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
       this.runtimeHandle = undefined;
       for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
@@ -115,6 +123,7 @@ export class AgentApp {
     this.uiCleanup?.();
     this.uiCleanup = undefined;
     if (this.remoteHandle !== undefined) await this.remoteHandle.uninstall();
+    if (this.browserHandle !== undefined) await this.browserHandle.uninstall();
     if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
     if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
     for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
