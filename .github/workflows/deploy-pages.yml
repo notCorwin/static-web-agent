@@ -54,3 +54,20 @@ jobs:
       - name: Deploy artifact
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Verify published release
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          EXPECTED_VERSION: ${{ github.sha }}
+        run: |
+          page_root="${PAGE_URL%/}/"
+          for attempt in $(seq 1 12); do
+            page_html="$(curl --fail --silent --show-error --location --max-time 20 "${page_root}?check=${EXPECTED_VERSION}" || true)"
+            release_json="$(curl --fail --silent --show-error --location --max-time 20 "${page_root}version.json?check=${EXPECTED_VERSION}" || true)"
+            if printf '%s' "${page_html}" | grep -Fq "name=\"build-version\" content=\"${EXPECTED_VERSION}\"" && printf '%s' "${release_json}" | grep -Fq "\"version\":\"${EXPECTED_VERSION}\""; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Published Pages content did not expose ${EXPECTED_VERSION}."
+          exit 1

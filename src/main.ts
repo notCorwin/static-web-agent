@@ -1,9 +1,13 @@
 import { startApp } from "./app/app.js";
+import { reloadIfOutdated } from "./app/update-check.js";
 
 const root = document.getElementById("app");
 if (root === null) throw new Error("Application root is missing.");
 
-void startApp(root).catch((error: unknown) => {
+void reloadIfOutdated().then((reloaded) => {
+  if (reloaded) return;
+  return startApp(root);
+}).catch((error: unknown) => {
   const main = document.createElement("main");
   main.className = "startup-error";
   main.setAttribute("aria-labelledby", "startup-error-title");

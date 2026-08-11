@@ -164,6 +164,7 @@ if (browser === undefined) {
 }
 
 const { server, port } = await startStaticServer();
+const release = JSON.parse(await readFile(join(root, "dist/version.json"), "utf8"));
 const profile = await mkdtemp(join(tmpdir(), "static-web-agent-browser-"));
 const child = spawn(browser, [
   "--headless=new",
@@ -174,7 +175,7 @@ const child = spawn(browser, [
   "--no-default-browser-check",
   "--remote-debugging-port=0",
   `--user-data-dir=${profile}`,
-  `http://127.0.0.1:${port}/index.html`,
+  `http://127.0.0.1:${port}/dist/index.html`,
 ], { stdio: ["ignore", "pipe", "pipe"] });
 
 let page;
@@ -197,6 +198,7 @@ try {
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
   assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, compactComposer: true });
+  assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
   const connectionLayout = await page.evaluate(`(() => {
     document.querySelector('#connection-details').open = true;
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);

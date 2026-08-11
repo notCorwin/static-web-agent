@@ -9,13 +9,15 @@ npm install
 npm run build
 ```
 
-Serve the repository root (or `dist/`) from a static HTTP server and open `index.html`. A server is needed because browser module imports are restricted on `file://`; it is not an application backend.
+Serve `dist/` from a static HTTP server and open `index.html` after building. The repository root also works for development, but it does not contain the generated release manifest. A server is needed because browser module imports are restricted on `file://`; it is not an application backend.
 
 ```sh
 npm test          # typecheck, Node boundary tests, and browser checks when Chromium is available
 npm run check     # strict TypeScript check
 npm run test:browser
 ```
+
+Each production build writes a release version to `dist/version.json`, adds that version to every browser module and stylesheet request, and removes stale files from `dist`. The app checks the release manifest on startup with a cache-busting request and reloads itself when a newer deployment is available. The deployment workflow also verifies that the published Pages response exposes the commit that triggered the deployment.
 
 The browser checks use `BROWSER_PATH` or a detected Chromium/Chrome binary. If no browser is installed they print an explicit skip message; set `BROWSER_PATH` in CI when browser coverage is required (and `REQUIRE_BROWSER=1` to turn absence into a failure).
 

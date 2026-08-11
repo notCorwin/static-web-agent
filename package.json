@@ -5,7 +5,7 @@
   "description": "A browser-native, extensible agent runtime.",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/build.mjs",
     "test": "npm run build && node --test test/*.test.mjs && node test/browser-check.mjs",
     "test:browser": "npm run build && node test/browser-check.mjs",
     "check": "tsc -p tsconfig.json --noEmit"
