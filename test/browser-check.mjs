@@ -216,7 +216,13 @@ try {
   assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[0]) <= 2, "connection button should align with the inputs");
   assert.ok(connectionLayout.composerHeight <= 66, "the message composer should stay compact");
 
-  await page.evaluate("window.confirm = () => true");
+  await page.evaluate(`(() => {
+    window.__permissionPrompted = false;
+    window.confirm = () => {
+      window.__permissionPrompted = true;
+      return true;
+    };
+  })()`);
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'message before connecting';
@@ -236,7 +242,13 @@ try {
     emptyChat: document.querySelector('.empty-state') !== null,
   })`);
   assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, emptyChat: true });
-  await page.evaluate("window.confirm = () => true");
+  await page.evaluate(`(() => {
+    window.__permissionPrompted = false;
+    window.confirm = () => {
+      window.__permissionPrompted = true;
+      return true;
+    };
+  })()`);
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-sse';
@@ -245,6 +257,7 @@ try {
     document.querySelector('#connection-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  assert.equal(await page.evaluate("window.__permissionPrompted === false"), true, "selecting a remote model should not show a capability confirmation");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'remote request';

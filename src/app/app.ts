@@ -61,7 +61,7 @@ export class AgentApp {
     this.applyConnectionSettings(await loadConnectionSettings(this.store));
     this.capabilities = new CapabilityManager({
       decide: ({ pluginId, reason }) => {
-        if (pluginId === "javascript-runtime" || pluginId === "local-storage") return true;
+        if (pluginId === "javascript-runtime" || pluginId === "local-storage" || pluginId === "remote-model") return true;
         if (typeof window.confirm !== "function") return false;
         return window.confirm(`Allow “${pluginId}” to use a browser capability?\n\n${reason}`);
       },
