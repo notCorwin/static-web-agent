@@ -39,13 +39,35 @@ function contentType(path) {
 }
 
 async function startStaticServer() {
+  let toolRequests = 0;
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
-      if (pathname === "/test-sse" || pathname === "/test-hang") {
+      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-hang") {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-        response.write('data: {"choices":[{"delta":{"content":"sse"}}]}\n\n');
-        if (pathname === "/test-sse") {
+        const content = pathname === "/test-rich"
+          ? [
+            "# Rich response",
+            "",
+            "Inline math: $x^2 + y^2 = z^2$.",
+            "",
+            "$$\\sum_{i=1}^{n} i = \\frac{n(n+1)}{2}$$",
+            "",
+            "```mermaid",
+            "flowchart TD",
+            "  Start[Start] --> Done[Done]",
+            "```",
+          ].join("\n")
+          : pathname === "/test-tool"
+            ? "tool complete"
+            : "sse";
+        if (pathname === "/test-tool" && toolRequests++ === 0) {
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "browser-tool-call", type: "function", function: { name: "runtime_javascript", arguments: '{"code":"return 42"}' } }] } }] })}\n\n`);
+          response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
+        } else {
+          response.write(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`);
+        }
+        if (pathname !== "/test-hang") {
           setTimeout(() => {
             response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
             response.end("data: [DONE]\n\n");
@@ -199,9 +221,11 @@ try {
     noConnectionBar: document.querySelector('#connection-details') === null && document.querySelector('#connection-card') !== null,
     connectionCardVisible: document.querySelector('#connection-card')?.hidden === false,
     noComposerRows: document.querySelector('.composer-hint') === null && getComputedStyle(document.querySelector('#run-status')).position === 'absolute',
+    noSeparateCancelButton: document.querySelector('#cancel-button') === null,
+    sendButtonLabel: document.querySelector('#send-button .button-label')?.textContent,
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonLabel: "Send", compactComposer: true });
   assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
   const composerLayout = await page.evaluate(`(() => {
     const shell = document.querySelector('.app-shell').getBoundingClientRect();
@@ -278,7 +302,22 @@ try {
     input.value = 'remote request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent === 'sse'");
+  await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'sse'");
+  const messageStyles = await page.evaluate("(() => { const assistant = document.querySelector('.message.assistant .message-body'); const user = document.querySelector('.message.user .message-body'); const assistantStyle = getComputedStyle(assistant); const userStyle = getComputedStyle(user); return { assistantBorder: assistantStyle.borderTopWidth, assistantBackground: assistantStyle.backgroundColor, assistantPadding: assistantStyle.padding, userBorder: userStyle.borderTopWidth, userPadding: userStyle.padding }; })()");
+  assert.deepEqual(messageStyles, { assistantBorder: "0px", assistantBackground: "rgba(0, 0, 0, 0)", assistantPadding: "0px", userBorder: "1px", userPadding: "13px 15px" });
+  await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = location.origin + '/test-rich';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = ['# User rich', '', 'User math: $a^2$'].join(String.fromCharCode(10));
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.message.assistant:last-of-type .message-body h1')?.textContent === 'Rich response' && document.querySelector('.message.assistant:last-of-type .katex') !== null && document.querySelector('.message.assistant:last-of-type .mermaid-diagram svg') !== null", 20_000);
+  const richFeatures = await page.evaluate("(() => { const assistant = Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1); const user = Array.from(document.querySelectorAll('.message.user .message-body')).at(-1); return { assistantMarkdown: assistant?.querySelector('h1')?.textContent === 'Rich response', assistantLatex: assistant?.querySelector('.katex') !== null, assistantMermaid: assistant?.querySelector('.mermaid-diagram svg') !== null, userMarkdown: user?.querySelector('h1')?.textContent === 'User rich', userLatex: user?.querySelector('.katex') !== null }; })()");
+  assert.deepEqual(richFeatures, { assistantMarkdown: true, assistantLatex: true, assistantMermaid: true, userMarkdown: true, userLatex: true });
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-hang';
     document.querySelector('#connection-form').requestSubmit();
@@ -289,9 +328,33 @@ try {
     input.value = 'cancel request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('#cancel-button')?.hidden === false");
-  await page.evaluate("document.querySelector('#cancel-button').click()");
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('#send-button')?.getAttribute('aria-label') === 'Stop generation'");
+  await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Send'");
+
+  await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = location.origin + '/test-tool';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'tool request';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
+  const hiddenTool = await page.evaluate(`(() => ({
+    noToolCallList: document.querySelector('.tool-call-list') === null,
+    noEmptyToolAssistant: Array.from(document.querySelectorAll('.message.assistant .message-body')).every((body) => body.textContent !== ''),
+    detailsClosed: document.querySelector('.tool-detail')?.open === false,
+    summary: document.querySelector('.tool-summary')?.textContent,
+    bodyVisible: document.querySelector('.tool-detail-body')?.getBoundingClientRect().height > 0,
+  }))()`);
+  assert.deepEqual(hiddenTool, { noToolCallList: true, noEmptyToolAssistant: true, detailsClosed: true, summary: "runtime.javascript", bodyVisible: false });
+  await page.evaluate("document.querySelector('.tool-summary').click()");
+  await waitFor(page, "document.querySelector('.tool-detail')?.open === true");
+  assert.equal(await page.evaluate("document.querySelector('.tool-detail-body')?.textContent.includes('42')"), true);
 
   const secondPageTime = await page.evaluate("performance.timeOrigin");
   await page.send("Page.reload", { ignoreCache: true });
@@ -301,7 +364,7 @@ try {
     model: document.querySelector('#model-name')?.value,
     apiKey: document.querySelector('#model-key')?.value,
   })`);
-  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-hang`, model: "browser-test", apiKey: "browser-test-key" });
+  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool`, model: "browser-test", apiKey: "browser-test-key" });
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {

@@ -162,15 +162,19 @@ export class AgentApp {
   private bindEvents(): void {
     this.elements["composer-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
+      if (this.busy) {
+        this.runController?.abort();
+        return;
+      }
       void this.sendMessage();
     });
     this.elements["message-input"]?.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        void this.sendMessage();
+        if (this.busy) this.runController?.abort();
+        else void this.sendMessage();
       }
     });
-    this.elements["cancel-button"]?.addEventListener("click", () => this.runController?.abort());
     this.elements["connection-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.connectRemote(event.currentTarget as HTMLFormElement);
@@ -352,14 +356,16 @@ export class AgentApp {
   private setBusy(value: boolean): void {
     this.busy = value;
     const send = this.elements["send-button"] as HTMLButtonElement;
-    const cancel = this.elements["cancel-button"] as HTMLButtonElement;
     const input = this.elements["message-input"] as HTMLTextAreaElement;
-    send.disabled = value;
+    send.disabled = false;
     send.setAttribute("aria-busy", String(value));
-    cancel.hidden = !value;
+    send.setAttribute("aria-label", value ? "Stop generation" : "Send message");
+    send.classList.toggle("stop-button", value);
+    const label = send.querySelector<HTMLElement>(".button-label");
+    if (label !== null) label.textContent = value ? "Stop" : "Send";
     input.disabled = value;
     const spinner = send.querySelector<HTMLElement>(".spinner");
-    if (spinner !== null) spinner.hidden = !value;
+    if (spinner !== null) spinner.hidden = true;
   }
 
   private element<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -413,11 +419,18 @@ export class AgentApp {
         conversation.append(welcome);
       }
     } else {
-      for (const message of this.chat.messages) conversation.append(messageElement(message));
-      if (this.pendingText.length > 0) conversation.append(messageElement({ role: "assistant", content: this.pendingText }, true));
+      for (const message of this.chat.messages) {
+        const element = messageElement(message);
+        if (element !== null) conversation.append(element);
+      }
+      if (this.pendingText.length > 0) {
+        const element = messageElement({ role: "assistant", content: this.pendingText }, true);
+        if (element !== null) conversation.append(element);
+      }
       if (this.pendingTool !== undefined) {
         const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
-        conversation.append(messageElement(toolMessage, true));
+        const element = messageElement(toolMessage, true);
+        if (element !== null) conversation.append(element);
       }
     }
     if (nearBottom || this.chat.messages.length === 0) chat.scrollTop = chat.scrollHeight;

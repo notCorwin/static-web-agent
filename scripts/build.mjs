@@ -1,4 +1,5 @@
-import { copyFile, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, cp, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { build } from "esbuild";
 
 const rawBuildVersion = process.env.GITHUB_SHA ?? process.env.BUILD_VERSION ?? "dev";
 const buildVersion = rawBuildVersion.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -16,6 +17,19 @@ async function javascriptFiles(directory) {
 }
 
 for (const file of ["index.html", "styles.css", "README.md"]) await copyFile(file, `dist/${file}`);
+await mkdir("dist/vendor/katex", { recursive: true });
+await copyFile("node_modules/katex/dist/katex.min.css", "dist/vendor/katex/katex.min.css");
+await cp("node_modules/katex/dist/fonts", "dist/vendor/katex/fonts", { recursive: true });
+await build({
+  entryPoints: ["dist/vendor/rendering-runtime.js"],
+  bundle: true,
+  format: "esm",
+  minify: true,
+  outfile: "dist/vendor/rendering-runtime.bundle.js",
+  platform: "browser",
+  sourcemap: false,
+});
+await rename("dist/vendor/rendering-runtime.bundle.js", "dist/vendor/rendering-runtime.js");
 const path = "dist/index.html";
 const html = await readFile(path, "utf8");
 const versionedHtml = html

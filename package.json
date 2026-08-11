@@ -11,6 +11,13 @@
     "check": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.13",
+    "katex": "^0.18.4",
+    "marked": "^18.0.9",
+    "mermaid": "^11.16.1"
   }
 }

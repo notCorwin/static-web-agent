@@ -1,4 +1,5 @@
 import type { ModelMessage } from "../core/types.js";
+import { renderRichContent } from "./rich-content.js";
 
 export type AppElements = Record<string, HTMLElement>;
 
@@ -59,7 +60,6 @@ export function renderShell(root: HTMLElement): AppElements {
             <label class="sr-only" for="message-input">Message the agent</label>
             <textarea id="message-input" name="message" rows="2" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
             <button class="primary-button send-button" id="send-button" type="submit" aria-label="Send message"><span class="button-content"><span class="button-label">Send</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
-            <button class="secondary-button danger cancel-button" id="cancel-button" type="button" hidden>Cancel run</button>
             <p class="status-message sr-only" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </form>
         </div>
@@ -71,28 +71,33 @@ export function renderShell(root: HTMLElement): AppElements {
   return elements;
 }
 
-export function messageElement(message: ModelMessage, pending = false): HTMLElement {
+export function messageElement(message: ModelMessage, pending = false): HTMLElement | null {
+  if (message.role === "tool") {
+    const details = document.createElement("details");
+    details.className = `tool-detail${pending ? " pending" : ""}`;
+    const summary = document.createElement("summary");
+    summary.className = "tool-summary";
+    summary.setAttribute("translate", "no");
+    summary.textContent = pending ? `${message.name} · running` : `${message.name}${message.isError === true ? " · error" : ""}`;
+    const body = document.createElement("div");
+    body.className = "tool-detail-body";
+    if (message.isError === true) body.classList.add("tool-error");
+    body.textContent = message.content;
+    details.append(summary, body);
+    return details;
+  }
+  if (message.role === "assistant" && message.content.trim().length === 0) return null;
+
   const article = document.createElement("article");
   article.className = `message ${message.role}${pending ? " pending" : ""}`;
   const header = document.createElement("div");
   header.className = "message-header";
-  header.textContent = message.role === "user" ? "You" : message.role === "assistant" ? "Agent" : message.role === "tool" ? message.name : "System";
-  if (message.role === "tool") header.setAttribute("translate", "no");
+  header.textContent = message.role === "user" ? "You" : message.role === "assistant" ? "Agent" : "System";
   article.append(header);
   const body = document.createElement("div");
   body.className = "message-body";
-  if (message.role === "tool" && message.isError === true) body.classList.add("tool-error");
-  body.textContent = message.content;
+  if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
+  else body.textContent = message.content;
   article.append(body);
-  if (message.role === "assistant" && message.toolCalls !== undefined && message.toolCalls.length > 0) {
-    const calls = document.createElement("div");
-    calls.className = "tool-call-list";
-    for (const call of message.toolCalls) {
-      const tag = textElement("span", call.name, "tool-call-tag");
-      tag.setAttribute("translate", "no");
-      calls.append(tag);
-    }
-    article.append(calls);
-  }
   return article;
 }
