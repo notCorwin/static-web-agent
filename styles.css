@@ -162,13 +162,11 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .tool-call-tag { border: 1px solid var(--border); border-radius: 999px; padding: 3px 7px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
 
 .composer-wrap { flex-shrink: 0; padding: 0 clamp(18px, 4vw, 48px) 22px; background: var(--bg); }
-.composer { position: relative; display: grid; gap: 9px; border-radius: 14px; }
+.composer { position: relative; display: grid; gap: 0; border-radius: 14px; }
 .composer:focus-within { box-shadow: 0 0 0 2px rgb(0 0 0 / 14%); }
 .composer textarea { min-height: 64px; resize: vertical; padding: 10px 78px 10px 11px; line-height: 1.45; font-size: 15px; }
-.composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.composer-hint { margin: 0; color: var(--faint); font-size: 11px; }
-.send-button { position: absolute; right: 7px; bottom: 47px; min-width: 62px; }
-.cancel-button { min-width: 70px; }
+.send-button { position: absolute; right: 7px; bottom: 7px; min-width: 62px; }
+.cancel-button { position: absolute; right: 75px; bottom: 7px; min-width: 70px; }
 .button-content { display: inline-flex; align-items: center; gap: 7px; }
 .spinner { width: 13px; height: 13px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 700ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -203,11 +201,9 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   .chat-scroll { min-height: 420px; padding: 22px 16px; }
   .message { max-width: 100%; }
   .composer-wrap { padding: 0 16px 16px; }
-  .composer textarea { min-height: 64px; padding-right: 11px; }
-  .send-button { position: static; width: 100%; }
-  .composer-actions { align-items: stretch; flex-direction: column; }
-  .cancel-button { width: 100%; }
-  .composer-hint { order: 2; }
+  .composer textarea { min-height: 64px; padding-right: 78px; }
+  .send-button { right: 7px; bottom: 7px; width: auto; }
+  .cancel-button { right: 75px; bottom: 7px; width: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -59,11 +59,8 @@ export function renderShell(root: HTMLElement): AppElements {
             <label class="sr-only" for="message-input">Message the agent</label>
             <textarea id="message-input" name="message" rows="2" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
             <button class="primary-button send-button" id="send-button" type="submit" aria-label="Send message"><span class="button-content"><span class="button-label">Send</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
-            <div class="composer-actions">
-              <p class="composer-hint">Enter adds a line · ⌘/Ctrl&nbsp;+&nbsp;Enter sends</p>
-              <button class="secondary-button danger cancel-button" id="cancel-button" type="button" hidden>Cancel run</button>
-            </div>
-            <p class="status-message" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
+            <button class="secondary-button danger cancel-button" id="cancel-button" type="button" hidden>Cancel run</button>
+            <p class="status-message sr-only" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </form>
         </div>
       </main>

@@ -525,7 +525,7 @@ export class AgentApp {
   private notify(message: string, kind: "normal" | "success" | "error" = "normal"): void {
     const status = this.element("run-status");
     status.textContent = message;
-    status.className = `status-message ${kind === "normal" ? "" : kind}`;
+    status.className = `status-message sr-only ${kind === "normal" ? "" : kind}`;
   }
 
   private focusComposer(force = false): void {

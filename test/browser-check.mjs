@@ -198,9 +198,10 @@ try {
     noChatHeader: document.querySelector('.topbar') === null && document.querySelector('#conversation-title') === null && document.querySelector('#model-chip') === null,
     noConnectionBar: document.querySelector('#connection-details') === null && document.querySelector('#connection-card') !== null,
     connectionCardVisible: document.querySelector('#connection-card')?.hidden === false,
+    noComposerRows: document.querySelector('.composer-hint') === null && getComputedStyle(document.querySelector('#run-status')).position === 'absolute',
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, compactComposer: true });
   assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
   const composerLayout = await page.evaluate(`(() => {
     const shell = document.querySelector('.app-shell').getBoundingClientRect();
