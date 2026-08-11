@@ -38,7 +38,6 @@ export class AgentApp {
   private storageHandle: PluginHandle | undefined;
   private readonly extensionHandles: PluginHandle[] = [];
   private uiCleanup: (() => void) | undefined;
-  private activeModelLabel = "No model connected";
   private ready = false;
   private busy = false;
   private runController: AbortController | undefined;
@@ -98,12 +97,10 @@ export class AgentApp {
     }
     const model = this.options.initialModelId === undefined ? undefined : this.plugins.modelAdapter(this.options.initialModelId);
     if (this.options.initialModelId !== undefined && model === undefined) throw new Error(`Model adapter “${this.options.initialModelId}” is not available.`);
-    this.activeModelLabel = model?.id ?? "No model connected";
     if (model !== undefined) this.agent = new Agent(model, this.tools);
     this.plugins.subscribe(() => {
       if (this.ready) {
         this.renderExtensions();
-        this.renderHeader();
       }
     });
     this.syncConnectionPanelFromUrl();
@@ -362,16 +359,8 @@ export class AgentApp {
   }
 
   private renderAll(): void {
-    this.renderHeader();
     this.renderChat();
     this.renderExtensions();
-  }
-
-  private renderHeader(): void {
-    this.element("conversation-title").textContent = "Chat";
-    this.element("conversation-meta").textContent = `${this.chat.messages.length} message${this.chat.messages.length === 1 ? "" : "s"} · clears on refresh`;
-    this.element("model-chip").replaceChildren(textElement("span", "Model · "), textElement("strong", this.activeModelLabel));
-    document.title = "Static Web Agent";
   }
 
   private scheduleChatRender(): void {
@@ -438,14 +427,11 @@ export class AgentApp {
       if (adapter === undefined) throw new Error("The remote model plugin did not register an adapter.");
       this.remoteHandle = handle;
       this.agent = new Agent(adapter, this.tools);
-      this.activeModelLabel = `Remote · ${values.model}`;
       await saveConnectionSettings(this.store, values);
       this.element("connection-status").textContent = "Remote model selected. Connection settings saved in this browser.";
-      this.renderHeader();
       this.notify("Remote model selected.", "success");
     } catch (error) {
       this.agent = undefined;
-      this.activeModelLabel = "No model connected";
       this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not select the model.";
       this.notify(this.element("connection-status").textContent, "error");
     } finally {

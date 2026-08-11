@@ -12,17 +12,7 @@ export function textElement(tag: keyof HTMLElementTagNameMap, text: string, clas
 export function renderShell(root: HTMLElement): AppElements {
   root.innerHTML = `
     <div class="app-shell">
-      <main class="workspace" id="main-content" tabindex="-1">
-        <header class="topbar">
-          <div class="title-wrap">
-            <h1 id="conversation-title">Chat</h1>
-            <p id="conversation-meta">In memory · clears on refresh</p>
-          </div>
-          <div class="topbar-actions">
-            <span class="model-chip" id="model-chip">Model · <strong>No model connected</strong></span>
-          </div>
-        </header>
-
+      <main class="workspace" id="main-content" tabindex="-1" aria-label="Chat workspace">
         <details class="connection-details" id="connection-details">
           <summary>Connect an OpenAI-compatible model</summary>
           <form class="connection-form" id="connection-form" novalidate>

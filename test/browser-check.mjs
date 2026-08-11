@@ -195,10 +195,17 @@ try {
     noWorkspaceNavigation: document.querySelector('.sidebar') === null,
     noRuntimeSurface: document.querySelector('.tools-panel') === null,
     noOfflineControl: document.querySelector('#use-local') === null,
+    noChatHeader: document.querySelector('.topbar') === null && document.querySelector('#conversation-title') === null && document.querySelector('#model-chip') === null,
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, compactComposer: true });
   assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
+  const composerLayout = await page.evaluate(`(() => {
+    const shell = document.querySelector('.app-shell').getBoundingClientRect();
+    const composer = document.querySelector('.composer-wrap').getBoundingClientRect();
+    return { bottomGap: shell.bottom - composer.bottom, composerTop: composer.top, viewportBottom: window.innerHeight };
+  })()`);
+  assert.ok(composerLayout.bottomGap <= 1, "the composer should stay at the bottom of the workspace");
   const connectionLayout = await page.evaluate(`(() => {
     document.querySelector('#connection-details').open = true;
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
