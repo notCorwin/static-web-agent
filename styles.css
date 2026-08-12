@@ -96,7 +96,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   white-space: nowrap;
 }
 
-.connection-card { width: min(100%, 760px); margin: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); }
+.connection-card { position: absolute; z-index: 4; top: 50%; left: 50%; width: min(760px, calc(100% - 36px)); max-height: calc(100% - 48px); margin: 0; overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
 .connection-card[hidden] { display: none; }
 .connection-intro { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
 .connection-icon { display: grid; width: 42px; height: 42px; flex-shrink: 0; place-items: center; border: 1px solid rgb(0 0 0 / 24%); border-radius: 13px; background: rgb(0 0 0 / 5%); color: var(--accent); font-size: 19px; }
@@ -249,7 +249,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 }
 
 @media (max-width: 720px) {
-  .connection-card { width: 100%; padding: 20px 16px; }
+  .connection-card { width: calc(100% - 32px); padding: 20px 16px; }
   .connection-intro h2 { font-size: 20px; }
   .connection-form { grid-template-columns: 1fr; }
   .connection-form .field:first-child, .connection-form .connection-note, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1; }

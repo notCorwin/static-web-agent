@@ -91,7 +91,7 @@ async function startStaticServer() {
             : "sse";
         if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
           const firstArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 260)); return 42" });
-          const secondArguments = JSON.stringify({ code: "return 42" });
+          const secondArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 1200)); return 42" });
           const fragments = (value) => Array.from({ length: Math.ceil(value.length / 70) }, (_, index) => value.slice(index * 70, (index + 1) * 70));
           const chunks = [
             { index: 0, id: "browser-streamed-tool-call", function: { name: "runtime_" } },
@@ -292,9 +292,13 @@ try {
   })()`);
   assert.ok(composerLayout.bottomGap <= 1, "the composer should stay at the bottom of the workspace");
   const connectionLayout = await page.evaluate(`(() => {
+    const workspace = document.querySelector('#main-content').getBoundingClientRect();
+    const card = document.querySelector('#connection-card').getBoundingClientRect();
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
     const buttonTop = document.querySelector('#connection-form > .primary-button').getBoundingClientRect().top;
     return {
+      cardCenter: { x: card.left + card.width / 2, y: card.top + card.height / 2 },
+      workspaceCenter: { x: workspace.left + workspace.width / 2, y: workspace.top + workspace.height / 2 },
       inputTops,
       buttonTop,
       composerHeight: document.querySelector('#message-input').getBoundingClientRect().height,
@@ -304,6 +308,8 @@ try {
       endpointLabel: document.querySelector('label[for="model-endpoint"]').textContent,
     };
   })()`);
+  assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.workspaceCenter.x) <= 1, "the connection card should be horizontally centered in the workspace");
+  assert.ok(Math.abs(connectionLayout.cardCenter.y - connectionLayout.workspaceCenter.y) <= 1, "the connection card should be vertically centered in the workspace");
   assert.ok(Math.abs(connectionLayout.inputTops[1] - connectionLayout.inputTops[2]) <= 1, "model and API key inputs should share a top alignment");
   assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[1]) <= 2, "connection button should align with the model fields");
   assert.equal(connectionLayout.modelAutocomplete, "username");
