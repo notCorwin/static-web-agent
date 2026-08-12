@@ -87,6 +87,8 @@ export class AgentApp {
   private pendingToolCalls: readonly ToolCallDelta[] = [];
   private chatRenderScheduled = false;
   private chatScrollScheduled = false;
+  private userScrollGesture = false;
+  private userScrollGestureTimer: number | undefined;
   private followChat = true;
   private chatObserver: MutationObserver | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
@@ -165,6 +167,9 @@ export class AgentApp {
     this.chatObserver?.disconnect();
     this.chatObserver = undefined;
     this.chatScrollScheduled = false;
+    if (this.userScrollGestureTimer !== undefined) window.clearTimeout(this.userScrollGestureTimer);
+    this.userScrollGestureTimer = undefined;
+    this.userScrollGesture = false;
     this.followChat = true;
     this.pendingToolCalls = [];
     this.renderedMessages = undefined;
@@ -207,6 +212,10 @@ export class AgentApp {
     });
     const chat = this.elements["chat-log"];
     chat?.addEventListener("scroll", () => this.updateChatFollowState(), { passive: true });
+    const markUserScroll = () => this.markUserScrollGesture();
+    chat?.addEventListener("wheel", markUserScroll, { passive: true });
+    chat?.addEventListener("touchmove", markUserScroll, { passive: true });
+    chat?.addEventListener("pointerdown", markUserScroll, { passive: true });
     this.elements["scroll-bottom-button"]?.addEventListener("click", () => {
       this.followChat = true;
       this.scrollChatToBottom();
@@ -547,8 +556,21 @@ export class AgentApp {
   private updateChatFollowState(): void {
     const chat = this.elements["chat-log"];
     if (chat === undefined) return;
+    if (this.busy && this.followChat && !this.userScrollGesture) {
+      this.updateScrollButton();
+      return;
+    }
     this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
     this.updateScrollButton();
+  }
+
+  private markUserScrollGesture(): void {
+    this.userScrollGesture = true;
+    if (this.userScrollGestureTimer !== undefined) window.clearTimeout(this.userScrollGestureTimer);
+    this.userScrollGestureTimer = window.setTimeout(() => {
+      this.userScrollGesture = false;
+      this.userScrollGestureTimer = undefined;
+    }, 250);
   }
 
   private scrollChatToBottom(): void {
