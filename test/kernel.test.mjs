@@ -504,11 +504,13 @@ test("AI SDK adapter normalizes a streaming provider response", async () => {
 
 test("AI SDK adapter streams reasoning and forwards the selected thinking level", async () => {
   let requestBody;
+  let requestHeaders;
   const adapter = new AiSdkAdapter({
     endpoint: "https://example.test/v1",
     model: "demo",
     reasoning: "high",
     fetcher: async (_input, init) => {
+      requestHeaders = Object.fromEntries(new Headers(init.headers).entries());
       requestBody = JSON.parse(init.body);
       return sseResponse([
         { choices: [{ delta: { reasoning_content: "first step" } }] },
@@ -524,6 +526,7 @@ test("AI SDK adapter streams reasoning and forwards the selected thinking level"
   assert.equal(events.at(-1).message.reasoning, "first step; second step");
   assert.equal(events.at(-1).message.content, "answer");
   assert.equal(requestBody.reasoning_effort, "high");
+  assert.equal(requestHeaders["user-agent"], undefined, "the browser adapter must not send User-Agent in CORS requests");
 });
 
 test("AI SDK adapter resolves versioned API bases to chat completions", async () => {

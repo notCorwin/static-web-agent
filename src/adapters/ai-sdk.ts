@@ -36,6 +36,21 @@ export interface AiSdkAdapterOptions {
   readonly headers?: Readonly<Record<string, string>>;
 }
 
+/**
+ * Safari rejects cross-origin fetches that try to set the forbidden
+ * User-Agent request header. AI SDK Core adds that header for its provider
+ * diagnostics, so remove it at the browser adapter boundary while preserving
+ * the provider's authorization and content headers.
+ */
+function safariSafeFetcher(fetcher: BrowserFetcher): BrowserFetcher {
+  return (input, init) => {
+    if (init?.headers === undefined) return fetcher(input, init);
+    const headers = new Headers(init.headers);
+    headers.delete("user-agent");
+    return fetcher(input, { ...init, headers });
+  };
+}
+
 interface UnknownRecord {
   readonly [key: string]: unknown;
 }
@@ -266,7 +281,7 @@ export class AiSdkAdapter implements ModelAdapter {
 
     const resolvedEndpoint = resolveEndpoint(options.endpoint);
     const directURL = resolvedEndpoint.directURL;
-    const fetcher: BrowserFetcher = directURL === undefined
+    const endpointFetcher: BrowserFetcher = directURL === undefined
       ? options.fetcher
       : (_input, init) => options.fetcher(directURL, init);
     this.provider = createOpenAICompatible({
@@ -275,7 +290,7 @@ export class AiSdkAdapter implements ModelAdapter {
       ...(options.apiKey === undefined || options.apiKey.length === 0 ? {} : { apiKey: options.apiKey }),
       ...(options.headers === undefined ? {} : { headers: { ...options.headers } }),
       includeUsage: true,
-      fetch: fetcher,
+      fetch: safariSafeFetcher(endpointFetcher),
     });
   }
 
