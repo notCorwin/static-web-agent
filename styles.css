@@ -104,19 +104,20 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .connection-intro p { margin: 7px 0 0; color: var(--muted); line-height: 1.5; }
 .connection-form { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 0; }
 .connection-form .field:first-child, .connection-form .connection-note, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1 / -1; }
+.connection-form .thinking-level-field { grid-column: 1 / -1; }
 .field { display: grid; gap: 4px; min-width: 0; }
 .field label { color: var(--muted); font-size: 11px; font-weight: 700; }
-.field input, .composer textarea {
+.field input, .field select, .composer textarea {
   width: 100%;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
   background: var(--surface);
   color: var(--text);
 }
-.field input { min-height: 36px; padding: 7px 9px; }
+.field input, .field select { min-height: 36px; padding: 7px 9px; }
 .field input::placeholder, .composer textarea::placeholder { color: var(--faint); }
-.field input:hover, .field input:focus, .composer textarea:focus { border-color: var(--accent); }
-.field input:focus, .field input:focus-visible { outline: 0 !important; outline-offset: 0; box-shadow: none; }
+.field input:hover, .field input:focus, .field select:hover, .field select:focus, .composer textarea:focus { border-color: var(--accent); }
+.field input:focus, .field input:focus-visible, .field select:focus, .field select:focus-visible { outline: 0 !important; outline-offset: 0; box-shadow: none; }
 .field input[aria-invalid="true"] { border-color: var(--danger); }
 .faint { color: var(--faint); font-weight: 400; }
 .field-error, .field-help { min-height: 16px; margin: 0; font-size: 11px; line-height: 1.35; }
@@ -158,6 +159,13 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .message.assistant .message-body { border: 0; border-radius: 0; padding: 0; background: transparent; }
 .message.user .message-body { border-color: rgb(0 0 0 / 22%); background: rgb(0 0 0 / 5%); }
 .pending .message-body { border-style: dashed; }
+.thinking-block { align-self: stretch; min-width: 0; color: var(--muted); font-size: 12px; }
+.thinking-summary { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; color: var(--faint); font-size: 12px; }
+.thinking-summary::-webkit-details-marker { display: none; }
+.thinking-summary::before { content: "›"; display: inline-block; color: var(--muted); font-size: 17px; line-height: 1; transition: transform 140ms ease; }
+.thinking-block[open] > .thinking-summary::before { transform: rotate(90deg); }
+.thinking-body { margin: 7px 0 2px 21px; border-left: 2px solid var(--border); padding-left: 12px; color: var(--faint); line-height: 1.55; overflow-wrap: anywhere; }
+.thinking-body .message-body { color: var(--faint); }
 .message-actions { display: flex; min-height: 24px; gap: 4px; opacity: 0; transition: opacity 140ms ease; }
 .message.user .message-actions { justify-content: flex-end; }
 .message.assistant .message-actions { justify-content: flex-start; }

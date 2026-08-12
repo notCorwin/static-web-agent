@@ -42,6 +42,19 @@ export function renderShell(root: HTMLElement): AppElements {
                 <p class="field-help" id="key-help">Stored locally and saved as the password-manager password when supported.</p>
               </div>
               <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Connect model</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
+              <div class="field thinking-level-field">
+                <label for="thinking-level">Thinking level <span class="faint">(saved locally)</span></label>
+                <select id="thinking-level" name="thinkingLevel" aria-describedby="thinking-level-help">
+                  <option value="provider-default">Auto (provider default)</option>
+                  <option value="none">Off</option>
+                  <option value="minimal">Minimal</option>
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                  <option value="xhigh">Maximum</option>
+                </select>
+                <p class="field-help" id="thinking-level-help">Controls how much reasoning the model is asked to use. Providers may ignore unsupported levels.</p>
+              </div>
               <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
               <p class="credential-status" id="credential-status" role="status" aria-live="polite">The model name is the password-manager username; the API key is the password; endpoint is saved locally.</p>
               <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -90,16 +103,20 @@ export function messageElement(message: ModelMessage, pending = false, messageIn
     details.append(summary, body);
     return details;
   }
-  if (message.role === "assistant" && message.content.trim().length === 0) return null;
+  const hasReasoning = message.role === "assistant" && message.reasoning !== undefined && message.reasoning.trim().length > 0;
+  if (message.role === "assistant" && message.content.trim().length === 0 && !hasReasoning) return null;
 
   const article = document.createElement("article");
   article.className = `message ${message.role}${pending ? " pending" : ""}`;
   if (messageIndex !== undefined) article.dataset.messageIndex = String(messageIndex);
-  const body = document.createElement("div");
-  body.className = "message-body";
-  if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
-  else body.textContent = message.content;
-  article.append(body);
+  if (hasReasoning) article.append(thinkingElement(message.reasoning ?? "", pending));
+  if (message.content.length > 0) {
+    const body = document.createElement("div");
+    body.className = "message-body";
+    if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
+    else body.textContent = message.content;
+    article.append(body);
+  }
   if ((message.role === "assistant" || message.role === "user") && !pending) {
     const actions = document.createElement("div");
     actions.className = "message-actions";
@@ -125,6 +142,33 @@ export function messageElement(message: ModelMessage, pending = false, messageIn
     article.append(actions);
   }
   return article;
+}
+
+export function thinkingElement(reasoning: string, pending = false): HTMLDetailsElement {
+  const details = document.createElement("details");
+  details.className = `thinking-block${pending ? " pending" : ""}`;
+  details.dataset.thinking = "true";
+  const summary = document.createElement("summary");
+  summary.className = "thinking-summary";
+  summary.textContent = pending ? "Thinking…" : "Thinking";
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+  renderRichContent(body, reasoning);
+  details.append(summary, body);
+  details.open = pending;
+  return details;
+}
+
+export function updateThinkingElement(details: HTMLDetailsElement, reasoning: string, pending = true): void {
+  details.className = `thinking-block${pending ? " pending" : ""}`;
+  details.dataset.thinking = "true";
+  const summary = details.querySelector<HTMLElement>(":scope > .thinking-summary");
+  const body = details.querySelector<HTMLElement>(":scope > .thinking-body");
+  if (summary === null || body === null) return;
+  summary.textContent = pending ? "Thinking…" : "Thinking";
+  body.replaceChildren();
+  renderRichContent(body, reasoning);
+  details.open = pending;
 }
 
 export function toolGroupElement(items: readonly HTMLElement[], active = false): HTMLDetailsElement {

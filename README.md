@@ -23,13 +23,13 @@ The browser checks use `BROWSER_PATH` or a detected Chromium/Chrome binary. If n
 
 ## Connect a model
 
-The workspace requires an OpenAI-compatible remote model for chat. Enter the endpoint, model, and API key in the welcome area; the connection form is shown until a model is selected, then the connected welcome message replaces it. Requests are sent directly from the browser.
+The workspace requires an OpenAI-compatible remote model for chat. Enter the endpoint, model, API key, and Thinking level in the welcome area; the connection form is shown until a model is selected, then the connected welcome message replaces it. The Thinking level is saved in local browser state and defaults to the provider's setting. Requests are sent directly from the browser.
 
 ## Remote models
 
 The connection form installs a model plugin for the current tab. It accepts an OpenAI-compatible API base such as `https://openrouter.ai/api/v1` or a full `/chat/completions` endpoint, sends requests directly from the browser, and requires normal browser CORS permissions. Versioned API bases automatically receive the `/chat/completions` suffix. The first message verifies the endpoint; selecting the model itself does not make a network request. After a successful selection, the endpoint, model, and API key are saved in this browser's local IndexedDB. When the Credential Management API and a browser password manager are available, the model name is stored as the password credential's username, while the endpoint remains automatically saved in IndexedDB; the saved values are silently merged on the next visit. Older credentials that used the endpoint as the username remain readable. The key is not sent anywhere except the configured endpoint; treat it as sensitive data because same-origin page code can read browser storage.
 
-Provider failures, HTTP errors, empty responses, malformed tool arguments, malformed SSE, incomplete SSE streams, and cancellation are returned as structured model errors. The application does not add a default model deadline; the provider, browser, or an explicit caller cancellation can still end a request.
+Provider failures, HTTP errors, empty responses, malformed tool arguments, malformed SSE, incomplete SSE streams, and cancellation are returned as structured model errors. Reasoning/Thinking deltas are streamed through the provider-neutral model boundary and displayed live; completed Thinking blocks are collapsed by default and can be expanded manually. The selected Thinking level is passed through AI SDK Core's portable `reasoning` option when the provider supports it. The application does not add a default model deadline; the provider, browser, or an explicit caller cancellation can still end a request.
 
 ## Message rendering
 

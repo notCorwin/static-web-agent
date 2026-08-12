@@ -10,8 +10,8 @@ import { createBrowserApiPlugin } from "../plugins/browser-api.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
-import { isConnectionSettings, loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
-import { messageElement, messageElements, renderShell, streamingToolElement, textElement, toolGroupElement, updateStreamingToolElement, updateToolGroupElement, type AppElements } from "./view.js";
+import { DEFAULT_THINKING_LEVEL, isConnectionSettings, loadConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
+import { messageElement, messageElements, renderShell, streamingToolElement, textElement, thinkingElement, toolGroupElement, updateStreamingToolElement, updateThinkingElement, updateToolGroupElement, type AppElements } from "./view.js";
 import { renderRichContent } from "./rich-content.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/ai-sdk.js";
@@ -89,6 +89,7 @@ export class AgentApp {
   private busy = false;
   private runController: AbortController | undefined;
   private pendingText = "";
+  private pendingReasoning = "";
   private pendingTool: ToolCall | undefined;
   private pendingToolCalls: readonly ToolCallDelta[] = [];
   private liveToolEntries: readonly LiveToolEntry[] = [];
@@ -179,6 +180,7 @@ export class AgentApp {
     this.userScrollGestureTimer = undefined;
     this.userScrollGesture = false;
     this.followChat = true;
+    this.pendingReasoning = "";
     this.pendingToolCalls = [];
     this.liveToolEntries = [];
     this.liveToolSequence = 0;
@@ -283,9 +285,11 @@ export class AgentApp {
     const endpoint = this.elements["model-endpoint"] as HTMLInputElement | undefined;
     const model = this.elements["model-name"] as HTMLInputElement | undefined;
     const apiKey = this.elements["model-key"] as HTMLInputElement | undefined;
+    const thinkingLevel = this.elements["thinking-level"] as HTMLSelectElement | undefined;
     if (endpoint !== undefined) endpoint.value = settings.endpoint;
     if (model !== undefined) model.value = settings.model;
     if (apiKey !== undefined) apiKey.value = settings.apiKey;
+    if (thinkingLevel !== undefined) thinkingLevel.value = settings.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
   }
 
   private clearFieldError(fieldId: string): void {
@@ -311,6 +315,10 @@ export class AgentApp {
     const endpoint = String(data.get("endpoint") ?? "").trim();
     const model = String(data.get("model") ?? "").trim();
     const apiKey = String(data.get("apiKey") ?? "");
+    const requestedThinkingLevel = String(data.get("thinkingLevel") ?? DEFAULT_THINKING_LEVEL);
+    const thinkingLevel = THINKING_LEVELS.includes(requestedThinkingLevel as typeof THINKING_LEVELS[number])
+      ? requestedThinkingLevel as typeof THINKING_LEVELS[number]
+      : DEFAULT_THINKING_LEVEL;
     let firstInvalid: HTMLInputElement | undefined;
     if (!endpoint) {
       this.setFieldError("model-endpoint", "Enter the model endpoint.");
@@ -333,7 +341,7 @@ export class AgentApp {
       this.notify("Check the highlighted connection fields.", "error");
       return undefined;
     }
-    return { endpoint, model, apiKey };
+    return { endpoint, model, apiKey, thinkingLevel };
   }
 
   private confirmDraft(): boolean {
@@ -376,6 +384,7 @@ export class AgentApp {
       input.value = "";
       this.resizeMessageInput();
       this.pendingText = "";
+      this.pendingReasoning = "";
       this.pendingTool = undefined;
       this.pendingToolCalls = [];
       this.liveToolEntries = [];
@@ -395,6 +404,7 @@ export class AgentApp {
       this.notify(error instanceof Error ? error.message : "The run failed.", "error");
     } finally {
       this.pendingText = "";
+      this.pendingReasoning = "";
       this.pendingTool = undefined;
       this.pendingToolCalls = [];
       this.liveToolEntries = [];
@@ -410,6 +420,11 @@ export class AgentApp {
       case "text-delta":
         this.pendingText += event.delta;
         this.notify("Receiving response…");
+        this.scheduleChatRender();
+        break;
+      case "reasoning-delta":
+        this.pendingReasoning += event.delta;
+        this.notify("Thinking…");
         this.scheduleChatRender();
         break;
       case "model-started":
@@ -517,7 +532,7 @@ export class AgentApp {
       || this.renderedConnectionEditing !== this.connectionEditing;
     if (fullRender) {
       conversation.replaceChildren();
-      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.liveToolEntries.length === 0) {
+      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingReasoning.length === 0 && this.liveToolEntries.length === 0) {
         if (this.agent !== undefined) {
           const welcome = document.createElement("div");
           welcome.className = "empty-state";
@@ -552,8 +567,8 @@ export class AgentApp {
   }
 
   private appendPendingMessages(conversation: HTMLElement, openKeys: ReadonlySet<string> = new Set()): void {
-    if (this.pendingText.length > 0) {
-      const element = messageElement({ role: "assistant", content: this.pendingText }, true);
+    if (this.pendingText.length > 0 || this.pendingReasoning.length > 0) {
+      const element = messageElement({ role: "assistant", content: this.pendingText, ...(this.pendingReasoning.length === 0 ? {} : { reasoning: this.pendingReasoning }) }, true);
       if (element !== null) conversation.append(element);
     }
     const pendingTools = this.liveToolEntries.flatMap((entry) => {
@@ -569,15 +584,33 @@ export class AgentApp {
 
   private updatePendingMessages(conversation: HTMLElement): void {
     let pendingAssistant = conversation.querySelector<HTMLElement>(":scope > .message.assistant.pending");
-    if (this.pendingText.length > 0) {
+    if (this.pendingText.length > 0 || this.pendingReasoning.length > 0) {
       if (pendingAssistant === null) {
-        pendingAssistant = messageElement({ role: "assistant", content: this.pendingText }, true);
+        pendingAssistant = messageElement({ role: "assistant", content: this.pendingText, ...(this.pendingReasoning.length === 0 ? {} : { reasoning: this.pendingReasoning }) }, true);
         if (pendingAssistant !== null) conversation.append(pendingAssistant);
       } else {
-        const body = pendingAssistant.querySelector<HTMLElement>(":scope > .message-body");
-        if (body !== null) {
+        let thinking = pendingAssistant.querySelector<HTMLDetailsElement>(":scope > .thinking-block");
+        if (this.pendingReasoning.length > 0) {
+          if (thinking === null) {
+            thinking = thinkingElement(this.pendingReasoning, true);
+            pendingAssistant.prepend(thinking);
+          } else {
+            updateThinkingElement(thinking, this.pendingReasoning, true);
+          }
+        } else {
+          thinking?.remove();
+        }
+        let body = pendingAssistant.querySelector<HTMLElement>(":scope > .message-body");
+        if (this.pendingText.length > 0) {
+          if (body === null) {
+            body = document.createElement("div");
+            body.className = "message-body";
+            pendingAssistant.append(body);
+          }
           body.replaceChildren();
           renderRichContent(body, this.pendingText);
+        } else {
+          body?.remove();
         }
       }
     } else {
@@ -815,7 +848,12 @@ export class AgentApp {
         this.remoteHandle = undefined;
       }
       this.agent = undefined;
-      const handle = await this.plugins.install(createRemoteModelPlugin(values));
+      const handle = await this.plugins.install(createRemoteModelPlugin({
+        endpoint: values.endpoint,
+        model: values.model,
+        apiKey: values.apiKey,
+        reasoning: values.thinkingLevel,
+      }));
       const adapter = this.plugins.modelAdapter("remote-model");
       if (adapter === undefined) throw new Error("The remote model plugin did not register an adapter.");
       this.remoteHandle = handle;
@@ -848,6 +886,7 @@ export class AgentApp {
         endpoint: savedSettings?.endpoint || credentialSettings.endpoint,
         model: credentialSettings.model || savedSettings?.model || "",
         apiKey: credentialSettings.apiKey || savedSettings?.apiKey || "",
+        thinkingLevel: savedSettings?.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
       };
     if (settings === undefined) return;
     if (!settings.endpoint || !settings.model) return;

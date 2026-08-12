@@ -123,6 +123,9 @@ function assertAssistant(message: AssistantMessage): void {
   if (record.role !== "assistant" || typeof record.content !== "string") {
     throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   }
+  if (record.reasoning !== undefined && typeof record.reasoning !== "string") {
+    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned invalid reasoning text.");
+  }
   if (record.toolCalls !== undefined) {
     if (!Array.isArray(record.toolCalls)) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
     for (const call of record.toolCalls) assertToolCall(call as ToolCall);
@@ -142,6 +145,12 @@ function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits):
     if (typeof record.content !== "string") throw new KernelError("INVALID_MESSAGES", "Every model message needs string content.");
     if (record.content.length > limits.maxMessageChars) {
       throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `A model message may contain at most ${limits.maxMessageChars} characters.`);
+    }
+    if (record.role === "assistant" && record.reasoning !== undefined && typeof record.reasoning !== "string") {
+      throw new KernelError("INVALID_MESSAGES", "Assistant reasoning must be a string.");
+    }
+    if (record.role === "assistant" && typeof record.reasoning === "string" && record.reasoning.length > limits.maxMessageChars) {
+      throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `Assistant reasoning may contain at most ${limits.maxMessageChars} characters.`);
     }
     if (record.role === "assistant" && record.toolCalls !== undefined) {
       if (!Array.isArray(record.toolCalls)) throw new KernelError("INVALID_MESSAGES", "Assistant tool calls must be an array.");
@@ -291,6 +300,7 @@ export class Agent {
       this.emit(request.onEvent, { type: "model-started", turn: turns });
       let completed: AssistantMessage | undefined;
       let streamedText = "";
+      let streamedReasoning = "";
       const streamedCalls: ToolCall[] = [];
       const streamedCallDeltas = new Map<number, StreamedToolCallDraft>();
       let sawCompleted = false;
@@ -322,6 +332,10 @@ export class Agent {
                 (delta) => {
                   streamedText += delta;
                   if (streamedText.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
+                },
+                (delta) => {
+                  streamedReasoning += delta;
+                  if (streamedReasoning.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model reasoning is too large.");
                 },
                 (message) => {
                   completed = message;
@@ -383,9 +397,11 @@ export class Agent {
       }
       const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedText };
       const content = baseAssistant.content.length === 0 && streamedText.length > 0 ? streamedText : baseAssistant.content;
+      const reasoning = baseAssistant.reasoning === undefined && streamedReasoning.length > 0 ? streamedReasoning : baseAssistant.reasoning;
+      const assistantBase: AssistantMessage = reasoning === undefined ? { ...baseAssistant, content } : { ...baseAssistant, content, reasoning };
       const assistant: AssistantMessage = calls.length === 0
-        ? { role: "assistant", content }
-        : { ...baseAssistant, content, toolCalls: calls };
+        ? assistantBase
+        : { ...assistantBase, toolCalls: calls };
       assertAssistant(assistant);
       if (assistant.content.trim().length === 0 && calls.length === 0) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned an empty response." });
       if (assistant.content.length > limits.maxMessageChars) return fail({ code: "MODEL_OUTPUT_TOO_LARGE", message: "Model output is too large." });
@@ -429,6 +445,7 @@ export class Agent {
     calls: ToolCall[],
     callDeltas: Map<number, StreamedToolCallDraft>,
     addText: (delta: string) => void,
+    addReasoning: (delta: string) => void,
     setCompleted: (message: AssistantMessage) => void,
     addUsageValue: (usage: ModelUsage) => void,
   ): void {
@@ -439,6 +456,11 @@ export class Agent {
       case "text-delta":
         if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
         addText(event.delta);
+        this.emit(onEvent, event);
+        break;
+      case "reasoning-delta":
+        if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid reasoning delta.");
+        addReasoning(event.delta);
         this.emit(onEvent, event);
         break;
       case "tool-call-delta": {

@@ -41,10 +41,19 @@ function contentType(path) {
 async function startStaticServer() {
   let toolRequests = 0;
   let streamedToolRequests = 0;
+  const reasoningRequests = [];
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
-      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang") {
+      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning") {
+        if (pathname === "/test-reasoning") {
+          const rawBody = await new Promise((resolve) => {
+            let body = "";
+            request.on("data", (chunk) => { body += chunk.toString(); });
+            request.on("end", () => resolve(body));
+          });
+          try { reasoningRequests.push(JSON.parse(rawBody)); } catch { reasoningRequests.push(undefined); }
+        }
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         if (pathname === "/test-scroll") {
           const chunks = [
@@ -86,7 +95,7 @@ async function startStaticServer() {
             "console.log(value);",
             "```",
           ].join("\n")
-          : pathname === "/test-tool" || pathname === "/test-tool-stream"
+          : pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-reasoning"
             ? "tool complete"
             : "sse";
         if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
@@ -119,7 +128,27 @@ async function startStaticServer() {
           sendToolChunk();
           return;
         }
-        if (pathname === "/test-tool" && toolRequests++ === 0) {
+        if (pathname === "/test-reasoning") {
+          const chunks = [
+            { choices: [{ delta: { reasoning_content: "first reasoning step\n" } }] },
+            { choices: [{ delta: { reasoning_content: "second reasoning step\n" } }] },
+            { choices: [{ delta: { content: "reasoning answer" } }] },
+          ];
+          let index = 0;
+          const sendReasoningChunk = () => {
+            if (response.destroyed) return;
+            if (index < chunks.length) {
+              response.write(`data: ${JSON.stringify(chunks[index])}\n\n`);
+              index += 1;
+              setTimeout(sendReasoningChunk, 80);
+              return;
+            }
+            response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
+            response.end("data: [DONE]\n\n");
+          };
+          sendReasoningChunk();
+          return;
+        } else if (pathname === "/test-tool" && toolRequests++ === 0) {
           response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "browser-tool-call", type: "function", function: { name: "runtime_javascript", arguments: '{"code":"return 42"}' } }] } }] })}\n\n`);
           response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
         } else {
@@ -147,7 +176,7 @@ async function startStaticServer() {
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, port: server.address().port };
+  return { server, port: server.address().port, reasoningRequests };
 }
 
 function waitForOutput(child, timeoutMs = 30_000) {
@@ -243,7 +272,7 @@ if (browser === undefined) {
   process.exit(0);
 }
 
-const { server, port } = await startStaticServer();
+const { server, port, reasoningRequests } = await startStaticServer();
 const release = JSON.parse(await readFile(join(root, "dist/version.json"), "utf8"));
 const profile = await mkdtemp(join(tmpdir(), "static-web-agent-browser-"));
 const child = spawn(browser, [
@@ -308,6 +337,9 @@ try {
       endpointLabel: document.querySelector('label[for="model-endpoint"]').textContent,
       keyLabel: document.querySelector('label[for="model-key"]').textContent,
       keyHelp: document.querySelector('#key-help').textContent,
+      thinkingValue: document.querySelector('#thinking-level').value,
+      thinkingLabel: document.querySelector('label[for="thinking-level"]').textContent,
+      thinkingHelp: document.querySelector('#thinking-level-help').textContent,
     };
   })()`);
   assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.workspaceCenter.x) <= 1, "the connection card should be horizontally centered in the workspace");
@@ -320,6 +352,9 @@ try {
   assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
   assert.ok(connectionLayout.keyLabel.includes("password manager + local"), "the API key should be presented as password-manager and local state");
   assert.ok(connectionLayout.keyHelp.includes("password-manager password"), "the API key help should explain its password-manager role");
+  assert.equal(connectionLayout.thinkingValue, "provider-default");
+  assert.ok(connectionLayout.thinkingLabel.includes("Thinking level"));
+  assert.ok(connectionLayout.thinkingHelp.includes("reasoning"));
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
   const connectionFocus = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key'].map((selector) => {
     const input = document.querySelector(selector);
@@ -486,6 +521,33 @@ try {
   })()`);
   await waitFor(page, "Array.from(document.querySelectorAll('.message.user .message-body')).at(-1)?.textContent.includes('Edited user rich') && document.querySelector('.message.assistant:last-of-type .message-body h1')?.textContent === 'Rich response'", 20_000);
   await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = location.origin + '/test-reasoning';
+    document.querySelector('#thinking-level').value = 'high';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'reasoning request';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.message.assistant.pending .thinking-block[open] .thinking-body')?.textContent.includes('first reasoning step')", 20_000);
+  const streamingThinking = await page.evaluate(`(() => ({
+    summary: document.querySelector('.message.assistant.pending .thinking-summary')?.textContent,
+    open: document.querySelector('.message.assistant.pending .thinking-block')?.open,
+    body: document.querySelector('.message.assistant.pending .thinking-body')?.textContent,
+  }))()`);
+  assert.deepEqual(streamingThinking, { summary: "Thinking…", open: true, body: "first reasoning step\n" });
+  await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'reasoning answer' && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
+  const finishedThinking = await page.evaluate(`(() => {
+    const block = document.querySelector('.message.assistant .thinking-block');
+    return { summary: block?.querySelector('.thinking-summary')?.textContent, open: block?.open, body: block?.querySelector('.thinking-body')?.textContent };
+  })()`);
+  assert.equal(finishedThinking.summary, "Thinking");
+  assert.equal(finishedThinking.open, false, "completed thinking should be collapsed by default");
+  assert.ok(finishedThinking.body?.includes("first reasoning step") && finishedThinking.body.includes("second reasoning step"));
+  assert.equal(reasoningRequests.at(-1)?.reasoning_effort, "high");
+  await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-hang';
     document.querySelector('#connection-form').requestSubmit();
   })()`);
@@ -608,8 +670,9 @@ try {
     endpoint: document.querySelector('#model-endpoint')?.value,
     model: document.querySelector('#model-name')?.value,
     apiKey: document.querySelector('#model-key')?.value,
+    thinkingLevel: document.querySelector('#thinking-level')?.value,
   })`);
-  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool-stream`, model: "vendor/browser-test:free", apiKey: "browser-test-key" });
+  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool-stream`, model: "vendor/browser-test:free", apiKey: "browser-test-key", thinkingLevel: "high" });
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {

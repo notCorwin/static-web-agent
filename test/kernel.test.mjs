@@ -5,6 +5,7 @@ import {
   CapabilityManager,
   CHAT_LIMITS,
   CONNECTION_SETTINGS_KEY,
+  DEFAULT_THINKING_LEVEL,
   MemoryStateStore,
   AiSdkAdapter,
   PluginManager,
@@ -181,6 +182,23 @@ test("agent forwards streaming tool-call deltas and reconstructs their arguments
   assert.deepEqual(result.messages.find((message) => message.role === "assistant" && message.toolCalls !== undefined)?.toolCalls, [{ id: "stream-call", name: "test.echo", arguments: { value: "ok" } }]);
   assert.equal(events.filter((event) => event.type === "tool-call-delta").length, 2);
   assert.equal(events.find((event) => event.type === "tool-started")?.call.name, "test.echo");
+});
+
+test("agent forwards and preserves streaming reasoning text", async () => {
+  const model = scriptedAdapter([[
+    { type: "reasoning-delta", delta: "first" },
+    { type: "reasoning-delta", delta: " second" },
+    { type: "text-delta", delta: "answer" },
+    { type: "completed", message: { role: "assistant", content: "answer" } },
+  ]]);
+  const events = [];
+  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+    messages: [{ role: "user", content: "think" }],
+    onEvent: (event) => events.push(event),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.response.reasoning, "first second");
+  assert.deepEqual(events.filter((event) => event.type === "reasoning-delta").map((event) => event.delta), ["first", " second"]);
 });
 
 test("agent termination is deterministic at max turns", async () => {
@@ -435,13 +453,16 @@ test("browser state falls back to memory when IndexedDB opening fails", async ()
 
 test("connection settings persist as a browser-local state record", async () => {
   const state = new MemoryStateStore();
-  const settings = { endpoint: "https://example.test/v1/chat/completions", model: "demo", apiKey: "secret" };
+  const settings = { endpoint: "https://example.test/v1/chat/completions", model: "demo", apiKey: "secret", thinkingLevel: "high" };
   await saveConnectionSettings(state, settings);
   assert.deepEqual(await loadConnectionSettings(state), settings);
   assert.deepEqual(await state.get(CONNECTION_SETTINGS_KEY), settings);
 
   await state.set(CONNECTION_SETTINGS_KEY, { endpoint: settings.endpoint, model: settings.model, apiKey: 42 });
   assert.equal(await loadConnectionSettings(state), undefined);
+
+  await state.set(CONNECTION_SETTINGS_KEY, { endpoint: settings.endpoint, model: settings.model, apiKey: settings.apiKey });
+  assert.equal((await loadConnectionSettings(state)).thinkingLevel, DEFAULT_THINKING_LEVEL);
 });
 
 test("in-memory chat normalization preserves unbounded message history", () => {
@@ -479,6 +500,30 @@ test("AI SDK adapter normalizes a streaming provider response", async () => {
   assert.equal(requestBody.model, "demo");
   assert.equal(requestBody.messages[0].role, "user");
   assert.equal(requestBody.stream, true);
+});
+
+test("AI SDK adapter streams reasoning and forwards the selected thinking level", async () => {
+  let requestBody;
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
+    model: "demo",
+    reasoning: "high",
+    fetcher: async (_input, init) => {
+      requestBody = JSON.parse(init.body);
+      return sseResponse([
+        { choices: [{ delta: { reasoning_content: "first step" } }] },
+        { choices: [{ delta: { reasoning_content: "; second step" } }] },
+        { choices: [{ delta: { content: "answer" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ]);
+    },
+  });
+  const events = [];
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "think" }], tools: [], signal: noSignal() })) events.push(event);
+  assert.deepEqual(events.filter((event) => event.type === "reasoning-delta").map((event) => event.delta), ["first step", "; second step"]);
+  assert.equal(events.at(-1).message.reasoning, "first step; second step");
+  assert.equal(events.at(-1).message.content, "answer");
+  assert.equal(requestBody.reasoning_effort, "high");
 });
 
 test("AI SDK adapter resolves versioned API bases to chat completions", async () => {

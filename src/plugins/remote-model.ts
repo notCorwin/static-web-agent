@@ -1,5 +1,5 @@
 import { AiSdkAdapter, type BrowserFetcher } from "../adapters/ai-sdk.js";
-import type { ModelAdapter, Plugin } from "../core/types.js";
+import type { ModelAdapter, Plugin, ReasoningLevel } from "../core/types.js";
 
 export interface RemoteModelPluginOptions {
   readonly id?: string;
@@ -7,6 +7,7 @@ export interface RemoteModelPluginOptions {
   readonly endpoint: string;
   readonly model: string;
   readonly apiKey?: string;
+  readonly reasoning?: ReasoningLevel;
 }
 
 interface NetworkCapability {
@@ -30,6 +31,7 @@ export function createRemoteModelPlugin(options: RemoteModelPluginOptions): Plug
         id: adapterId,
         endpoint: options.endpoint,
         model: options.model,
+        ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
         fetcher: async (input, init) => (await context.capabilities.get<NetworkCapability>("network")).fetch(input, init),
         ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),
       });

@@ -17,6 +17,7 @@ import type {
   ModelMessage,
   ModelRequest,
   ModelUsage,
+  ReasoningLevel,
   ToolCall,
   ToolCallDelta,
   ToolDescriptor,
@@ -29,6 +30,8 @@ export interface AiSdkAdapterOptions {
   readonly endpoint: string;
   readonly model: string;
   readonly apiKey?: string;
+  /** Portable reasoning/thinking effort passed to AI SDK Core. */
+  readonly reasoning?: ReasoningLevel;
   readonly fetcher: BrowserFetcher;
   readonly headers?: Readonly<Record<string, string>>;
 }
@@ -154,10 +157,15 @@ function toAiMessage(message: ModelMessage, names: ReadonlyMap<string, string>):
     case "user":
       return { role: "user", content: message.content };
     case "assistant": {
-      if (message.toolCalls === undefined) return { role: "assistant", content: message.content };
-      const content: Array<{ type: "text"; text: string } | { type: "tool-call"; toolCallId: string; toolName: string; input: JsonValue }> = [];
+      if (message.toolCalls === undefined && message.reasoning === undefined) return { role: "assistant", content: message.content };
+      const content: Array<
+        | { type: "reasoning"; text: string }
+        | { type: "text"; text: string }
+        | { type: "tool-call"; toolCallId: string; toolName: string; input: JsonValue }
+      > = [];
+      if (message.reasoning !== undefined && message.reasoning.length > 0) content.push({ type: "reasoning", text: message.reasoning });
       if (message.content.length > 0) content.push({ type: "text", text: message.content });
-      for (const call of message.toolCalls) {
+      for (const call of message.toolCalls ?? []) {
         content.push({
           type: "tool-call",
           toolCallId: call.id,
@@ -246,11 +254,13 @@ function throwIfAborted(signal: AbortSignal): void {
 export class AiSdkAdapter implements ModelAdapter {
   readonly id: string;
   private readonly model: string;
+  private readonly reasoning: ReasoningLevel | undefined;
   private readonly provider: ReturnType<typeof createOpenAICompatible>;
 
   constructor(options: AiSdkAdapterOptions) {
     this.id = options.id ?? "ai-sdk";
     this.model = options.model.trim();
+    this.reasoning = options.reasoning;
     if (!this.model) throw new Error("A model name is required.");
     if (typeof options.fetcher !== "function") throw new Error("A model fetcher is required.");
 
@@ -279,6 +289,7 @@ export class AiSdkAdapter implements ModelAdapter {
       model: this.provider(this.model),
       ...prompt,
       ...(request.tools.length === 0 ? {} : { tools: aiTools(request.tools, names) }),
+      ...(this.reasoning === undefined || this.reasoning === "provider-default" ? {} : { reasoning: this.reasoning }),
       maxRetries: 0,
       abortSignal: request.signal,
       onError: () => {
@@ -287,6 +298,7 @@ export class AiSdkAdapter implements ModelAdapter {
     });
 
     let content = "";
+    let reasoning = "";
     let finalUsage: ModelUsage | undefined;
     let sawFinish = false;
     const calls = new Map<string, ToolCallDraft>();
@@ -300,6 +312,10 @@ export class AiSdkAdapter implements ModelAdapter {
           case "text-delta":
             content += part.text;
             yield { type: "text-delta", delta: part.text };
+            break;
+          case "reasoning-delta":
+            reasoning += part.text;
+            yield { type: "reasoning-delta", delta: part.text };
             break;
           case "tool-input-start": {
             const index = indexes.get(part.id) ?? nextIndex++;
@@ -350,8 +366,8 @@ export class AiSdkAdapter implements ModelAdapter {
       throw new ModelAdapterError("Model returned an empty response.", undefined, "MODEL_EMPTY_RESPONSE");
     }
     const message: AssistantMessage = normalizedCalls.length === 0
-      ? { role: "assistant", content }
-      : { role: "assistant", content, toolCalls: normalizedCalls };
+      ? { role: "assistant", content, ...(reasoning.length === 0 ? {} : { reasoning }) }
+      : { role: "assistant", content, ...(reasoning.length === 0 ? {} : { reasoning }), toolCalls: normalizedCalls };
     yield { type: "completed", message, ...(finalUsage === undefined ? {} : { usage: finalUsage }) };
   }
 }

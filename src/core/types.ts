@@ -126,6 +126,9 @@ export interface ModelUsage {
   totalTokens?: number;
 }
 
+/** Portable reasoning controls accepted by the model adapter boundary. */
+export type ReasoningLevel = "provider-default" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export interface SystemMessage {
   readonly role: "system";
   readonly content: string;
@@ -153,6 +156,8 @@ export interface ToolCallDelta {
 export interface AssistantMessage {
   readonly role: "assistant";
   readonly content: string;
+  /** Provider-neutral reasoning text, when the model exposes it. */
+  readonly reasoning?: string;
   readonly toolCalls?: readonly ToolCall[];
 }
 
@@ -174,6 +179,7 @@ export interface ModelRequest {
 
 export type ModelEvent =
   | { readonly type: "text-delta"; readonly delta: string }
+  | { readonly type: "reasoning-delta"; readonly delta: string }
   | { readonly type: "tool-call-delta"; readonly delta: ToolCallDelta }
   | { readonly type: "tool-call"; readonly call: ToolCall }
   | { readonly type: "usage"; readonly usage: ModelUsage }
@@ -207,6 +213,7 @@ export type AgentEvent =
   | { readonly type: "run-started"; readonly runId: string }
   | { readonly type: "model-started"; readonly turn: number }
   | { readonly type: "text-delta"; readonly delta: string }
+  | { readonly type: "reasoning-delta"; readonly delta: string }
   | { readonly type: "tool-call-delta"; readonly delta: ToolCallDelta }
   | { readonly type: "assistant-message"; readonly message: AssistantMessage }
   | { readonly type: "tool-started"; readonly call: ToolCall }
