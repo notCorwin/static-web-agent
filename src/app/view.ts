@@ -150,6 +150,28 @@ export function toolGroupElement(items: readonly HTMLElement[], active = false):
   return details;
 }
 
+export function updateToolGroupElement(details: HTMLDetailsElement, items: readonly HTMLElement[], active = false): void {
+  details.className = `tool-group${active ? " pending" : ""}`;
+  details.dataset.toolKey = "tool-group";
+  const summary = details.querySelector<HTMLElement>(":scope > .tool-group-summary");
+  const body = details.querySelector<HTMLElement>(":scope > .tool-group-body");
+  if (summary === null || body === null) return;
+  summary.textContent = active
+    ? `Calling ${items.length} tool${items.length === 1 ? "" : "s"}…`
+    : `Called ${items.length} tool${items.length === 1 ? "" : "s"}`;
+  const nextItems = new Set(items);
+  for (const child of Array.from(body.children)) {
+    if (!nextItems.has(child as HTMLElement)) child.remove();
+  }
+  body.append(...items);
+  details.open = active;
+  if (active) {
+    for (const item of items) {
+      if (item instanceof HTMLDetailsElement) item.open = true;
+    }
+  }
+}
+
 export function messageElements(messages: readonly ModelMessage[]): HTMLElement[] {
   const result: HTMLElement[] = [];
   let toolItems: HTMLElement[] = [];
@@ -170,7 +192,7 @@ export function messageElements(messages: readonly ModelMessage[]): HTMLElement[
   return result;
 }
 
-export function streamingToolElement(delta: ToolCallDelta): HTMLElement {
+export function streamingToolElement(delta: ToolCallDelta): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = "tool-detail pending tool-call-stream";
   details.dataset.toolKey = `stream-${delta.index}`;
@@ -183,4 +205,15 @@ export function streamingToolElement(delta: ToolCallDelta): HTMLElement {
   body.textContent = delta.arguments?.trim() || "Waiting for arguments…";
   details.append(summary, body);
   return details;
+}
+
+export function updateStreamingToolElement(details: HTMLDetailsElement, delta: ToolCallDelta): void {
+  details.className = "tool-detail pending tool-call-stream";
+  details.dataset.toolKey = `stream-${delta.index}`;
+  const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
+  const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
+  if (summary === null || body === null) return;
+  summary.textContent = `${delta.name?.trim() || "tool"} · preparing`;
+  body.textContent = delta.arguments?.trim() || "Waiting for arguments…";
+  details.open = true;
 }

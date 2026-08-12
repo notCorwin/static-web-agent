@@ -11,7 +11,8 @@ import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { isConnectionSettings, loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
-import { messageElement, messageElements, renderShell, streamingToolElement, textElement, toolGroupElement, type AppElements } from "./view.js";
+import { messageElement, messageElements, renderShell, streamingToolElement, textElement, toolGroupElement, updateStreamingToolElement, updateToolGroupElement, type AppElements } from "./view.js";
+import { renderRichContent } from "./rich-content.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/openai-compatible.js";
 import type { StateStore } from "../core/types.js";
@@ -524,12 +525,7 @@ export class AgentApp {
       this.renderedAgent = this.agent;
       this.renderedConnectionEditing = this.connectionEditing;
     } else {
-      const openKeys = new Set<string>();
-      for (const details of conversation.querySelectorAll<HTMLDetailsElement>("details[data-tool-key]")) {
-        if (details.open && details.dataset.toolKey !== undefined) openKeys.add(details.dataset.toolKey);
-      }
-      for (const pending of conversation.querySelectorAll<HTMLElement>(".pending")) pending.remove();
-      this.appendPendingMessages(conversation, openKeys);
+      this.updatePendingMessages(conversation);
     }
     if (this.followChat || this.chat.messages.length === 0) this.scrollChatToBottom();
     this.updateScrollButton();
@@ -550,6 +546,69 @@ export class AgentApp {
       const group = toolGroupElement(pendingTools, true);
       if (openKeys.has("tool-group")) group.open = true;
       conversation.append(group);
+    }
+  }
+
+  private updatePendingMessages(conversation: HTMLElement): void {
+    let pendingAssistant = conversation.querySelector<HTMLElement>(":scope > .message.assistant.pending");
+    if (this.pendingText.length > 0) {
+      if (pendingAssistant === null) {
+        pendingAssistant = messageElement({ role: "assistant", content: this.pendingText }, true);
+        if (pendingAssistant !== null) conversation.append(pendingAssistant);
+      } else {
+        const body = pendingAssistant.querySelector<HTMLElement>(":scope > .message-body");
+        if (body !== null) {
+          body.replaceChildren();
+          renderRichContent(body, this.pendingText);
+        }
+      }
+    } else {
+      pendingAssistant?.remove();
+      pendingAssistant = null;
+    }
+
+    let group = conversation.querySelector<HTMLDetailsElement>(":scope > details.tool-group.pending");
+    const existingItems = new Map<string, HTMLDetailsElement>();
+    if (group !== null) {
+      for (const item of group.querySelectorAll<HTMLDetailsElement>(":scope > .tool-group-body > details.tool-detail")) {
+        if (item.dataset.toolKey !== undefined) existingItems.set(item.dataset.toolKey, item);
+      }
+    }
+    const items: HTMLElement[] = [];
+    for (const delta of this.pendingToolCalls) {
+      const key = `stream-${delta.index}`;
+      const item = existingItems.get(key) ?? streamingToolElement(delta);
+      updateStreamingToolElement(item, delta);
+      items.push(item);
+      existingItems.delete(key);
+    }
+    if (this.pendingTool !== undefined) {
+      const key = this.pendingTool.id;
+      let item = existingItems.get(key);
+      if (item === undefined) {
+        item = messageElement({ role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` }, true) as HTMLDetailsElement | null ?? undefined;
+      }
+      if (item !== undefined) {
+        item.className = "tool-detail pending";
+        item.dataset.toolKey = key;
+        const summary = item.querySelector<HTMLElement>(":scope > .tool-summary");
+        const body = item.querySelector<HTMLElement>(":scope > .tool-detail-body");
+        if (summary !== null) summary.textContent = `${this.pendingTool.name} · running`;
+        if (body !== null) body.textContent = `Running ${this.pendingTool.name}…`;
+        item.open = true;
+        items.push(item);
+      }
+      existingItems.delete(key);
+    }
+    if (items.length === 0) {
+      group?.remove();
+      return;
+    }
+    if (group === null) {
+      group = toolGroupElement(items, true);
+      conversation.append(group);
+    } else {
+      updateToolGroupElement(group, items, true);
     }
   }
 

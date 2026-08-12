@@ -538,6 +538,14 @@ try {
   assert.equal(streamingTool.groupOpen, true, "the active tool group should be open while streaming");
   assert.ok(streamingTool.childOpen?.some(Boolean), "an active tool detail should be open while streaming");
   assert.equal(streamingTool.bodyVisible, true, "streaming tool arguments should be visible");
+  await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); })()");
+  await page.evaluate("new Promise((resolve) => setTimeout(resolve, 140))");
+  const streamingStability = await page.evaluate(`({
+    groupStable: window.__firstStreamingToolGroup === document.querySelector('.tool-group.pending'),
+    detailStable: window.__firstStreamingToolDetail === document.querySelector('.tool-call-stream'),
+    argumentVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return'),
+  })`);
+  assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, argumentVisible: true }, "streaming tool DOM should update in place without flickering");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
   const hiddenTool = await page.evaluate(`(() => ({
     noToolCallList: document.querySelector('.tool-call-list') === null,
