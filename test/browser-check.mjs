@@ -488,7 +488,8 @@ try {
     input.value = 'scroll request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "(() => { const chat = document.querySelector('#chat-log'); return document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('.message.assistant.pending .message-body')?.textContent.includes('Scroll line 32') && chat !== null && chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()", 20_000);
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('.message.assistant.pending .message-body')?.textContent.includes('Scroll line 32')", 20_000);
+  await page.evaluate("new Promise((resolve) => setTimeout(resolve, 100))");
   const midStreamScroll = await page.evaluate(`(() => {
     const chat = document.querySelector('#chat-log');
     return { overflow: chat.scrollHeight > chat.clientHeight, distance: chat.scrollHeight - chat.scrollTop - chat.clientHeight };
@@ -502,6 +503,7 @@ try {
     return chat.scrollHeight - chat.scrollTop - chat.clientHeight;
   })()`);
   assert.ok(finishedStreamScroll <= 2, "the conversation should remain at the bottom after streaming");
+  await page.evaluate("new Promise((resolve) => setTimeout(resolve, 100))");
   await page.evaluate("(() => { const chat = document.querySelector('#chat-log'); chat.scrollTop = 0; chat.dispatchEvent(new Event('scroll')); })()");
   await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === false");
   const scrollButtonLayout = await page.evaluate(`(() => {
