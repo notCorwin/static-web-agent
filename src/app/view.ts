@@ -140,6 +140,10 @@ export function toolGroupElement(items: readonly HTMLElement[], active = false):
   body.className = "tool-group-body";
   body.append(...items);
   details.append(summary, body);
+  details.open = active;
+  for (const item of items) {
+    if (item instanceof HTMLDetailsElement) item.open = active;
+  }
   details.addEventListener("toggle", () => {
     for (const child of body.querySelectorAll<HTMLDetailsElement>(":scope > details.tool-detail")) child.open = details.open;
   });

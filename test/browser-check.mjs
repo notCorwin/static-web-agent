@@ -527,9 +527,15 @@ try {
   const streamingTool = await page.evaluate(`(() => ({
     group: document.querySelector('.tool-group > .tool-group-summary')?.textContent,
     preparing: document.querySelector('.tool-call-stream .tool-summary')?.textContent,
+    groupOpen: document.querySelector('.tool-group')?.open,
+    childOpen: Array.from(document.querySelectorAll('.tool-group-body > .tool-detail')).map((detail) => detail.open),
+    bodyVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.getBoundingClientRect().height > 0,
   }))()`);
   assert.match(streamingTool.group ?? "", /^Calling \d+ tools?…$/);
   assert.ok(streamingTool.preparing?.includes("runtime_"));
+  assert.equal(streamingTool.groupOpen, true, "the active tool group should be open while streaming");
+  assert.ok(streamingTool.childOpen?.some(Boolean), "an active tool detail should be open while streaming");
+  assert.equal(streamingTool.bodyVisible, true, "streaming tool arguments should be visible");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
   const hiddenTool = await page.evaluate(`(() => ({
     noToolCallList: document.querySelector('.tool-call-list') === null,
