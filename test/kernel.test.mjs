@@ -525,6 +525,22 @@ test("attachment OCR failure is surfaced once without an automatic retry", async
   assert.equal(calls, 1);
 });
 
+test("attachment processing batches local OCR inputs while preserving order", async () => {
+  const first = createPendingAttachment(new File([new Uint8Array([1])], "first.png", { type: "image/png" }));
+  const second = createPendingAttachment(new File([new Uint8Array([2])], "second.png", { type: "image/png" }));
+  let batchCalls = 0;
+  const result = await processAttachmentFiles([first, second], false, noSignal(), {
+    recognizeImages: async (inputs) => {
+      batchCalls += 1;
+      assert.deepEqual(inputs.map((input) => input.data[0]), [1, 2]);
+      return ["first text", "second text"];
+    },
+  });
+  assert.equal(batchCalls, 1);
+  assert.match(result.content, /first\.png/);
+  assert.ok(result.content.indexOf("first text") < result.content.indexOf("second text"));
+});
+
 test("attachment processing stops before parsing when cancelled", async () => {
   const pending = createPendingAttachment(new File([new Uint8Array([1, 2])], "notes.txt", { type: "text/plain" }));
   const controller = new AbortController();

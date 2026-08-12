@@ -36,7 +36,7 @@ Provider failures, HTTP errors, empty responses, malformed tool arguments, malfo
 Use the `＋` control beside the composer to attach images, PDFs, office documents, CSV, or text files. Files are retained only in the current page memory and are discarded on refresh; the Agent has no file tool or filesystem capability and cannot reopen an attachment on its own. Attachment processing is lazy, cancellable, and runs with same-origin static assets:
 
 - Images and scanned PDF pages are sent as image parts only when `Model supports image input` is explicitly enabled. The model capability is never inferred from its name.
-- With vision disabled, images and scanned PDF pages are recognized locally by PaddleOCR.js in a Worker using same-origin ONNX Runtime WASM and model assets. OCR text is sent to the configured model instead of the original image.
+- With vision disabled, images and scanned PDF pages are recognized locally by PaddleOCR.js in a Worker using the smaller non-JSEP same-origin ONNX Runtime WASM runtime and model assets. Multiple images/pages are sent through batched detection/recognition calls. OCR text is sent to the configured model instead of the original image.
 - Text-bearing PDFs and ordinary DOCX, PPTX, XLSX, CSV, and text files are converted to Markdown by anydoc in the browser. PDFs that produce no meaningful text fall back to PDF.js page rendering and then use the vision/OCR route above, preserving page order.
 - Original bytes are not written to chat state or browser persistence. Only a vision-enabled model request can contain original image bytes. A failed vision request is not retried automatically; the composer offers an explicit local-OCR retry.
 

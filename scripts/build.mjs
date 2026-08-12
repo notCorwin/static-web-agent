@@ -63,12 +63,6 @@ await mkdir("dist/vendor/paddleocr/ort", { recursive: true });
 for (const file of [
   "ort-wasm-simd-threaded.mjs",
   "ort-wasm-simd-threaded.wasm",
-  "ort-wasm-simd-threaded.jsep.mjs",
-  "ort-wasm-simd-threaded.jsep.wasm",
-  "ort-wasm-simd-threaded.asyncify.mjs",
-  "ort-wasm-simd-threaded.asyncify.wasm",
-  "ort-wasm-simd-threaded.jspi.mjs",
-  "ort-wasm-simd-threaded.jspi.wasm",
 ]) {
   await copyFile(`node_modules/onnxruntime-web/dist/${file}`, `dist/vendor/paddleocr/ort/${file}`);
 }

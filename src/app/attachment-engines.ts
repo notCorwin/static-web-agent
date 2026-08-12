@@ -6,9 +6,15 @@ import type { RenderedPdfPage } from "./attachments.js";
 
 interface OcrAssets {
   readonly workerUrl: string;
-  readonly wasmPath: string;
+  readonly wasmModuleUrl: string;
+  readonly wasmBinaryUrl: string;
   readonly detectionModelUrl: string;
   readonly recognitionModelUrl: string;
+}
+
+export interface OcrImageInput {
+  readonly data: Uint8Array;
+  readonly mediaType: string;
 }
 
 let anydocReady: Promise<void> | undefined;
@@ -127,8 +133,17 @@ async function getPaddle(assets: OcrAssets): Promise<Awaited<ReturnType<typeof P
       ortOptions: {
         backend: "wasm",
         numThreads: 1,
-        wasmPaths: assets.wasmPath,
+        // PaddleOCR.js currently types wasmPaths as a string, but ONNX
+        // Runtime also accepts an explicit { mjs, wasm } mapping. Using the
+        // non-JSEP WASM pair avoids downloading the WebGPU/JSEP binary when
+        // this pipeline is explicitly configured for the WASM backend.
+        wasmPaths: {
+          mjs: assets.wasmModuleUrl,
+          wasm: assets.wasmBinaryUrl,
+        } as unknown as string,
       },
+      textDetectionBatchSize: 2,
+      textRecognitionBatchSize: 8,
       textDetectionModelName: "PP-OCRv5_mobile_det",
       textDetectionModelAsset: { url: assets.detectionModelUrl },
       textRecognitionModelName: "PP-OCRv5_mobile_rec",
@@ -141,13 +156,18 @@ async function getPaddle(assets: OcrAssets): Promise<Awaited<ReturnType<typeof P
   return paddle;
 }
 
-export async function recognizeImage(data: Uint8Array, mediaType: string, assets: OcrAssets, signal: AbortSignal): Promise<string> {
+export async function recognizeImages(inputs: readonly OcrImageInput[], assets: OcrAssets, signal: AbortSignal): Promise<readonly string[]> {
+  if (inputs.length === 0) return [];
   throwIfAborted(signal);
   const ocr = await getPaddle(assets);
   throwIfAborted(signal);
-  const result = await ocr.predict(await blobFromBytes(data, mediaType));
+  const result = await ocr.predict(await Promise.all(inputs.map((input) => blobFromBytes(input.data, input.mediaType))));
   throwIfAborted(signal);
-  return sortOcrItems(result[0]?.items ?? []).join("\n");
+  return result.map((item) => sortOcrItems(item.items).join("\n"));
+}
+
+export async function recognizeImage(data: Uint8Array, mediaType: string, assets: OcrAssets, signal: AbortSignal): Promise<string> {
+  return (await recognizeImages([{ data, mediaType }], assets, signal))[0] ?? "";
 }
 
 export async function disposeAttachmentEngines(): Promise<void> {

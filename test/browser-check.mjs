@@ -63,9 +63,11 @@ async function startStaticServer() {
   let streamedToolRequests = 0;
   const reasoningRequests = [];
   const visionRequests = [];
+  const assetRequests = [];
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
+      if (pathname.includes("paddleocr") || pathname.includes("onnxruntime")) assetRequests.push(pathname);
       if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning" || pathname === "/test-vision") {
         if (pathname === "/test-reasoning") {
           const rawBody = await new Promise((resolve) => {
@@ -214,7 +216,7 @@ async function startStaticServer() {
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, port: server.address().port, reasoningRequests, visionRequests };
+  return { server, port: server.address().port, reasoningRequests, visionRequests, assetRequests };
 }
 
 function waitForOutput(child, timeoutMs = 30_000) {
@@ -310,7 +312,7 @@ if (browser === undefined) {
   process.exit(0);
 }
 
-const { server, port, reasoningRequests, visionRequests } = await startStaticServer();
+const { server, port, reasoningRequests, visionRequests, assetRequests } = await startStaticServer();
 const scannedPdfBase64 = Buffer.from(createScannedPdf()).toString("base64");
 const release = JSON.parse(await readFile(join(root, "dist/version.json"), "utf8"));
 const profile = await mkdtemp(join(tmpdir(), "static-web-agent-browser-"));
@@ -564,6 +566,8 @@ try {
   assert.equal(typeof ocrMessage?.content, "string");
   assert.ok(ocrMessage?.content.toUpperCase().includes("OCR"), "non-vision image uploads should be sent as local OCR text");
   assert.equal(ocrRequest?.messages?.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")), false);
+  assert.ok(assetRequests.some((path) => path.endsWith("/ort-wasm-simd-threaded.wasm")), "local OCR should load the regular WASM runtime");
+  assert.equal(assetRequests.some((path) => path.includes(".jsep.")), false, "local OCR should not load the larger JSEP runtime");
   await page.evaluate(`(() => {
     document.querySelector('#model-vision').checked = true;
     document.querySelector('#connection-form').requestSubmit();

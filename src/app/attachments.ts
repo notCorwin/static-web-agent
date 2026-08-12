@@ -28,10 +28,16 @@ export interface RenderedPdfPage {
   readonly data: Uint8Array;
 }
 
+export interface OcrImageInput {
+  readonly data: Uint8Array;
+  readonly mediaType: string;
+}
+
 export interface AttachmentProcessingDependencies {
   readonly documentToMarkdown?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly renderPdfPages?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<readonly RenderedPdfPage[]>;
   readonly recognizeImage?: (data: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<string>;
+  readonly recognizeImages?: (inputs: readonly OcrImageInput[], signal: AbortSignal) => Promise<readonly string[]>;
 }
 
 export class AttachmentProcessingError extends Error {
@@ -51,14 +57,6 @@ function assetUrl(path: string): string {
   const version = document.querySelector<HTMLMetaElement>('meta[name="build-version"]')?.content;
   if (version !== undefined && version.length > 0) url.searchParams.set("v", version);
   return url.toString();
-}
-
-// ONNX Runtime treats a string wasmPaths value as a filename prefix and
-// appends its own .mjs/.wasm filenames. A cache-busting query on that prefix
-// would be inserted before the filename and turn the request into a directory
-// URL, so prefixes must remain query-free.
-function assetPrefix(path: string): string {
-  return new URL(path.replace(/^\//, ""), document.baseURI).toString();
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -154,11 +152,17 @@ async function defaultRenderPdfPages(bytes: Uint8Array, fileName: string, signal
 }
 
 async function defaultRecognizeImage(data: Uint8Array, mediaType: string, signal: AbortSignal): Promise<string> {
+  const results = await defaultRecognizeImages([{ data, mediaType }], signal);
+  return results[0] ?? "";
+}
+
+async function defaultRecognizeImages(inputs: readonly OcrImageInput[], signal: AbortSignal): Promise<readonly string[]> {
   throwIfAborted(signal);
   const engines = await loadEngines();
-  return engines.recognizeImage(data, mediaType, {
+  return engines.recognizeImages(inputs, {
     workerUrl: assetUrl("app/assets/worker-entry-C9UNuyOJ.js"),
-    wasmPath: assetPrefix("vendor/paddleocr/ort/"),
+    wasmModuleUrl: assetUrl("vendor/paddleocr/ort/ort-wasm-simd-threaded.mjs"),
+    wasmBinaryUrl: assetUrl("vendor/paddleocr/ort/ort-wasm-simd-threaded.wasm"),
     detectionModelUrl: assetUrl("vendor/paddleocr/models/PP-OCRv5_mobile_det_onnx_infer.tar"),
     recognitionModelUrl: assetUrl("vendor/paddleocr/models/PP-OCRv5_mobile_rec_onnx_infer.tar"),
   }, signal);
@@ -194,6 +198,15 @@ export async function processAttachmentFiles(
   const documentToMarkdown = dependencies.documentToMarkdown ?? defaultDocumentToMarkdown;
   const renderPdfPages = dependencies.renderPdfPages ?? defaultRenderPdfPages;
   const recognizeImage = dependencies.recognizeImage ?? defaultRecognizeImage;
+  const recognizeImages = dependencies.recognizeImages ?? defaultRecognizeImages;
+  const ocrQueue: Array<{
+    readonly input: OcrImageInput;
+    readonly contentIndex: number;
+    readonly attachment: PendingAttachment;
+    readonly detail: string;
+    readonly heading?: string;
+    readonly required: boolean;
+  }> = [];
 
   for (const attachment of files) {
     throwIfAborted(signal);
@@ -207,11 +220,15 @@ export async function processAttachmentFiles(
         content.push(visionLabel(attachment.name));
       } else {
         onProgress?.({ attachment, phase: "ocr", detail: "PaddleOCR" });
-        const markdown = normalizeOcrText(await recognizeImage(bytes, attachment.mediaType, signal));
-        if (!markdown) throw new AttachmentProcessingError("ATTACHMENT_PARSE_FAILED", `PaddleOCR found no text in “${attachment.name}”.`);
-        content.push(documentBlock(attachment.name, markdown));
+        ocrQueue.push({
+          input: { data: bytes, mediaType: attachment.mediaType },
+          contentIndex: content.push("") - 1,
+          attachment,
+          detail: "PaddleOCR",
+          required: true,
+        });
       }
-      onProgress?.({ attachment, phase: "ready" });
+      if (supportsVision) onProgress?.({ attachment, phase: "ready" });
       continue;
     }
 
@@ -235,11 +252,17 @@ export async function processAttachmentFiles(
           content.push(visionLabel(page.name));
         } else {
           onProgress?.({ attachment, phase: "ocr", detail: `PaddleOCR page ${index + 1}/${pages.length}` });
-          const pageText = normalizeOcrText(await recognizeImage(page.data, page.mediaType, signal));
-          if (pageText) content.push(`${pageHeading(attachment.name, index + 1)}\n\n${pageText}`);
+          ocrQueue.push({
+            input: { data: page.data, mediaType: page.mediaType },
+            contentIndex: content.push("") - 1,
+            attachment,
+            detail: `PaddleOCR page ${index + 1}/${pages.length}`,
+            heading: pageHeading(attachment.name, index + 1),
+            required: false,
+          });
         }
       }
-      onProgress?.({ attachment, phase: "ready" });
+      if (supportsVision) onProgress?.({ attachment, phase: "ready" });
       continue;
     }
 
@@ -250,6 +273,33 @@ export async function processAttachmentFiles(
     }
     content.push(documentBlock(attachment.name, markdown));
     onProgress?.({ attachment, phase: "ready" });
+  }
+
+  if (ocrQueue.length > 0) {
+    const batchSize = 8;
+    const texts: string[] = [];
+    for (let start = 0; start < ocrQueue.length; start += batchSize) {
+      throwIfAborted(signal);
+      const batch = ocrQueue.slice(start, start + batchSize);
+      const batchTexts = dependencies.recognizeImages === undefined
+        ? await Promise.all(batch.map((item) => recognizeImage(item.input.data, item.input.mediaType, signal)))
+        : await recognizeImages(batch.map((item) => item.input), signal);
+      texts.push(...batchTexts);
+    }
+    const ready = new Set<string>();
+    for (const [index, item] of ocrQueue.entries()) {
+      const text = normalizeOcrText(texts[index] ?? "");
+      if (!text && item.required) {
+        throw new AttachmentProcessingError("ATTACHMENT_PARSE_FAILED", `PaddleOCR found no text in “${item.attachment.name}”.`);
+      }
+      content[item.contentIndex] = text === "" ? "" : item.heading === undefined
+        ? documentBlock(item.attachment.name, text)
+        : `${item.heading}\n\n${text}`;
+      ready.add(item.attachment.id);
+    }
+    for (const attachment of files) {
+      if (ready.has(attachment.id)) onProgress?.({ attachment, phase: "ready" });
+    }
   }
 
   return {
