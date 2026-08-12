@@ -159,6 +159,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   padding: 28px clamp(18px, 4vw, 48px);
   overflow: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none;
 }
 .conversation-content { display: flex; min-height: 100%; flex: 0 0 auto; flex-direction: column; gap: 14px; }
 .empty-state { max-width: 560px; margin: auto; padding: 30px 8px; text-align: center; }
@@ -181,6 +182,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .message.assistant .message-body { border: 0; border-radius: 0; padding: 0; background: transparent; }
 .message.user .message-body { border-color: rgb(0 0 0 / 22%); background: rgb(0 0 0 / 5%); }
 .pending .message-body { border-style: dashed; }
+.message.pending .message-body, .thinking-block.pending .thinking-body { white-space: pre-wrap; }
 .thinking-block { align-self: stretch; min-width: 0; color: var(--muted); font-size: 12px; }
 .thinking-summary { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; list-style: none; color: var(--faint); font-size: 12px; }
 .thinking-summary::-webkit-details-marker { display: none; }

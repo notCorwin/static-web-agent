@@ -12,7 +12,6 @@ import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { DEFAULT_THINKING_LEVEL, isConnectionSettings, loadConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
 import { messageElement, messageElements, renderShell, streamingToolElement, textElement, thinkingElement, toolGroupElement, updateStreamingToolElement, updateThinkingElement, updateToolGroupElement, type AppElements } from "./view.js";
-import { renderRichContent } from "./rich-content.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/ai-sdk.js";
 import type { StateStore } from "../core/types.js";
@@ -42,6 +41,10 @@ type LiveToolEntry =
   | { readonly key: string; readonly status: "preparing"; readonly delta: ToolCallDelta }
   | { readonly key: string; readonly status: "running"; readonly call: ToolCall }
   | { readonly key: string; readonly status: "finished"; readonly call: ToolCall; readonly result: ToolExecutionResult };
+
+type PendingStreamSegment =
+  | { readonly key: string; readonly kind: "text" | "thinking"; readonly text: string }
+  | { readonly key: string; readonly kind: "tools"; readonly toolKeys: readonly string[] };
 
 function browserEndpoint(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -88,17 +91,18 @@ export class AgentApp {
   private ready = false;
   private busy = false;
   private runController: AbortController | undefined;
-  private pendingText = "";
-  private pendingReasoning = "";
-  private pendingTool: ToolCall | undefined;
   private pendingToolCalls: readonly ToolCallDelta[] = [];
   private liveToolEntries: readonly LiveToolEntry[] = [];
   private liveToolSequence = 0;
+  private pendingStream: readonly PendingStreamSegment[] = [];
+  private pendingStreamSequence = 0;
   private chatRenderScheduled = false;
   private chatScrollScheduled = false;
+  private chatFollowScheduled = false;
   private userScrollGesture = false;
   private userScrollGestureTimer: number | undefined;
   private followChat = true;
+  private lastChatScrollTop = 0;
   private chatObserver: MutationObserver | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
   private renderedAgent: Agent | undefined;
@@ -176,14 +180,17 @@ export class AgentApp {
     this.chatObserver?.disconnect();
     this.chatObserver = undefined;
     this.chatScrollScheduled = false;
+    this.chatFollowScheduled = false;
     if (this.userScrollGestureTimer !== undefined) window.clearTimeout(this.userScrollGestureTimer);
     this.userScrollGestureTimer = undefined;
     this.userScrollGesture = false;
     this.followChat = true;
-    this.pendingReasoning = "";
+    this.lastChatScrollTop = 0;
     this.pendingToolCalls = [];
     this.liveToolEntries = [];
     this.liveToolSequence = 0;
+    this.pendingStream = [];
+    this.pendingStreamSequence = 0;
     this.renderedMessages = undefined;
     this.renderedAgent = undefined;
     this.renderedConnectionEditing = false;
@@ -223,11 +230,16 @@ export class AgentApp {
       else void this.sendMessage();
     });
     const chat = this.elements["chat-log"];
-    chat?.addEventListener("scroll", () => this.updateChatFollowState(), { passive: true });
-    const markUserScroll = () => this.markUserScrollGesture();
-    chat?.addEventListener("wheel", markUserScroll, { passive: true });
-    chat?.addEventListener("touchmove", markUserScroll, { passive: true });
-    chat?.addEventListener("pointerdown", markUserScroll, { passive: true });
+    chat?.addEventListener("scroll", () => this.scheduleChatFollowState(), { passive: true });
+    chat?.addEventListener("wheel", (event) => {
+      this.markUserScrollGesture();
+      if (event.deltaY < 0) {
+        this.followChat = false;
+        this.scheduleChatFollowState();
+      }
+    }, { passive: true });
+    chat?.addEventListener("touchmove", () => this.markUserScrollGesture(), { passive: true });
+    chat?.addEventListener("pointerdown", () => this.markUserScrollGesture(), { passive: true });
     this.elements["scroll-bottom-button"]?.addEventListener("click", () => {
       this.followChat = true;
       this.scrollChatToBottom();
@@ -250,9 +262,9 @@ export class AgentApp {
     });
     if (chat !== undefined && typeof MutationObserver === "function") {
       this.chatObserver = new MutationObserver(() => {
-        if (this.followChat && this.busy) this.scheduleChatScroll();
+        if (this.followChat) this.scheduleChatScroll();
       });
-      this.chatObserver.observe(chat, { childList: true, subtree: true, characterData: true });
+      this.chatObserver.observe(chat, { childList: true, subtree: true });
     }
     this.elements["connection-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -383,12 +395,11 @@ export class AgentApp {
       this.chat.messages = normalizeMessages([...this.chat.messages, { role: "user", content }]);
       input.value = "";
       this.resizeMessageInput();
-      this.pendingText = "";
-      this.pendingReasoning = "";
-      this.pendingTool = undefined;
       this.pendingToolCalls = [];
       this.liveToolEntries = [];
       this.liveToolSequence = 0;
+      this.pendingStream = [];
+      this.pendingStreamSequence = 0;
       this.renderAll();
       const result = await agent.run({
         messages: this.chat.messages,
@@ -403,11 +414,10 @@ export class AgentApp {
     } catch (error) {
       this.notify(error instanceof Error ? error.message : "The run failed.", "error");
     } finally {
-      this.pendingText = "";
-      this.pendingReasoning = "";
-      this.pendingTool = undefined;
       this.pendingToolCalls = [];
       this.liveToolEntries = [];
+      this.pendingStream = [];
+      this.pendingStreamSequence = 0;
       this.runController = undefined;
       this.setBusy(false);
       this.renderAll();
@@ -418,17 +428,18 @@ export class AgentApp {
   private handleAgentEvent(event: AgentEvent): void {
     switch (event.type) {
       case "text-delta":
-        this.pendingText += event.delta;
+        this.appendPendingStreamText("text", event.delta);
         this.notify("Receiving response…");
         this.scheduleChatRender();
         break;
       case "reasoning-delta":
-        this.pendingReasoning += event.delta;
+        this.appendPendingStreamText("thinking", event.delta);
         this.notify("Thinking…");
         this.scheduleChatRender();
         break;
       case "model-started":
         this.pendingToolCalls = [];
+        this.ensurePendingThinking();
         this.notify(`Thinking · turn ${event.turn}…`);
         break;
       case "tool-call-delta": {
@@ -442,28 +453,30 @@ export class AgentApp {
         if (argumentsValue !== undefined) merged.arguments = argumentsValue;
         this.pendingToolCalls = [...this.pendingToolCalls.filter((delta) => delta.index !== event.delta.index), merged].sort((left, right) => left.index - right.index);
         const liveEntry = this.liveToolEntries.find((entry) => entry.status === "preparing" && entry.delta.index === merged.index);
-        this.replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++this.liveToolSequence}`, status: "preparing", delta: merged });
+        const liveKey = liveEntry?.key ?? `live-${++this.liveToolSequence}`;
+        this.replaceLiveToolEntry({ key: liveKey, status: "preparing", delta: merged });
+        this.appendPendingTool(liveKey);
         this.notify(`${merged.name?.trim() || "Tool"} · preparing…`);
         this.scheduleChatRender();
         break;
       }
       case "tool-started":
         {
-          const pendingIndex = this.pendingToolCalls.findIndex((delta) => delta.id === event.call.id || (delta.id === undefined && delta.name === event.call.name));
+          const pendingIndex = this.pendingToolCalls.findIndex((delta) => delta.id === event.call.id || delta.name === event.call.name);
           if (pendingIndex >= 0) this.pendingToolCalls = this.pendingToolCalls.filter((_, index) => index !== pendingIndex);
         }
-        const liveEntry = this.liveToolEntries.find((entry) => entry.status === "preparing" && (entry.delta.id === event.call.id || (entry.delta.id === undefined && entry.delta.name === event.call.name)));
-        this.replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++this.liveToolSequence}`, status: "running", call: event.call });
-        this.pendingTool = event.call;
+        const liveEntry = this.liveToolEntries.find((entry) => entry.status === "preparing" && (entry.delta.id === event.call.id || entry.delta.name === event.call.name));
+        const liveKey = liveEntry?.key ?? `live-${++this.liveToolSequence}`;
+        this.replaceLiveToolEntry({ key: liveKey, status: "running", call: event.call });
+        this.appendPendingTool(liveKey);
         this.notify(`Running ${event.call.name}…`);
         this.renderChat();
         break;
       case "tool-finished":
         {
-          const liveEntry = this.liveToolEntries.find((entry) => entry.status === "running" && entry.call.id === event.call.id);
+          const liveEntry = this.liveToolEntries.find((entry) => entry.status === "running" && (entry.call.id === event.call.id || entry.call.name === event.call.name));
           this.replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++this.liveToolSequence}`, status: "finished", call: event.call, result: event.result });
         }
-        this.pendingTool = undefined;
         this.notify(event.result.ok ? `Finished ${event.call.name}.` : `${event.call.name} returned an error.`, event.result.ok ? "success" : "error");
         this.renderChat();
         break;
@@ -471,7 +484,6 @@ export class AgentApp {
         this.notify(event.error.message, "error");
         break;
       case "run-finished":
-        this.pendingTool = undefined;
         this.pendingToolCalls = [];
         this.renderChat();
         break;
@@ -523,8 +535,6 @@ export class AgentApp {
     const conversation = this.elements["conversation-content"];
     const connectionCard = this.elements["connection-card"];
     if (chat === undefined || conversation === undefined || connectionCard === undefined) return;
-    const nearBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
-    if (nearBottom) this.followChat = true;
     chat.setAttribute("aria-busy", String(this.busy));
     connectionCard.hidden = this.agent !== undefined && !this.connectionEditing;
     const fullRender = this.renderedMessages !== this.chat.messages
@@ -532,7 +542,7 @@ export class AgentApp {
       || this.renderedConnectionEditing !== this.connectionEditing;
     if (fullRender) {
       conversation.replaceChildren();
-      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingReasoning.length === 0 && this.liveToolEntries.length === 0) {
+      if (this.chat.messages.length === 0 && this.pendingStream.length === 0 && this.liveToolEntries.length === 0) {
         if (this.agent !== undefined) {
           const welcome = document.createElement("div");
           welcome.className = "empty-state";
@@ -563,70 +573,89 @@ export class AgentApp {
       this.updatePendingMessages(conversation);
     }
     if (this.followChat || this.chat.messages.length === 0) this.scrollChatToBottom();
-    this.updateScrollButton();
+    else this.updateScrollButton();
   }
 
-  private appendPendingMessages(conversation: HTMLElement, openKeys: ReadonlySet<string> = new Set()): void {
-    if (this.pendingText.length > 0 || this.pendingReasoning.length > 0) {
-      const element = messageElement({ role: "assistant", content: this.pendingText, ...(this.pendingReasoning.length === 0 ? {} : { reasoning: this.pendingReasoning }) }, true);
-      if (element !== null) conversation.append(element);
+  private appendPendingStreamText(kind: "text" | "thinking", delta: string): void {
+    if (delta.length === 0) return;
+    const last = this.pendingStream.at(-1);
+    if (last?.kind === kind) {
+      this.pendingStream = [...this.pendingStream.slice(0, -1), { ...last, text: last.text + delta }];
+      return;
     }
-    const pendingTools = this.liveToolEntries.flatMap((entry) => {
-      const element = this.createLiveToolElement(entry);
-      return element === undefined ? [] : [element];
+    this.pendingStream = [...this.pendingStream, { key: `stream-${++this.pendingStreamSequence}`, kind, text: delta }];
+  }
+
+  private ensurePendingThinking(): void {
+    const last = this.pendingStream.at(-1);
+    if (last?.kind === "thinking" && last.text.length === 0) return;
+    this.pendingStream = [...this.pendingStream, { key: `stream-${++this.pendingStreamSequence}`, kind: "thinking", text: "" }];
+    this.scheduleChatRender();
+  }
+
+  private appendPendingTool(key: string): void {
+    if (this.pendingStream.some((segment) => segment.kind === "tools" && segment.toolKeys.includes(key))) return;
+    const last = this.pendingStream.at(-1);
+    if (last?.kind === "tools") {
+      this.pendingStream = [...this.pendingStream.slice(0, -1), { ...last, toolKeys: [...last.toolKeys, key] }];
+      return;
+    }
+    this.pendingStream = [...this.pendingStream, { key: `stream-${++this.pendingStreamSequence}`, kind: "tools", toolKeys: [key] }];
+  }
+
+  private pendingToolEntries(keys: readonly string[]): LiveToolEntry[] {
+    return keys.flatMap((key) => {
+      const entry = this.liveToolEntries.find((candidate) => candidate.key === key);
+      return entry === undefined ? [] : [entry];
     });
-    if (pendingTools.length > 0) {
-      const group = toolGroupElement(pendingTools, true);
-      if (openKeys.has("tool-group")) group.open = true;
-      conversation.append(group);
-    }
   }
 
-  private updatePendingMessages(conversation: HTMLElement): void {
-    let pendingAssistant = conversation.querySelector<HTMLElement>(":scope > .message.assistant.pending");
-    if (this.pendingText.length > 0 || this.pendingReasoning.length > 0) {
-      if (pendingAssistant === null) {
-        pendingAssistant = messageElement({ role: "assistant", content: this.pendingText, ...(this.pendingReasoning.length === 0 ? {} : { reasoning: this.pendingReasoning }) }, true);
-        if (pendingAssistant !== null) conversation.append(pendingAssistant);
-      } else {
-        let thinking = pendingAssistant.querySelector<HTMLDetailsElement>(":scope > .thinking-block");
-        if (this.pendingReasoning.length > 0) {
-          if (thinking === null) {
-            thinking = thinkingElement(this.pendingReasoning, true);
-            pendingAssistant.prepend(thinking);
-          } else {
-            updateThinkingElement(thinking, this.pendingReasoning, true);
-          }
-        } else {
-          thinking?.remove();
-        }
-        let body = pendingAssistant.querySelector<HTMLElement>(":scope > .message-body");
-        if (this.pendingText.length > 0) {
-          if (body === null) {
-            body = document.createElement("div");
-            body.className = "message-body";
-            pendingAssistant.append(body);
-          }
-          body.replaceChildren();
-          renderRichContent(body, this.pendingText);
-        } else {
-          body?.remove();
-        }
-      }
-    } else {
-      pendingAssistant?.remove();
-      pendingAssistant = null;
-    }
+  private pendingAssistantElement(segment: Extract<PendingStreamSegment, { readonly kind: "text" | "thinking" }>): HTMLElement | null {
+    const element = segment.kind === "thinking"
+      ? messageElement({ role: "assistant", content: "", reasoning: segment.text }, true)
+      : messageElement({ role: "assistant", content: segment.text }, true);
+    if (element !== null) element.dataset.streamKey = segment.key;
+    return element;
+  }
 
-    let group = conversation.querySelector<HTMLDetailsElement>(":scope > details.tool-group.pending");
+  private updatePendingAssistantElement(element: HTMLElement, segment: Extract<PendingStreamSegment, { readonly kind: "text" | "thinking" }>): void {
+    if (segment.kind === "thinking") {
+      element.querySelector(":scope > .message-body")?.remove();
+      let thinking = element.querySelector<HTMLDetailsElement>(":scope > .thinking-block");
+      if (thinking === null) {
+        thinking = thinkingElement(segment.text, true);
+        element.prepend(thinking);
+      } else {
+        updateThinkingElement(thinking, segment.text, true);
+      }
+      return;
+    }
+    element.querySelector(":scope > .thinking-block")?.remove();
+    if (segment.text.trim().length === 0) {
+      element.querySelector(":scope > .message-body")?.remove();
+      return;
+    }
+    let body = element.querySelector<HTMLElement>(":scope > .message-body");
+    if (body === null) {
+      body = document.createElement("div");
+      body.className = "message-body";
+      element.append(body);
+    }
+    if (body.textContent !== segment.text) body.textContent = segment.text;
+  }
+
+  private pendingToolGroupElement(
+    segment: Extract<PendingStreamSegment, { readonly kind: "tools" }>,
+    existing: HTMLDetailsElement | undefined,
+  ): HTMLDetailsElement | undefined {
     const existingItems = new Map<string, HTMLDetailsElement>();
-    if (group !== null) {
-      for (const item of group.querySelectorAll<HTMLDetailsElement>(":scope > .tool-group-body > details.tool-detail")) {
+    if (existing !== undefined) {
+      for (const item of existing.querySelectorAll<HTMLDetailsElement>(":scope > .tool-group-body > details.tool-detail")) {
         if (item.dataset.toolKey !== undefined) existingItems.set(item.dataset.toolKey, item);
       }
     }
     const items: HTMLElement[] = [];
-    for (const entry of this.liveToolEntries) {
+    for (const entry of this.pendingToolEntries(segment.toolKeys)) {
       let item = existingItems.get(entry.key);
       if (item === undefined) item = this.createLiveToolElement(entry);
       if (item === undefined) continue;
@@ -634,16 +663,52 @@ export class AgentApp {
       items.push(item);
       existingItems.delete(entry.key);
     }
-    if (items.length === 0) {
-      group?.remove();
-      return;
+    if (items.length === 0) return undefined;
+    const group = existing ?? toolGroupElement(items, true);
+    group.dataset.streamKey = segment.key;
+    if (existing !== undefined) updateToolGroupElement(group, items, true);
+    return group;
+  }
+
+  private appendPendingMessages(conversation: HTMLElement): void {
+    for (const segment of this.pendingStream) {
+      if (segment.kind === "tools") {
+        const group = this.pendingToolGroupElement(segment, undefined);
+        if (group !== undefined) conversation.append(group);
+        continue;
+      }
+      const element = this.pendingAssistantElement(segment);
+      if (element !== null) conversation.append(element);
     }
-    if (group === null) {
-      group = toolGroupElement(items, true);
-      conversation.append(group);
-    } else {
-      updateToolGroupElement(group, items, true);
+  }
+
+  private updatePendingMessages(conversation: HTMLElement): void {
+    const existing = new Map<string, HTMLElement>();
+    for (const element of conversation.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")) {
+      if (element.dataset.streamKey !== undefined) existing.set(element.dataset.streamKey, element);
     }
+    const desired: HTMLElement[] = [];
+    for (const segment of this.pendingStream) {
+      const current = existing.get(segment.key);
+      if (segment.kind === "tools") {
+        const group = this.pendingToolGroupElement(segment, current instanceof HTMLDetailsElement ? current : undefined);
+        if (group !== undefined) desired.push(group);
+      } else {
+        let element = current;
+        if (element === undefined || !element.classList.contains("message")) {
+          element?.remove();
+          element = this.pendingAssistantElement(segment) ?? undefined;
+        } else {
+          this.updatePendingAssistantElement(element, segment);
+        }
+        if (element !== undefined) desired.push(element);
+      }
+      existing.delete(segment.key);
+    }
+    for (const element of existing.values()) element.remove();
+    const currentOrder = Array.from(conversation.children).filter((element): element is HTMLElement => element instanceof HTMLElement && element.dataset.streamKey !== undefined);
+    const sameOrder = currentOrder.length === desired.length && currentOrder.every((element, index) => element === desired[index]);
+    if (!sameOrder) conversation.append(...desired);
   }
 
   private replaceLiveToolEntry(entry: LiveToolEntry): void {
@@ -669,7 +734,9 @@ export class AgentApp {
       content,
       isError: entry.status === "finished" && !entry.result.ok,
     }, true);
-    return element instanceof HTMLDetailsElement ? element : undefined;
+    if (!(element instanceof HTMLDetailsElement)) return undefined;
+    element.dataset.toolKey = entry.key;
+    return element;
   }
 
   private updateLiveToolElement(details: HTMLDetailsElement, entry: LiveToolEntry): void {
@@ -677,17 +744,20 @@ export class AgentApp {
       updateStreamingToolElement(details, entry.delta, entry.key);
       return;
     }
-    details.className = `tool-detail pending${entry.status === "finished" ? " tool-call-complete" : ""}`;
+    const nextClassName = `tool-detail pending${entry.status === "finished" ? " tool-call-complete" : ""}`;
+    if (details.className !== nextClassName) details.className = nextClassName;
     details.dataset.toolKey = entry.key;
     const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
     const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
     if (summary === null || body === null) return;
-    summary.textContent = entry.status === "running"
+    const nextSummary = entry.status === "running"
       ? `${entry.call.name} · running`
       : `${entry.call.name}${entry.result.ok ? " · complete" : " · error"}`;
+    const nextBody = entry.status === "running" ? `Running ${entry.call.name}…` : this.liveToolResultContent(entry.result);
+    if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
     body.classList.toggle("tool-error", entry.status === "finished" && !entry.result.ok);
-    body.textContent = entry.status === "running" ? `Running ${entry.call.name}…` : this.liveToolResultContent(entry.result);
-    details.open = true;
+    if (body.textContent !== nextBody) body.textContent = nextBody;
+    if (!details.open) details.open = true;
   }
 
   private updateChatFollowState(): void {
@@ -699,6 +769,23 @@ export class AgentApp {
     }
     this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 90;
     this.updateScrollButton();
+  }
+
+  private scheduleChatFollowState(): void {
+    const chat = this.elements["chat-log"];
+    if (chat === undefined) return;
+    const scrollingUp = chat.scrollTop < this.lastChatScrollTop - 1;
+    this.lastChatScrollTop = chat.scrollTop;
+    if (scrollingUp) this.followChat = false;
+    if (this.chatFollowScheduled) return;
+    this.chatFollowScheduled = true;
+    const update = () => {
+      if (!this.chatFollowScheduled) return;
+      this.chatFollowScheduled = false;
+      this.updateChatFollowState();
+    };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(update);
+    window.setTimeout(update, 50);
   }
 
   private markUserScrollGesture(): void {
@@ -713,16 +800,9 @@ export class AgentApp {
   private scrollChatToBottom(): void {
     const chat = this.elements["chat-log"];
     if (chat === undefined) return;
-    chat.scrollTop = chat.scrollHeight;
+    chat.scrollTop = Math.max(0, chat.scrollHeight - chat.clientHeight);
+    this.lastChatScrollTop = chat.scrollTop;
     this.scheduleChatScroll();
-    const settle = () => {
-      if (!this.followChat) return;
-      const currentChat = this.elements["chat-log"];
-      if (currentChat !== undefined) currentChat.scrollTop = currentChat.scrollHeight;
-      this.updateScrollButton();
-    };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(settle);
-    setTimeout(settle, 0);
     this.updateScrollButton();
   }
 
@@ -812,15 +892,22 @@ export class AgentApp {
     if (this.chatScrollScheduled || !this.followChat) return;
     this.chatScrollScheduled = true;
     const scroll = () => {
+      if (!this.chatScrollScheduled) return;
       this.chatScrollScheduled = false;
       if (this.followChat) {
         const chat = this.elements["chat-log"];
-        if (chat !== undefined) chat.scrollTop = chat.scrollHeight;
+        if (chat !== undefined) {
+          const nextTop = Math.max(0, chat.scrollHeight - chat.clientHeight);
+          if (chat.scrollTop !== nextTop) {
+            chat.scrollTop = nextTop;
+            this.lastChatScrollTop = chat.scrollTop;
+          }
+        }
         this.updateScrollButton();
       }
     };
     if (typeof requestAnimationFrame === "function") requestAnimationFrame(scroll);
-    else setTimeout(scroll, 0);
+    window.setTimeout(scroll, 50);
   }
 
   private renderExtensions(): void {

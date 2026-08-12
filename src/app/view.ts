@@ -104,16 +104,18 @@ export function messageElement(message: ModelMessage, pending = false, messageIn
     return details;
   }
   const hasReasoning = message.role === "assistant" && message.reasoning !== undefined && message.reasoning.trim().length > 0;
-  if (message.role === "assistant" && message.content.trim().length === 0 && !hasReasoning) return null;
+  const hasPendingReasoning = message.role === "assistant" && pending && message.reasoning !== undefined;
+  if (message.role === "assistant" && message.content.trim().length === 0 && !hasReasoning && !hasPendingReasoning) return null;
 
   const article = document.createElement("article");
   article.className = `message ${message.role}${pending ? " pending" : ""}`;
   if (messageIndex !== undefined) article.dataset.messageIndex = String(messageIndex);
-  if (hasReasoning) article.append(thinkingElement(message.reasoning ?? "", pending));
+  if (hasReasoning || hasPendingReasoning) article.append(thinkingElement(message.reasoning ?? "", pending));
   if (message.content.length > 0) {
     const body = document.createElement("div");
     body.className = "message-body";
-    if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
+    if (pending) body.textContent = message.content;
+    else if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
     else body.textContent = message.content;
     article.append(body);
   }
@@ -153,7 +155,8 @@ export function thinkingElement(reasoning: string, pending = false): HTMLDetails
   summary.textContent = pending ? "Thinking…" : "Thinking";
   const body = document.createElement("div");
   body.className = "thinking-body";
-  renderRichContent(body, reasoning);
+  if (pending) body.textContent = reasoning;
+  else renderRichContent(body, reasoning);
   details.append(summary, body);
   details.open = pending;
   return details;
@@ -166,8 +169,12 @@ export function updateThinkingElement(details: HTMLDetailsElement, reasoning: st
   const body = details.querySelector<HTMLElement>(":scope > .thinking-body");
   if (summary === null || body === null) return;
   summary.textContent = pending ? "Thinking…" : "Thinking";
-  body.replaceChildren();
-  renderRichContent(body, reasoning);
+  if (pending) {
+    if (body.textContent !== reasoning) body.textContent = reasoning;
+  } else {
+    body.replaceChildren();
+    renderRichContent(body, reasoning);
+  }
   details.open = pending;
 }
 
@@ -207,7 +214,9 @@ export function updateToolGroupElement(details: HTMLDetailsElement, items: reado
   for (const child of Array.from(body.children)) {
     if (!nextItems.has(child as HTMLElement)) child.remove();
   }
-  body.append(...items);
+  const currentItems = Array.from(body.children);
+  const sameOrder = currentItems.length === items.length && currentItems.every((child, index) => child === items[index]);
+  if (!sameOrder) body.append(...items);
   details.open = active;
   if (active) {
     for (const item of items) {
@@ -257,7 +266,9 @@ export function updateStreamingToolElement(details: HTMLDetailsElement, delta: T
   const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
   const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
   if (summary === null || body === null) return;
-  summary.textContent = `${delta.name?.trim() || "tool"} · preparing`;
-  body.textContent = delta.arguments?.trim() || "Waiting for arguments…";
-  details.open = true;
+  const nextSummary = `${delta.name?.trim() || "tool"} · preparing`;
+  const nextBody = delta.arguments?.trim() || "Waiting for arguments…";
+  if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
+  if (body.textContent !== nextBody) body.textContent = nextBody;
+  if (!details.open) details.open = true;
 }
