@@ -13,7 +13,7 @@ import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState }
 import { isConnectionSettings, loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
 import { messageElement, messageElements, renderShell, streamingToolElement, textElement, toolGroupElement, updateStreamingToolElement, updateToolGroupElement, type AppElements } from "./view.js";
 import { renderRichContent } from "./rich-content.js";
-import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta } from "../core/types.js";
+import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/openai-compatible.js";
 import type { StateStore } from "../core/types.js";
 
@@ -37,6 +37,11 @@ interface BrowserConnectionCredential {
   readonly model: string;
   readonly apiKey: string;
 }
+
+type LiveToolEntry =
+  | { readonly key: string; readonly status: "preparing"; readonly delta: ToolCallDelta }
+  | { readonly key: string; readonly status: "running"; readonly call: ToolCall }
+  | { readonly key: string; readonly status: "finished"; readonly call: ToolCall; readonly result: ToolExecutionResult };
 
 function browserEndpoint(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -86,6 +91,8 @@ export class AgentApp {
   private pendingText = "";
   private pendingTool: ToolCall | undefined;
   private pendingToolCalls: readonly ToolCallDelta[] = [];
+  private liveToolEntries: readonly LiveToolEntry[] = [];
+  private liveToolSequence = 0;
   private chatRenderScheduled = false;
   private chatScrollScheduled = false;
   private userScrollGesture = false;
@@ -173,6 +180,8 @@ export class AgentApp {
     this.userScrollGesture = false;
     this.followChat = true;
     this.pendingToolCalls = [];
+    this.liveToolEntries = [];
+    this.liveToolSequence = 0;
     this.renderedMessages = undefined;
     this.renderedAgent = undefined;
     this.renderedConnectionEditing = false;
@@ -369,6 +378,8 @@ export class AgentApp {
       this.pendingText = "";
       this.pendingTool = undefined;
       this.pendingToolCalls = [];
+      this.liveToolEntries = [];
+      this.liveToolSequence = 0;
       this.renderAll();
       const result = await agent.run({
         messages: this.chat.messages,
@@ -386,6 +397,7 @@ export class AgentApp {
       this.pendingText = "";
       this.pendingTool = undefined;
       this.pendingToolCalls = [];
+      this.liveToolEntries = [];
       this.runController = undefined;
       this.setBusy(false);
       this.renderAll();
@@ -414,6 +426,8 @@ export class AgentApp {
         if (name !== undefined) merged.name = name;
         if (argumentsValue !== undefined) merged.arguments = argumentsValue;
         this.pendingToolCalls = [...this.pendingToolCalls.filter((delta) => delta.index !== event.delta.index), merged].sort((left, right) => left.index - right.index);
+        const liveEntry = this.liveToolEntries.find((entry) => entry.status === "preparing" && entry.delta.index === merged.index);
+        this.replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++this.liveToolSequence}`, status: "preparing", delta: merged });
         this.notify(`${merged.name?.trim() || "Tool"} · preparing…`);
         this.scheduleChatRender();
         break;
@@ -423,11 +437,17 @@ export class AgentApp {
           const pendingIndex = this.pendingToolCalls.findIndex((delta) => delta.id === event.call.id || (delta.id === undefined && delta.name === event.call.name));
           if (pendingIndex >= 0) this.pendingToolCalls = this.pendingToolCalls.filter((_, index) => index !== pendingIndex);
         }
+        const liveEntry = this.liveToolEntries.find((entry) => entry.status === "preparing" && (entry.delta.id === event.call.id || (entry.delta.id === undefined && entry.delta.name === event.call.name)));
+        this.replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++this.liveToolSequence}`, status: "running", call: event.call });
         this.pendingTool = event.call;
         this.notify(`Running ${event.call.name}…`);
         this.renderChat();
         break;
       case "tool-finished":
+        {
+          const liveEntry = this.liveToolEntries.find((entry) => entry.status === "running" && entry.call.id === event.call.id);
+          this.replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++this.liveToolSequence}`, status: "finished", call: event.call, result: event.result });
+        }
         this.pendingTool = undefined;
         this.notify(event.result.ok ? `Finished ${event.call.name}.` : `${event.call.name} returned an error.`, event.result.ok ? "success" : "error");
         this.renderChat();
@@ -497,7 +517,7 @@ export class AgentApp {
       || this.renderedConnectionEditing !== this.connectionEditing;
     if (fullRender) {
       conversation.replaceChildren();
-      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.pendingTool === undefined && this.pendingToolCalls.length === 0) {
+      if (this.chat.messages.length === 0 && this.pendingText.length === 0 && this.liveToolEntries.length === 0) {
         if (this.agent !== undefined) {
           const welcome = document.createElement("div");
           welcome.className = "empty-state";
@@ -536,12 +556,10 @@ export class AgentApp {
       const element = messageElement({ role: "assistant", content: this.pendingText }, true);
       if (element !== null) conversation.append(element);
     }
-    const pendingTools: HTMLElement[] = this.pendingToolCalls.map((toolCall) => streamingToolElement(toolCall));
-    if (this.pendingTool !== undefined) {
-      const toolMessage: ModelMessage = { role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` };
-      const element = messageElement(toolMessage, true);
-      if (element !== null) pendingTools.push(element);
-    }
+    const pendingTools = this.liveToolEntries.flatMap((entry) => {
+      const element = this.createLiveToolElement(entry);
+      return element === undefined ? [] : [element];
+    });
     if (pendingTools.length > 0) {
       const group = toolGroupElement(pendingTools, true);
       if (openKeys.has("tool-group")) group.open = true;
@@ -575,30 +593,13 @@ export class AgentApp {
       }
     }
     const items: HTMLElement[] = [];
-    for (const delta of this.pendingToolCalls) {
-      const key = `stream-${delta.index}`;
-      const item = existingItems.get(key) ?? streamingToolElement(delta);
-      updateStreamingToolElement(item, delta);
+    for (const entry of this.liveToolEntries) {
+      let item = existingItems.get(entry.key);
+      if (item === undefined) item = this.createLiveToolElement(entry);
+      if (item === undefined) continue;
+      this.updateLiveToolElement(item, entry);
       items.push(item);
-      existingItems.delete(key);
-    }
-    if (this.pendingTool !== undefined) {
-      const key = this.pendingTool.id;
-      let item = existingItems.get(key);
-      if (item === undefined) {
-        item = messageElement({ role: "tool", callId: this.pendingTool.id, name: this.pendingTool.name, content: `Running ${this.pendingTool.name}…` }, true) as HTMLDetailsElement | null ?? undefined;
-      }
-      if (item !== undefined) {
-        item.className = "tool-detail pending";
-        item.dataset.toolKey = key;
-        const summary = item.querySelector<HTMLElement>(":scope > .tool-summary");
-        const body = item.querySelector<HTMLElement>(":scope > .tool-detail-body");
-        if (summary !== null) summary.textContent = `${this.pendingTool.name} · running`;
-        if (body !== null) body.textContent = `Running ${this.pendingTool.name}…`;
-        item.open = true;
-        items.push(item);
-      }
-      existingItems.delete(key);
+      existingItems.delete(entry.key);
     }
     if (items.length === 0) {
       group?.remove();
@@ -610,6 +611,50 @@ export class AgentApp {
     } else {
       updateToolGroupElement(group, items, true);
     }
+  }
+
+  private replaceLiveToolEntry(entry: LiveToolEntry): void {
+    const index = this.liveToolEntries.findIndex((current) => current.key === entry.key);
+    this.liveToolEntries = index < 0
+      ? [...this.liveToolEntries, entry]
+      : this.liveToolEntries.map((current, currentIndex) => currentIndex === index ? entry : current);
+  }
+
+  private liveToolResultContent(result: ToolExecutionResult): string {
+    return result.ok
+      ? JSON.stringify(result.value, null, 2)
+      : JSON.stringify({ error: result.error }, null, 2);
+  }
+
+  private createLiveToolElement(entry: LiveToolEntry): HTMLDetailsElement | undefined {
+    if (entry.status === "preparing") return streamingToolElement(entry.delta, entry.key);
+    const content = entry.status === "running" ? `Running ${entry.call.name}…` : this.liveToolResultContent(entry.result);
+    const element = messageElement({
+      role: "tool",
+      callId: entry.call.id,
+      name: entry.call.name,
+      content,
+      isError: entry.status === "finished" && !entry.result.ok,
+    }, true);
+    return element instanceof HTMLDetailsElement ? element : undefined;
+  }
+
+  private updateLiveToolElement(details: HTMLDetailsElement, entry: LiveToolEntry): void {
+    if (entry.status === "preparing") {
+      updateStreamingToolElement(details, entry.delta, entry.key);
+      return;
+    }
+    details.className = `tool-detail pending${entry.status === "finished" ? " tool-call-complete" : ""}`;
+    details.dataset.toolKey = entry.key;
+    const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
+    const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
+    if (summary === null || body === null) return;
+    summary.textContent = entry.status === "running"
+      ? `${entry.call.name} · running`
+      : `${entry.call.name}${entry.result.ok ? " · complete" : " · error"}`;
+    body.classList.toggle("tool-error", entry.status === "finished" && !entry.result.ok);
+    body.textContent = entry.status === "running" ? `Running ${entry.call.name}…` : this.liveToolResultContent(entry.result);
+    details.open = true;
   }
 
   private updateChatFollowState(): void {

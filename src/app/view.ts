@@ -192,10 +192,10 @@ export function messageElements(messages: readonly ModelMessage[]): HTMLElement[
   return result;
 }
 
-export function streamingToolElement(delta: ToolCallDelta): HTMLDetailsElement {
+export function streamingToolElement(delta: ToolCallDelta, key = `stream-${delta.index}`): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = "tool-detail pending tool-call-stream";
-  details.dataset.toolKey = `stream-${delta.index}`;
+  details.dataset.toolKey = key;
   const summary = document.createElement("summary");
   summary.className = "tool-summary";
   summary.setAttribute("translate", "no");
@@ -207,9 +207,9 @@ export function streamingToolElement(delta: ToolCallDelta): HTMLDetailsElement {
   return details;
 }
 
-export function updateStreamingToolElement(details: HTMLDetailsElement, delta: ToolCallDelta): void {
+export function updateStreamingToolElement(details: HTMLDetailsElement, delta: ToolCallDelta, key = `stream-${delta.index}`): void {
   details.className = "tool-detail pending tool-call-stream";
-  details.dataset.toolKey = `stream-${delta.index}`;
+  details.dataset.toolKey = key;
   const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
   const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
   if (summary === null || body === null) return;

@@ -90,15 +90,16 @@ async function startStaticServer() {
             ? "tool complete"
             : "sse";
         if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
+          const firstArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 260)); return 42" });
+          const secondArguments = JSON.stringify({ code: "return 42" });
+          const fragments = (value) => Array.from({ length: Math.ceil(value.length / 70) }, (_, index) => value.slice(index * 70, (index + 1) * 70));
           const chunks = [
             { index: 0, id: "browser-streamed-tool-call", function: { name: "runtime_" } },
-            { index: 0, function: { name: "javascript", arguments: '{"code":"' } },
-            { index: 0, function: { arguments: "return " } },
-            { index: 0, function: { arguments: "42\"}" } },
+            { index: 0, function: { name: "javascript" } },
+            ...fragments(firstArguments).map((argumentsValue) => ({ index: 0, function: { arguments: argumentsValue } })),
             { index: 1, id: "browser-streamed-tool-call-2", function: { name: "runtime_" } },
-            { index: 1, function: { name: "javascript", arguments: '{"code":"' } },
-            { index: 1, function: { arguments: "return " } },
-            { index: 1, function: { arguments: "42\"}" } },
+            { index: 1, function: { name: "javascript" } },
+            ...fragments(secondArguments).map((argumentsValue) => ({ index: 1, function: { arguments: argumentsValue } })),
           ];
           let index = 0;
           const sendToolChunk = () => {
@@ -546,6 +547,17 @@ try {
     argumentVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return'),
   })`);
   assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, argumentVisible: true }, "streaming tool DOM should update in place without flickering");
+  await waitFor(page, "document.querySelector('.tool-group.pending .tool-detail.tool-call-complete') !== null && document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail').length === 2 && Array.from(document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail')).some((detail) => detail.querySelector('.tool-summary')?.textContent.includes('running'))", 20_000);
+  const continuousTool = await page.evaluate(`(() => ({
+    groupOpen: document.querySelector('.tool-group.pending')?.open,
+    items: Array.from(document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail')).map((detail) => detail.querySelector('.tool-summary')?.textContent),
+    completedBody: Array.from(document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail')).find((detail) => detail.querySelector('.tool-summary')?.textContent.includes('complete'))?.querySelector('.tool-detail-body')?.textContent,
+  }))()`);
+  assert.equal(continuousTool.groupOpen, true, "the live tool group should stay open between sequential tool calls");
+  assert.equal(continuousTool.items.length, 2, "completed and running calls should remain in one live group");
+  assert.ok(continuousTool.items.some((summary) => summary?.includes("complete")), "the completed call should remain visible");
+  assert.ok(continuousTool.items.some((summary) => summary?.includes("running")), "the next running call should be visible in the same group");
+  assert.ok(continuousTool.completedBody?.includes("42"), "the completed tool result should remain visible");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
   const hiddenTool = await page.evaluate(`(() => ({
     noToolCallList: document.querySelector('.tool-call-list') === null,
