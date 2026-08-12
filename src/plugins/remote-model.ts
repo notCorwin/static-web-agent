@@ -1,4 +1,4 @@
-import { OpenAICompatibleAdapter, type BrowserFetcher } from "../adapters/openai-compatible.js";
+import { AiSdkAdapter, type BrowserFetcher } from "../adapters/ai-sdk.js";
 import type { ModelAdapter, Plugin } from "../core/types.js";
 
 export interface RemoteModelPluginOptions {
@@ -26,7 +26,7 @@ export function createRemoteModelPlugin(options: RemoteModelPluginOptions): Plug
       permissions: [{ name: "network", reason: "Send conversation messages to the configured model endpoint." }],
     },
     async setup(context) {
-      const adapter: ModelAdapter = new OpenAICompatibleAdapter({
+      const adapter: ModelAdapter = new AiSdkAdapter({
         id: adapterId,
         endpoint: options.endpoint,
         model: options.model,

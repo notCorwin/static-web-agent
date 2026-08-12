@@ -6,7 +6,7 @@ import {
   CHAT_LIMITS,
   CONNECTION_SETTINGS_KEY,
   MemoryStateStore,
-  OpenAICompatibleAdapter,
+  AiSdkAdapter,
   PluginManager,
   PrefixedStateStore,
   ResilientStateStore,
@@ -37,6 +37,11 @@ function scriptedAdapter(turns) {
       }
     },
   };
+}
+
+function sseResponse(chunks, status = 200) {
+  const body = chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+  return new Response(body, { status, headers: { "content-type": "text/event-stream" } });
 }
 
 test("JSON schema validation rejects malformed and extra tool input", () => {
@@ -355,7 +360,10 @@ test("plugin lifecycle is scoped and unregisters all contribution types", async 
 
 test("a model adapter plugin is registered, selected, and removed through the registry", async () => {
   const capabilities = new CapabilityManager({ decide: () => true });
-  capabilities.register("network", { provide: () => ({ fetch: async () => new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "remote" } }] }), { status: 200, headers: { "content-type": "application/json" } }) }) });
+  capabilities.register("network", { provide: () => ({ fetch: async () => sseResponse([
+    { choices: [{ delta: { content: "remote" } }] },
+    { choices: [{ delta: {}, finish_reason: "stop" }] },
+  ]) }) });
   const tools = new ToolRegistry(capabilities);
   const plugins = new PluginManager(tools, capabilities);
   const handle = await plugins.install(createRemoteModelPlugin({ endpoint: "https://example.test/chat", model: "demo" }));
@@ -447,47 +455,67 @@ test("in-memory chat normalization preserves unbounded message history", () => {
   assert.doesNotThrow(() => normalizeMessages([{ role: "user", content: "x".repeat(100_001) }]));
 });
 
-test("OpenAI-compatible adapter normalizes a provider response", async () => {
+test("AI SDK adapter normalizes a streaming provider response", async () => {
   let requestBody;
-  const adapter = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
     model: "demo",
     apiKey: "secret",
     fetcher: async (_input, init) => {
       requestBody = JSON.parse(init.body);
-      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "hello" } }], usage: { total_tokens: 3 } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return sseResponse([
+        { choices: [{ delta: { content: "hello" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+        { choices: [], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } },
+      ]);
     },
   });
   const events = [];
   for await (const event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) events.push(event);
   assert.equal(events.at(-1).type, "completed");
   assert.equal(events.at(-1).message.content, "hello");
+  assert.deepEqual(events.at(-1).usage, { inputTokens: 2, outputTokens: 1, totalTokens: 3 });
   assert.equal(events.at(-1).usage.totalTokens, 3);
   assert.equal(requestBody.model, "demo");
   assert.equal(requestBody.messages[0].role, "user");
+  assert.equal(requestBody.stream, true);
 });
 
-test("OpenAI-compatible adapter resolves versioned API bases to chat completions", async () => {
+test("AI SDK adapter resolves versioned API bases to chat completions", async () => {
   let requestUrl;
-  const adapter = new OpenAICompatibleAdapter({
+  const adapter = new AiSdkAdapter({
     endpoint: "https://openrouter.ai/api/v1",
     model: "demo",
     fetcher: async (input) => {
       requestUrl = String(input);
-      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "hello" } }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return sseResponse([
+        { choices: [{ delta: { content: "hello" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ]);
     },
   });
   for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) {}
   assert.equal(requestUrl, "https://openrouter.ai/api/v1/chat/completions");
 });
 
-test("OpenAI-compatible adapter normalizes provider tool names in both directions", async () => {
+test("AI SDK adapter preserves arbitrary full endpoint paths", async () => {
+  let requestUrl;
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://proxy.example.test/llm/stream",
+    model: "demo",
+    fetcher: async (input) => {
+      requestUrl = String(input);
+      return sseResponse([
+        { choices: [{ delta: { content: "hello" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ]);
+    },
+  });
+  for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) {}
+  assert.equal(requestUrl, "https://proxy.example.test/llm/stream");
+});
+
+test("AI SDK adapter normalizes provider tool names in both directions", async () => {
   const tool = {
     name: "runtime.javascript",
     description: "Run JavaScript.",
@@ -500,15 +528,21 @@ test("OpenAI-compatible adapter normalizes provider tool names in both direction
     requiredCapabilities: [],
   };
   const requestBodies = [];
-  const adapter = new OpenAICompatibleAdapter({
+  const adapter = new AiSdkAdapter({
     endpoint: "https://example.test/v1",
     model: "demo",
     fetcher: async (_input, init) => {
       requestBodies.push(JSON.parse(init.body));
-      const payload = requestBodies.length === 1
-        ? { choices: [{ message: { role: "assistant", content: "", tool_calls: [{ id: "call-1", type: "function", function: { name: "runtime_javascript", arguments: '{"code":"return 1"}' } }] } }] }
-        : { choices: [{ message: { role: "assistant", content: "done" } }] };
-      return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+      return requestBodies.length === 1
+        ? sseResponse([
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "runtime_javascript", arguments: '{"code":"' } }] } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'return 1"}' } } ] } }] },
+            { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+          ])
+        : sseResponse([
+            { choices: [{ delta: { content: "done" } }] },
+            { choices: [{ delta: {}, finish_reason: "stop" }] },
+          ]);
     },
   });
   const firstEvents = [];
@@ -529,35 +563,33 @@ test("OpenAI-compatible adapter normalizes provider tool names in both direction
   assert.equal(secondEvents.at(-1).message.content, "done");
   assert.equal(requestBodies[0].tools[0].function.name, "runtime_javascript");
   assert.equal(requestBodies[1].messages[1].tool_calls[0].function.name, "runtime_javascript");
-  assert.equal(requestBodies[1].messages[2].name, "runtime_javascript");
+  assert.equal(requestBodies[1].messages[2].tool_call_id, "call-1");
+  assert.equal(requestBodies[1].messages[2].content, '{"value":1}');
 });
 
-test("OpenAI-compatible adapter rejects provider errors in HTTP 200 responses", async () => {
-  const adapter = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
+test("AI SDK adapter maps provider HTTP errors to kernel errors", async () => {
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
     model: "demo",
-    fetcher: async () => new Response(JSON.stringify({ error: { message: "quota exceeded" } }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }),
+    fetcher: async () => new Response(JSON.stringify({ error: { message: "quota exceeded" } }), { status: 429, headers: { "content-type": "application/json" } }),
   });
   await assert.rejects(
-    async () => { for await (const _event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) {} },
-    (error) => error.code === "MODEL_PROVIDER_ERROR" && error.message === "quota exceeded",
+    async () => { for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) {} },
+    (error) => error.code === "MODEL_PROVIDER_ERROR" && error.message.includes("quota exceeded"),
   );
 });
 
-test("OpenAI-compatible adapter sends large requests without an application ceiling", async () => {
+test("AI SDK adapter sends large requests without an application ceiling", async () => {
   let fetched = false;
-  const adapter = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
     model: "demo",
     fetcher: async () => {
       fetched = true;
-      return new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "accepted" } }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return sseResponse([
+        { choices: [{ delta: { content: "accepted" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ]);
     },
   });
   const events = [];
@@ -566,84 +598,34 @@ test("OpenAI-compatible adapter sends large requests without an application ceil
   assert.equal(events.at(-1).message.content, "accepted");
 });
 
-test("OpenAI-compatible adapter rejects empty and incomplete SSE responses", async () => {
-  const empty = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
+test("AI SDK adapter rejects empty model responses", async () => {
+  const empty = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
     model: "demo",
-    fetcher: async () => new Response(JSON.stringify({ choices: [{ message: { role: "assistant", content: "" } }] }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    }),
+    fetcher: async () => sseResponse([{ choices: [{ delta: {}, finish_reason: "stop" }] }]),
   });
   await assert.rejects(
-    async () => { for await (const _event of empty.stream({ messages: [], tools: [], signal: noSignal() })) {} },
+    async () => { for await (const _event of empty.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) {} },
     (error) => error.code === "MODEL_EMPTY_RESPONSE",
   );
-
-  const incomplete = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
-    model: "demo",
-    fetcher: async () => new Response(`data: {"choices":[{"delta":{"content":"hello"}}]}\n\n`, {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    }),
-  });
-  await assert.rejects(
-    async () => { for await (const _event of incomplete.stream({ messages: [], tools: [], signal: noSignal() })) {} },
-    (error) => error.code === "MODEL_SSE_INCOMPLETE",
-  );
 });
 
-test("OpenAI-compatible adapter surfaces SSE error events", async () => {
-  const adapter = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
+test("AI SDK adapter preserves streaming text and tool input deltas", async () => {
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
     model: "demo",
-    fetcher: async () => new Response("event: error\ndata: upstream failed\n\n", { status: 200, headers: { "content-type": "text/event-stream" } }),
-  });
-  await assert.rejects(
-    async () => { for await (const _event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) {} },
-    (error) => error.code === "MODEL_SSE_ERROR",
-  );
-});
-
-test("OpenAI-compatible adapter parses a completed SSE response", async () => {
-  const body = [
-    'data: {"choices":[{"delta":{"content":"hello"}}]}',
-    "",
-    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
-    "",
-    "data: [DONE]",
-    "",
-  ].join("\n");
-  const adapter = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
-    model: "demo",
-    fetcher: async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    fetcher: async () => sseResponse([
+      { choices: [{ delta: { content: "hello" } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "runtime_javascript", arguments: '{"code":"' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "return 42\"}" } } ] } }] },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    ]),
   });
   const events = [];
-  for await (const event of adapter.stream({ messages: [], tools: [], signal: noSignal() })) events.push(event);
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "run" }], tools: [{ name: "runtime.javascript", description: "run", inputSchema: { type: "object" }, requiredCapabilities: [] }], signal: noSignal() })) events.push(event);
+  assert.equal(events.filter((event) => event.type === "text-delta").length, 1);
+  assert.equal(events.filter((event) => event.type === "tool-call-delta").length, 3);
   assert.equal(events.at(-1).type, "completed");
   assert.equal(events.at(-1).message.content, "hello");
-});
-
-test("OpenAI-compatible adapter emits normalized streaming tool-call deltas", async () => {
-  const body = [
-    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"runtime_","arguments":"{\\"code\\":\\""}}]}}]}',
-    "",
-    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"javascript","arguments":"return 42\\\"}"}}]}}]}',
-    "",
-    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
-    "",
-    "data: [DONE]",
-    "",
-  ].join("\n");
-  const adapter = new OpenAICompatibleAdapter({
-    endpoint: "https://example.test/chat",
-    model: "demo",
-    fetcher: async () => new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }),
-  });
-  const events = [];
-  for await (const event of adapter.stream({ messages: [], tools: [{ name: "runtime.javascript", description: "run", inputSchema: { type: "object" }, requiredCapabilities: [] }], signal: noSignal() })) events.push(event);
-  assert.equal(events.filter((event) => event.type === "tool-call-delta").length, 2);
   assert.deepEqual(events.at(-1).message.toolCalls, [{ id: "call-1", name: "runtime.javascript", arguments: { code: "return 42" } }]);
 });

@@ -613,7 +613,7 @@ try {
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {
-    const { Agent, AgentApp, BrowserPageRuntime, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, OpenAICompatibleAdapter, PluginManager, ToolRegistry, createBrowserApiPlugin } = await import('/dist/index.js');
+    const { Agent, AgentApp, BrowserPageRuntime, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, AiSdkAdapter, PluginManager, ToolRegistry, createBrowserApiPlugin } = await import('/dist/index.js');
     const runtime = new BrowserWorkerRuntime();
     const value = await runtime.execute('return input.value + 1', { value: 2 });
     const largeWorkerValue = await runtime.execute('return "x".repeat(70_000)', null);
@@ -650,7 +650,7 @@ try {
     const stored = await state.get('item');
     await state.clear();
 
-    const adapter = new OpenAICompatibleAdapter({
+    const adapter = new AiSdkAdapter({
       endpoint: location.origin + '/test-sse', model: 'demo',
       fetcher: (input, init) => fetch(input, init),
     });

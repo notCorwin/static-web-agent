@@ -30,6 +30,16 @@ await build({
   sourcemap: false,
 });
 await rename("dist/vendor/rendering-runtime.bundle.js", "dist/vendor/rendering-runtime.js");
+await build({
+  entryPoints: ["dist/adapters/ai-sdk.js"],
+  bundle: true,
+  format: "esm",
+  minify: true,
+  outfile: "dist/adapters/ai-sdk.bundle.js",
+  platform: "browser",
+  sourcemap: false,
+});
+await rename("dist/adapters/ai-sdk.bundle.js", "dist/adapters/ai-sdk.js");
 const path = "dist/index.html";
 const html = await readFile(path, "utf8");
 const versionedHtml = html

@@ -14,7 +14,7 @@ import { isConnectionSettings, loadConnectionSettings, saveConnectionSettings, t
 import { messageElement, messageElements, renderShell, streamingToolElement, textElement, toolGroupElement, updateStreamingToolElement, updateToolGroupElement, type AppElements } from "./view.js";
 import { renderRichContent } from "./rich-content.js";
 import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult } from "../core/types.js";
-import type { BrowserFetcher } from "../adapters/openai-compatible.js";
+import type { BrowserFetcher } from "../adapters/ai-sdk.js";
 import type { StateStore } from "../core/types.js";
 
 interface NetworkCapability {

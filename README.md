@@ -59,7 +59,7 @@ Important modules:
 - `src/core/state.ts` — atomic state batches and a resilient IndexedDB store that switches to an in-memory shadow on failure.
 - `src/app/chat.ts` — in-memory chat state without an application-defined history or message-size ceiling.
 - `src/app/view.ts` — shell and message rendering kept separate from application orchestration.
-- `src/adapters/openai-compatible.ts` — provider-boundary normalization for JSON and SSE responses.
+- `src/adapters/ai-sdk.ts` — the sole remote model adapter, backed by Vercel AI SDK Core and its OpenAI-compatible provider.
 - `src/core/page-runtime.ts` and `src/plugins/browser-api.ts` — main-realm Web API execution and the `browser.inspect` / `browser.evaluate` tools.
 
 Plugins are code-loaded modules, not discovered or downloaded by the application. Consumers can provide trusted plugins through `startApp(root, { plugins, initialModelId })`. A plugin can register a model adapter, processor, or UI contribution; the application uses the adapter registry, runs processors on outgoing user-message envelopes, and mounts UI contributions in the extension host. Plugin setup registers contributions; capability access is available after installation (tools normally request it during execution). Uninstalling a plugin removes all of its contributions and closes its registration context.
