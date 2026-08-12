@@ -395,13 +395,13 @@ try {
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-sse';
-    document.querySelector('#model-name').value = 'browser-test';
+    document.querySelector('#model-name').value = 'vendor/browser-test:free';
     document.querySelector('#model-key').value = 'browser-test-key';
     document.querySelector('#connection-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
   assert.equal(await page.evaluate("window.__permissionPrompted === false"), true, "selecting a remote model should not show a capability confirmation");
-  assert.equal(await page.evaluate("document.querySelector('.empty-state h2')?.textContent"), "browser-test", "the connected welcome should show the model name");
+  assert.equal(await page.evaluate("document.querySelector('.empty-state h2')?.textContent"), "Browser Test", "the connected welcome should show the normalized model name");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'remote request';
@@ -566,7 +566,7 @@ try {
     model: document.querySelector('#model-name')?.value,
     apiKey: document.querySelector('#model-key')?.value,
   })`);
-  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool-stream`, model: "browser-test", apiKey: "browser-test-key" });
+  assert.deepEqual(savedConnection, { endpoint: `http://127.0.0.1:${port}/test-tool-stream`, model: "vendor/browser-test:free", apiKey: "browser-test-key" });
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {

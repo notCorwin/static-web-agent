@@ -48,6 +48,14 @@ function browserEndpoint(value: unknown): string {
   }
 }
 
+function displayModelName(value: string): string {
+  return value.trim().replace(/^.*\//, "").replace(/:.*$/, "").replace(/-/g, " ").trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
 export interface AgentAppOptions {
   readonly plugins?: readonly Plugin[];
   readonly initialModelId?: string;
@@ -485,7 +493,7 @@ export class AgentApp {
           welcome.className = "empty-state";
           const icon = textElement("div", "✦", "empty-icon");
           icon.setAttribute("aria-hidden", "true");
-          const modelName = (this.elements["model-name"] as HTMLInputElement | undefined)?.value.trim() || "Welcome";
+          const modelName = displayModelName((this.elements["model-name"] as HTMLInputElement | undefined)?.value ?? "") || "Welcome";
           welcome.append(icon, textElement("h2", modelName), textElement("p", "Your cloud model is connected. Ask anything to begin."));
           const change = document.createElement("button");
           change.className = "secondary-button";
