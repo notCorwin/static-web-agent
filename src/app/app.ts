@@ -910,7 +910,7 @@ export class AgentApp {
     try {
       const credential = new PasswordCredential({ id: settings.model, name: settings.endpoint, password: settings.apiKey });
       await store.call(credentials, credential);
-      this.element("credential-status").textContent = "Saved with the model name as the password-manager username; endpoint saved locally.";
+      this.element("credential-status").textContent = "Saved the model name as the password-manager username and the API key as the password; endpoint saved locally.";
     } catch {
       // A password manager may reject programmatic storage; local settings remain available.
     }

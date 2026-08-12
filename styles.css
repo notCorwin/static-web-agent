@@ -116,6 +116,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .field input { min-height: 36px; padding: 7px 9px; }
 .field input::placeholder, .composer textarea::placeholder { color: var(--faint); }
 .field input:hover, .field input:focus, .composer textarea:focus { border-color: var(--accent); }
+.field input:focus, .field input:focus-visible { outline: 0 !important; outline-offset: 0; box-shadow: none; }
 .field input[aria-invalid="true"] { border-color: var(--danger); }
 .faint { color: var(--faint); font-weight: 400; }
 .field-error, .field-help { min-height: 16px; margin: 0; font-size: 11px; line-height: 1.35; }

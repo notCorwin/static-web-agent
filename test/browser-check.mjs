@@ -306,6 +306,8 @@ try {
       keyAutocomplete: document.querySelector('#model-key').autocomplete,
       modelLabel: document.querySelector('label[for="model-name"]').textContent,
       endpointLabel: document.querySelector('label[for="model-endpoint"]').textContent,
+      keyLabel: document.querySelector('label[for="model-key"]').textContent,
+      keyHelp: document.querySelector('#key-help').textContent,
     };
   })()`);
   assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.workspaceCenter.x) <= 1, "the connection card should be horizontally centered in the workspace");
@@ -316,7 +318,20 @@ try {
   assert.equal(connectionLayout.keyAutocomplete, "current-password");
   assert.ok(connectionLayout.modelLabel.includes("password-manager username"), "the model name should be presented as the password-manager username");
   assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
+  assert.ok(connectionLayout.keyLabel.includes("password manager + local"), "the API key should be presented as password-manager and local state");
+  assert.ok(connectionLayout.keyHelp.includes("password-manager password"), "the API key help should explain its password-manager role");
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
+  const connectionFocus = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key'].map((selector) => {
+    const input = document.querySelector(selector);
+    input.focus();
+    const style = getComputedStyle(input);
+    return { selector, outlineWidth: style.outlineWidth, boxShadow: style.boxShadow };
+  }))()`);
+  assert.deepEqual(connectionFocus, [
+    { selector: "#model-endpoint", outlineWidth: "0px", boxShadow: "none" },
+    { selector: "#model-name", outlineWidth: "0px", boxShadow: "none" },
+    { selector: "#model-key", outlineWidth: "0px", boxShadow: "none" },
+  ]);
   const sendAlignment = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input').getBoundingClientRect();
     const send = document.querySelector('#send-button').getBoundingClientRect();

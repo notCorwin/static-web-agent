@@ -22,7 +22,7 @@ export function renderShell(root: HTMLElement): AppElements {
               <div class="connection-icon" aria-hidden="true">✦</div>
               <div>
                 <h2 id="connection-title">Connect your cloud model</h2>
-                <p>Enter your OpenAI-compatible endpoint, model name, and API key. The model name is used as your password-manager username; the endpoint is remembered locally.</p>
+                <p>Enter your OpenAI-compatible endpoint, model name, and API key. The model name is used as your password-manager username; the endpoint and API key are remembered in this browser.</p>
               </div>
             </div>
             <form class="connection-form" id="connection-form" novalidate>
@@ -37,13 +37,13 @@ export function renderShell(root: HTMLElement): AppElements {
                 <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
               </div>
               <div class="field">
-                <label for="model-key">API key <span class="faint">(saved locally)</span></label>
+                <label for="model-key">API key <span class="faint">(password manager + local)</span></label>
                 <input id="model-key" name="apiKey" type="password" autocomplete="current-password" aria-describedby="key-help" placeholder="Paste a key…" />
-                <p class="field-help" id="key-help">Stored locally and offered to the browser password manager when supported.</p>
+                <p class="field-help" id="key-help">Stored locally and saved as the password-manager password when supported.</p>
               </div>
               <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Connect model</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
               <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
-              <p class="credential-status" id="credential-status" role="status" aria-live="polite">The model name is the password-manager username; endpoint is saved locally.</p>
+              <p class="credential-status" id="credential-status" role="status" aria-live="polite">The model name is the password-manager username; the API key is the password; endpoint is saved locally.</p>
               <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
             </form>
           </section>
