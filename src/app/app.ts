@@ -147,6 +147,7 @@ export class AgentApp {
     this.normalizeUrl(false);
     this.ready = true;
     this.renderAll();
+    this.resizeMessageInput();
     this.focusComposer();
     if (this.options.autoConnect !== false) void this.autoConnect(savedSettings);
   }
@@ -184,6 +185,7 @@ export class AgentApp {
       void this.sendMessage();
     });
     const messageInput = this.elements["message-input"] as HTMLTextAreaElement | undefined;
+    messageInput?.addEventListener("input", () => this.resizeMessageInput());
     messageInput?.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.isComposing) return;
       event.preventDefault();
@@ -345,6 +347,7 @@ export class AgentApp {
       if (!content) throw new Error("The processed message is empty.");
       this.chat.messages = normalizeMessages([...this.chat.messages, { role: "user", content }]);
       input.value = "";
+      this.resizeMessageInput();
       this.pendingText = "";
       this.pendingTool = undefined;
       this.pendingToolCalls = [];
@@ -560,6 +563,17 @@ export class AgentApp {
     const button = this.elements["scroll-bottom-button"];
     if (chat === undefined || button === undefined) return;
     button.hidden = this.followChat || chat.scrollHeight <= chat.clientHeight + 1;
+  }
+
+  private resizeMessageInput(): void {
+    const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
+    if (input === undefined) return;
+    input.style.height = "auto";
+    input.style.overflowY = "hidden";
+    const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
+    const height = Number.isFinite(maxHeight) ? Math.min(input.scrollHeight, maxHeight) : input.scrollHeight;
+    input.style.height = `${height}px`;
+    input.style.overflowY = input.scrollHeight > height + 1 ? "auto" : "hidden";
   }
 
   private startMessageEdit(index: number): void {

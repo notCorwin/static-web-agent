@@ -213,7 +213,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .composer-wrap { flex-shrink: 0; padding: 0 clamp(18px, 4vw, 48px) 22px; background: var(--bg); }
 .composer { position: relative; display: grid; gap: 0; border-radius: 14px; }
 .composer:focus-within { box-shadow: none; }
-.composer textarea { min-height: 64px; resize: vertical; padding: 10px 78px 10px 11px; line-height: 1.45; font-size: 15px; }
+.composer textarea { min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; padding: 10px 78px 10px 11px; line-height: 1.45; font-size: 15px; }
 .composer textarea:focus, .composer textarea:focus-visible { outline: 0 !important; outline-offset: 0; box-shadow: none; }
 .send-button { position: absolute; right: 7px; bottom: 7px; min-width: 62px; }
 .stop-button { background: var(--danger); }
@@ -224,7 +224,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 
 .extension-host { display: grid; gap: 8px; }
 .extension-host:empty { display: none; }
-.scroll-bottom-button { position: absolute; z-index: 3; right: clamp(24px, 4vw, 54px); bottom: 92px; display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); box-shadow: 0 5px 16px rgb(0 0 0 / 13%); color: var(--muted); font-size: 20px; line-height: 1; }
+.scroll-bottom-button { position: absolute; z-index: 3; left: 50%; bottom: 92px; display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); box-shadow: 0 5px 16px rgb(0 0 0 / 13%); color: var(--muted); font-size: 20px; line-height: 1; transform: translateX(-50%); }
 .scroll-bottom-button:hover { border-color: var(--accent); background: var(--surface-soft); color: var(--text); }
 .scroll-bottom-button[hidden] { display: none; }
 .capability-chip { justify-self: start; min-height: 24px; padding: 3px 7px; color: var(--accent); font-size: 10px; }
@@ -255,7 +255,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   .chat-scroll { min-height: 420px; padding: 22px 16px; }
   .message { max-width: 100%; }
   .composer-wrap { padding: 0 16px 16px; }
-  .composer textarea { min-height: 64px; padding-right: 78px; }
+  .composer textarea { min-height: 44px; padding-right: 78px; }
   .send-button { right: 7px; bottom: 7px; width: auto; }
 }
 

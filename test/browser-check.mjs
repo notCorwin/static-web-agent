@@ -309,7 +309,7 @@ try {
   assert.equal(connectionLayout.keyAutocomplete, "current-password");
   assert.ok(connectionLayout.modelLabel.includes("password-manager username"), "the model name should be presented as the password-manager username");
   assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
-  assert.ok(connectionLayout.composerHeight <= 66, "the message composer should stay compact");
+  assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
   const composerFocus = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.focus();
@@ -318,6 +318,24 @@ try {
     return { outlineWidth: inputStyle.outlineWidth, composerShadow: composerStyle.boxShadow };
   })()`);
   assert.deepEqual(composerFocus, { outlineWidth: "0px", composerShadow: "none" });
+
+  const composerGrowth = await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    const setValue = (value) => {
+      input.value = value;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      return { height: input.getBoundingClientRect().height, overflowY: getComputedStyle(input).overflowY };
+    };
+    const singleLine = setValue('single line');
+    const multiLine = setValue('line 1\\nline 2\\nline 3');
+    const manyLines = setValue(Array.from({ length: 30 }, (_, index) => 'line ' + (index + 1)).join('\\n'));
+    const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
+    setValue('');
+    return { singleLine, multiLine, manyLines, maxHeight };
+  })()`);
+  assert.ok(composerGrowth.singleLine.height < composerGrowth.multiLine.height, "the composer should grow for multiline input");
+  assert.ok(composerGrowth.manyLines.height <= composerGrowth.maxHeight + 1, "the composer should stop growing at its max height");
+  assert.equal(composerGrowth.manyLines.overflowY, "auto", "long multiline input should scroll inside the capped composer");
 
   await page.evaluate(`(() => {
     window.__permissionPrompted = false;
@@ -472,6 +490,12 @@ try {
   assert.ok(finishedStreamScroll <= 2, "the conversation should remain at the bottom after streaming");
   await page.evaluate("(() => { const chat = document.querySelector('#chat-log'); chat.scrollTop = 0; chat.dispatchEvent(new Event('scroll')); })()");
   await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === false");
+  const scrollButtonLayout = await page.evaluate(`(() => {
+    const button = document.querySelector('#scroll-bottom-button').getBoundingClientRect();
+    const workspace = document.querySelector('#main-content').getBoundingClientRect();
+    return { buttonCenter: button.left + button.width / 2, workspaceCenter: workspace.left + workspace.width / 2 };
+  })()`);
+  assert.ok(Math.abs(scrollButtonLayout.buttonCenter - scrollButtonLayout.workspaceCenter) <= 1, "the scroll button should be horizontally centered");
   await page.evaluate("document.querySelector('#scroll-bottom-button').click()");
   await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === true && (() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()");
 
