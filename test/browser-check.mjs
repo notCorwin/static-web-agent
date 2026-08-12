@@ -631,7 +631,7 @@ try {
   assert.ok(streamingTool.childOpen?.some(Boolean), "an active tool detail should be open while streaming");
   assert.equal(streamingTool.bodyVisible, true, "streaming tool arguments should be visible");
   await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); })()");
-  await page.evaluate("new Promise((resolve) => setTimeout(resolve, 140))");
+  await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return')", 5_000);
   const streamingStability = await page.evaluate(`({
     groupStable: window.__firstStreamingToolGroup === document.querySelector('.tool-group.pending'),
     detailStable: window.__firstStreamingToolDetail === document.querySelector('.tool-call-stream'),
