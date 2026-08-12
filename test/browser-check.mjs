@@ -356,6 +356,16 @@ try {
   assert.ok(connectionLayout.thinkingLabel.includes("Thinking level"));
   assert.ok(connectionLayout.thinkingHelp.includes("reasoning"));
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
+  const controlMetrics = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key', '#thinking-level'].map((selector) => {
+    const style = getComputedStyle(document.querySelector(selector));
+    return { selector, height: style.height, fontSize: style.fontSize, lineHeight: style.lineHeight, appearance: style.appearance };
+  }))()`);
+  assert.deepEqual(controlMetrics, [
+    { selector: "#model-endpoint", height: "36px", fontSize: "16px", lineHeight: "20px", appearance: "none" },
+    { selector: "#model-name", height: "36px", fontSize: "16px", lineHeight: "20px", appearance: "none" },
+    { selector: "#model-key", height: "36px", fontSize: "16px", lineHeight: "20px", appearance: "none" },
+    { selector: "#thinking-level", height: "36px", fontSize: "16px", lineHeight: "20px", appearance: "none" },
+  ]);
   const connectionFocus = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key', '#thinking-level'].map((selector) => {
     const input = document.querySelector(selector);
     input.focus();
