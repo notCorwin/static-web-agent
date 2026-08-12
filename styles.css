@@ -294,6 +294,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .composer:focus-within { box-shadow: none; }
 .composer textarea { min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; padding: 10px 54px 10px 11px; line-height: 1.45; font-size: 15px; }
 .send-button { position: absolute; top: 50%; right: 7px; display: grid; width: 36px; min-width: 36px; height: 36px; min-height: 36px; place-items: center; padding: 0; border-radius: 999px; transform: translateY(-50%); }
+.send-button[hidden] { display: none; }
 .send-button:active { transform: translateY(calc(-50% + 1px)); }
 .stop-button { background: var(--stop-bg); color: var(--stop-ink); }
 .stop-button:hover { background: var(--stop-hover); }

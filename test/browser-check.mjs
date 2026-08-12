@@ -317,10 +317,11 @@ try {
     noComposerRows: document.querySelector('.composer-hint') === null && getComputedStyle(document.querySelector('#run-status')).position === 'absolute',
     noSeparateCancelButton: document.querySelector('#cancel-button') === null,
     sendButtonHidden: document.querySelector('#send-button')?.hidden,
+    sendButtonDisplay: getComputedStyle(document.querySelector('#send-button')).display,
     sendButtonLabel: document.querySelector('#send-button .button-label')?.textContent,
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonHidden: true, sendButtonLabel: "Stop", compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonHidden: true, sendButtonDisplay: "none", sendButtonLabel: "Stop", compactComposer: true });
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
   await waitFor(page, "getComputedStyle(document.documentElement).colorScheme === 'dark'");
   const darkTheme = await page.evaluate(`(() => ({
