@@ -12,6 +12,7 @@ import type {
   AssistantMessage,
   JsonSchema,
   JsonValue,
+  ModelAttachment,
   ModelAdapter,
   ModelEvent,
   ModelMessage,
@@ -30,6 +31,8 @@ export interface AiSdkAdapterOptions {
   readonly endpoint: string;
   readonly model: string;
   readonly apiKey?: string;
+  /** The user-confirmed capability of the configured model. */
+  readonly supportsVision?: boolean;
   /** Portable reasoning/thinking effort passed to AI SDK Core. */
   readonly reasoning?: ReasoningLevel;
   readonly fetcher: BrowserFetcher;
@@ -165,12 +168,29 @@ function toolResultOutput(message: Extract<ModelMessage, { readonly role: "tool"
     : { type: "json" as const, value: parsed };
 }
 
-function toAiMessage(message: ModelMessage, names: ReadonlyMap<string, string>): AiModelMessage {
+function toAiMessage(message: ModelMessage, names: ReadonlyMap<string, string>, attachments: ReadonlyMap<string, ModelAttachment>): AiModelMessage {
   switch (message.role) {
     case "system":
       return { role: "system", content: message.content };
-    case "user":
-      return { role: "user", content: message.content };
+    case "user": {
+      if (message.attachmentIds === undefined || message.attachmentIds.length === 0) return { role: "user", content: message.content };
+      const content: Array<
+        | { readonly type: "text"; readonly text: string }
+        | { readonly type: "file"; readonly data: Uint8Array; readonly mediaType: string; readonly filename: string }
+      > = [];
+      if (message.content.length > 0) content.push({ type: "text", text: message.content });
+      for (const id of message.attachmentIds) {
+        const attachment = attachments.get(id);
+        if (attachment === undefined) throw new ModelAdapterError(`Model attachment “${id}” is unavailable.`, undefined, "MODEL_ATTACHMENT_MISSING");
+        content.push({
+          type: "file",
+          data: attachment.data,
+          mediaType: attachment.mediaType,
+          filename: attachment.name,
+        });
+      }
+      return { role: "user", content };
+    }
     case "assistant": {
       if (message.toolCalls === undefined && message.reasoning === undefined) return { role: "assistant", content: message.content };
       const content: Array<
@@ -268,12 +288,14 @@ function throwIfAborted(signal: AbortSignal): void {
 
 export class AiSdkAdapter implements ModelAdapter {
   readonly id: string;
+  readonly supportsVision: boolean;
   private readonly model: string;
   private readonly reasoning: ReasoningLevel | undefined;
   private readonly provider: ReturnType<typeof createOpenAICompatible>;
 
   constructor(options: AiSdkAdapterOptions) {
     this.id = options.id ?? "ai-sdk";
+    this.supportsVision = options.supportsVision === true;
     this.model = options.model.trim();
     this.reasoning = options.reasoning;
     if (!this.model) throw new Error("A model name is required.");
@@ -297,9 +319,14 @@ export class AiSdkAdapter implements ModelAdapter {
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
     throwIfAborted(request.signal);
     const names = providerToolNames(request.tools);
+    const attachments = new Map((request.attachments ?? []).map((attachment) => [attachment.id, attachment]));
+    const hasImageInput = request.messages.some((message) => message.role === "user" && (message.attachmentIds?.length ?? 0) > 0);
+    if (hasImageInput && !this.supportsVision) {
+      throw new ModelAdapterError("This model connection is not marked as vision-capable.", undefined, "MODEL_VISION_DISABLED");
+    }
     const prompt = request.messages.length === 0
       ? { prompt: "" as const }
-      : { messages: request.messages.map((message) => toAiMessage(message, names)) };
+      : { messages: request.messages.map((message) => toAiMessage(message, names, attachments)) };
     const result = streamText({
       model: this.provider(this.model),
       ...prompt,

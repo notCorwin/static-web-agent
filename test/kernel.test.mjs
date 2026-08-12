@@ -8,6 +8,7 @@ import {
   DEFAULT_THINKING_LEVEL,
   MemoryStateStore,
   AiSdkAdapter,
+  createPendingAttachment,
   PluginManager,
   PrefixedStateStore,
   ResilientStateStore,
@@ -16,6 +17,7 @@ import {
   createRemoteModelPlugin,
   loadConnectionSettings,
   normalizeMessages,
+  processAttachmentFiles,
   saveConnectionSettings,
   validate,
 } from "../dist/index.js";
@@ -158,6 +160,25 @@ test("agent loops through multiple tool calls and normalizes tool errors", async
   assert.equal(result.messages.filter((message) => message.role === "tool").length, 2);
   assert.equal(events.filter((event) => event.type === "tool-started").length, 2);
   assert.ok(result.messages.some((message) => message.role === "tool" && message.isError === true));
+});
+
+test("agent forwards attachment bytes only through the model request side channel", async () => {
+  let received;
+  const model = {
+    id: "attachment-model",
+    async *stream(request) {
+      received = request;
+      yield { type: "completed", message: { role: "assistant", content: "seen" } };
+    },
+  };
+  const attachment = { id: "image-1", name: "scan.png", mediaType: "image/png", data: new Uint8Array([1, 2, 3]) };
+  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+    messages: [{ role: "user", content: "read this", attachmentIds: [attachment.id] }],
+    attachments: [attachment],
+  });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(received.attachments, [attachment]);
+  assert.deepEqual(received.messages[0].attachmentIds, [attachment.id]);
 });
 
 test("agent forwards streaming tool-call deltas and reconstructs their arguments", async () => {
@@ -453,7 +474,7 @@ test("browser state falls back to memory when IndexedDB opening fails", async ()
 
 test("connection settings persist as a browser-local state record", async () => {
   const state = new MemoryStateStore();
-  const settings = { endpoint: "https://example.test/v1/chat/completions", model: "demo", apiKey: "secret", thinkingLevel: "high" };
+  const settings = { endpoint: "https://example.test/v1/chat/completions", model: "demo", apiKey: "secret", thinkingLevel: "high", supportsVision: true };
   await saveConnectionSettings(state, settings);
   assert.deepEqual(await loadConnectionSettings(state), settings);
   assert.deepEqual(await state.get(CONNECTION_SETTINGS_KEY), settings);
@@ -463,6 +484,113 @@ test("connection settings persist as a browser-local state record", async () => 
 
   await state.set(CONNECTION_SETTINGS_KEY, { endpoint: settings.endpoint, model: settings.model, apiKey: settings.apiKey });
   assert.equal((await loadConnectionSettings(state)).thinkingLevel, DEFAULT_THINKING_LEVEL);
+  assert.equal((await loadConnectionSettings(state)).supportsVision, false);
+});
+
+test("attachment processing sends images as direct model attachments when vision is enabled", async () => {
+  const file = new File([new Uint8Array([137, 80, 78, 71])], "scan.png", { type: "image/png" });
+  const pending = createPendingAttachment(file);
+  const result = await processAttachmentFiles([pending], true, noSignal());
+  assert.deepEqual(result.attachmentIds, [pending.id]);
+  assert.equal(result.attachments[0].mediaType, "image/png");
+  assert.deepEqual([...result.attachments[0].data], [137, 80, 78, 71]);
+  assert.equal(result.usedVision, true);
+  assert.match(result.content, /scan\.png/);
+});
+
+test("attachment processing routes non-vision images through local OCR", async () => {
+  const file = new File([new Uint8Array([1, 2])], "scan.png", { type: "image/png" });
+  const pending = createPendingAttachment(file);
+  const result = await processAttachmentFiles([pending], false, noSignal(), {
+    recognizeImage: async () => "OCR line 1\nOCR line 2",
+  });
+  assert.deepEqual(result.attachmentIds, []);
+  assert.equal(result.attachments.length, 0);
+  assert.match(result.content, /OCR line 1/);
+  assert.equal(result.usedVision, false);
+});
+
+test("attachment OCR failure is surfaced once without an automatic retry", async () => {
+  const pending = createPendingAttachment(new File([new Uint8Array([1, 2])], "scan.png", { type: "image/png" }));
+  let calls = 0;
+  await assert.rejects(
+    processAttachmentFiles([pending], false, noSignal(), {
+      recognizeImage: async () => {
+        calls += 1;
+        throw new Error("OCR unavailable");
+      },
+    }),
+    /OCR unavailable/,
+  );
+  assert.equal(calls, 1);
+});
+
+test("attachment processing stops before parsing when cancelled", async () => {
+  const pending = createPendingAttachment(new File([new Uint8Array([1, 2])], "notes.txt", { type: "text/plain" }));
+  const controller = new AbortController();
+  controller.abort();
+  let parsed = false;
+  await assert.rejects(
+    processAttachmentFiles([pending], false, controller.signal, {
+      documentToMarkdown: async () => {
+        parsed = true;
+        return "never";
+      },
+    }),
+    (error) => error.code === "ATTACHMENT_CANCELLED",
+  );
+  assert.equal(parsed, false);
+});
+
+test("unsupported attachments produce an explicit processing error", async () => {
+  const pending = createPendingAttachment(new File([new Uint8Array([1])], "archive.zip", { type: "application/zip" }));
+  await assert.rejects(
+    processAttachmentFiles([pending], false, noSignal(), { documentToMarkdown: async () => undefined }),
+    (error) => error.code === "ATTACHMENT_UNSUPPORTED",
+  );
+});
+
+test("scanned PDF pages preserve order in vision and OCR routes", async () => {
+  const file = new File([new Uint8Array([37, 80, 68, 70])], "scan.pdf", { type: "application/pdf" });
+  const pending = createPendingAttachment(file);
+  const pages = [
+    { name: "scan.pdf · page 1", mediaType: "image/png", data: new Uint8Array([1]) },
+    { name: "scan.pdf · page 2", mediaType: "image/png", data: new Uint8Array([2]) },
+  ];
+  const visual = await processAttachmentFiles([pending], true, noSignal(), {
+    documentToMarkdown: async () => undefined,
+    renderPdfPages: async () => pages,
+  });
+  assert.deepEqual(visual.attachmentIds, [`${pending.id}-page-1`, `${pending.id}-page-2`]);
+  assert.deepEqual(visual.attachments.map((item) => item.name), pages.map((page) => page.name));
+
+  const ocrPages = [];
+  const text = await processAttachmentFiles([pending], false, noSignal(), {
+    documentToMarkdown: async () => undefined,
+    renderPdfPages: async () => pages,
+    recognizeImage: async (data) => {
+      ocrPages.push(data[0]);
+      return `page ${data[0]}`;
+    },
+  });
+  assert.deepEqual(ocrPages, [1, 2]);
+  assert.match(text.content, /scan\.pdf · page 1/);
+  assert.match(text.content, /scan\.pdf · page 2/);
+});
+
+test("ordinary documents use anydoc output without OCR or page rendering", async () => {
+  const file = new File([new Uint8Array([1, 2, 3])], "notes.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+  const pending = createPendingAttachment(file);
+  let rendered = false;
+  let ocr = false;
+  const result = await processAttachmentFiles([pending], false, noSignal(), {
+    documentToMarkdown: async () => "# Extracted notes",
+    renderPdfPages: async () => { rendered = true; return []; },
+    recognizeImage: async () => { ocr = true; return ""; },
+  });
+  assert.match(result.content, /Extracted notes/);
+  assert.equal(rendered, false);
+  assert.equal(ocr, false);
 });
 
 test("in-memory chat normalization preserves unbounded message history", () => {
@@ -500,6 +628,45 @@ test("AI SDK adapter normalizes a streaming provider response", async () => {
   assert.equal(requestBody.model, "demo");
   assert.equal(requestBody.messages[0].role, "user");
   assert.equal(requestBody.stream, true);
+});
+
+test("AI SDK adapter converts vision attachments to OpenAI-compatible file parts", async () => {
+  let requestBody;
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
+    model: "vision-demo",
+    supportsVision: true,
+    fetcher: async (_input, init) => {
+      requestBody = JSON.parse(init.body);
+      return sseResponse([
+        { choices: [{ delta: { content: "ok" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ]);
+    },
+  });
+  for await (const _event of adapter.stream({
+    messages: [{ role: "user", content: "describe", attachmentIds: ["image-1"] }],
+    attachments: [{ id: "image-1", name: "scan.png", mediaType: "image/png", data: new Uint8Array([1, 2, 3]) }],
+    tools: [],
+    signal: noSignal(),
+  })) {}
+  const content = requestBody.messages[0].content;
+  assert.equal(content[0].type, "text");
+  assert.equal(content[1].type, "image_url");
+  assert.match(content[1].image_url.url, /^data:image\/png;base64,/);
+});
+
+test("AI SDK adapter refuses image attachments unless vision is explicitly enabled", async () => {
+  const adapter = new AiSdkAdapter({ endpoint: "https://example.test/v1", model: "text-only", fetcher: async () => sseResponse([]) });
+  await assert.rejects(
+    async () => { for await (const _event of adapter.stream({
+      messages: [{ role: "user", content: "read", attachmentIds: ["image-1"] }],
+      attachments: [{ id: "image-1", name: "scan.png", mediaType: "image/png", data: new Uint8Array([1]) }],
+      tools: [],
+      signal: noSignal(),
+    })) {} },
+    (error) => error.code === "MODEL_VISION_DISABLED",
+  );
 });
 
 test("AI SDK adapter streams reasoning and forwards the selected thinking level", async () => {

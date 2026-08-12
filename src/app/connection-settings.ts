@@ -9,6 +9,7 @@ export interface ConnectionSettings extends JsonObject {
   readonly model: string;
   readonly apiKey: string;
   readonly thinkingLevel: ReasoningLevel;
+  readonly supportsVision: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -24,13 +25,14 @@ export function isConnectionSettings(value: unknown): value is ConnectionSetting
     && typeof value.endpoint === "string"
     && typeof value.model === "string"
     && typeof value.apiKey === "string"
+    && (value.supportsVision === undefined || typeof value.supportsVision === "boolean")
     && (value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel));
 }
 
 export async function loadConnectionSettings(store: StateStore): Promise<ConnectionSettings | undefined> {
   const value = await store.get(CONNECTION_SETTINGS_KEY);
   if (!isConnectionSettings(value)) return undefined;
-  return { ...value, thinkingLevel: value.thinkingLevel ?? DEFAULT_THINKING_LEVEL };
+  return { ...value, thinkingLevel: value.thinkingLevel ?? DEFAULT_THINKING_LEVEL, supportsVision: value.supportsVision ?? false };
 }
 
 export async function saveConnectionSettings(store: StateStore, settings: ConnectionSettings): Promise<void> {
@@ -38,6 +40,7 @@ export async function saveConnectionSettings(store: StateStore, settings: Connec
     endpoint: settings.endpoint,
     model: settings.model,
     apiKey: settings.apiKey,
+    supportsVision: settings.supportsVision,
     ...(isThinkingLevel(settings.thinkingLevel) ? { thinkingLevel: settings.thinkingLevel } : {}),
   });
 }

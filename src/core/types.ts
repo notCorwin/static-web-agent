@@ -137,6 +137,8 @@ export interface SystemMessage {
 export interface UserMessage {
   readonly role: "user";
   readonly content: string;
+  /** IDs for in-memory attachments supplied through the model request side channel. */
+  readonly attachmentIds?: readonly string[];
 }
 
 export interface ToolCall {
@@ -171,8 +173,17 @@ export interface ToolMessage {
 
 export type ModelMessage = SystemMessage | UserMessage | AssistantMessage | ToolMessage;
 
+/** Binary input that a model adapter may translate into provider-native content parts. */
+export interface ModelAttachment {
+  readonly id: string;
+  readonly name: string;
+  readonly mediaType: string;
+  readonly data: Uint8Array;
+}
+
 export interface ModelRequest {
   readonly messages: readonly ModelMessage[];
+  readonly attachments?: readonly ModelAttachment[];
   readonly tools: readonly ToolDescriptor[];
   readonly signal: AbortSignal;
 }
@@ -187,6 +198,7 @@ export type ModelEvent =
 
 export interface ModelAdapter {
   readonly id: string;
+  readonly supportsVision?: boolean;
   readonly stream: (request: ModelRequest) => AsyncIterable<ModelEvent>;
 }
 
@@ -201,6 +213,7 @@ export interface AgentLimits {
 
 export interface AgentRunRequest {
   readonly messages: readonly ModelMessage[];
+  readonly attachments?: readonly ModelAttachment[];
   readonly signal?: AbortSignal;
   readonly maxTurns?: number;
   readonly modelTimeoutMs?: number;

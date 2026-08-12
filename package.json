@@ -16,10 +16,13 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.30",
+    "@firecrawl/anydoc-wasm": "^0.1.8",
+    "@paddleocr/paddleocr-js": "^0.4.2",
     "ai": "^7.0.62",
     "dompurify": "^3.4.13",
     "katex": "^0.18.4",
     "marked": "^18.0.9",
-    "mermaid": "^11.16.1"
+    "mermaid": "^11.16.1",
+    "pdfjs-dist": "^5.4.54"
   }
 }

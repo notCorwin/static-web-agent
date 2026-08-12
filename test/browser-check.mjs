@@ -32,20 +32,41 @@ function contentType(path) {
   switch (extname(path)) {
     case ".html": return "text/html; charset=utf-8";
     case ".js": return "text/javascript; charset=utf-8";
+    case ".mjs": return "text/javascript; charset=utf-8";
     case ".css": return "text/css; charset=utf-8";
     case ".json": return "application/json; charset=utf-8";
     default: return "application/octet-stream";
   }
 }
 
+function createScannedPdf() {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Resources << >> >>",
+  ];
+  let source = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(source.length);
+    source += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = source.length;
+  source += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) source += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  source += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(source);
+}
+
 async function startStaticServer() {
   let toolRequests = 0;
   let streamedToolRequests = 0;
   const reasoningRequests = [];
+  const visionRequests = [];
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
-      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning") {
+      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning" || pathname === "/test-vision") {
         if (pathname === "/test-reasoning") {
           const rawBody = await new Promise((resolve) => {
             let body = "";
@@ -53,6 +74,14 @@ async function startStaticServer() {
             request.on("end", () => resolve(body));
           });
           try { reasoningRequests.push(JSON.parse(rawBody)); } catch { reasoningRequests.push(undefined); }
+        }
+        if (pathname === "/test-vision") {
+          const rawBody = await new Promise((resolve) => {
+            let body = "";
+            request.on("data", (chunk) => { body += chunk.toString(); });
+            request.on("end", () => resolve(body));
+          });
+          try { visionRequests.push(JSON.parse(rawBody)); } catch { visionRequests.push(undefined); }
         }
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         if (pathname === "/test-scroll") {
@@ -95,7 +124,9 @@ async function startStaticServer() {
             "console.log(value);",
             "```",
           ].join("\n")
-          : pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-reasoning"
+          : pathname === "/test-vision"
+            ? "vision complete"
+            : pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-reasoning"
             ? "tool complete"
             : "sse";
         if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
@@ -183,7 +214,7 @@ async function startStaticServer() {
     }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { server, port: server.address().port, reasoningRequests };
+  return { server, port: server.address().port, reasoningRequests, visionRequests };
 }
 
 function waitForOutput(child, timeoutMs = 30_000) {
@@ -235,7 +266,7 @@ class CdpPage {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP command timed out: ${method}`));
-      }, 3_000);
+      }, 10_000);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); },
@@ -279,7 +310,8 @@ if (browser === undefined) {
   process.exit(0);
 }
 
-const { server, port, reasoningRequests } = await startStaticServer();
+const { server, port, reasoningRequests, visionRequests } = await startStaticServer();
+const scannedPdfBase64 = Buffer.from(createScannedPdf()).toString("base64");
 const release = JSON.parse(await readFile(join(root, "dist/version.json"), "utf8"));
 const profile = await mkdtemp(join(tmpdir(), "static-web-agent-browser-"));
 const child = spawn(browser, [
@@ -306,7 +338,6 @@ try {
   await page.send("Page.enable");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1035, height: 922, deviceScaleFactor: 1, mobile: false });
   await waitFor(page, "document.querySelector('.app-shell') !== null && document.querySelector('#message-input')?.disabled === false && document.querySelector('#runtime-action') === null && document.querySelector('#storage-action') === null && document.querySelector('.sidebar') === null && document.querySelector('.tools-panel') === null && !document.querySelector('.loading-state')");
-
   const initialUi = await page.evaluate(`({
     noWorkspaceNavigation: document.querySelector('.sidebar') === null,
     noRuntimeSurface: document.querySelector('.tools-panel') === null,
@@ -500,6 +531,91 @@ try {
   })()`);
   assert.ok(Math.abs(messageAlignment.userRight - messageAlignment.assistantRight) <= 1, "the user bubble should align with the assistant column's right edge");
   await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = location.origin + '/test-vision';
+    document.querySelector('#model-vision').checked = false;
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  const previousOcrAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 160;
+    const context = canvas.getContext('2d');
+    context.fillStyle = 'white';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'black';
+    context.font = '64px Arial';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('OCR E2E', canvas.width / 2, canvas.height / 2);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value === null ? reject(new Error('Could not create OCR fixture.')) : resolve(value), 'image/png'));
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'ocr.png', { type: 'image/png' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousOcrAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 120_000);
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
+  const ocrRequest = visionRequests.at(-1);
+  const ocrMessage = ocrRequest?.messages?.findLast((message) => typeof message.content === "string" && message.content.toUpperCase().includes("OCR"));
+  assert.equal(typeof ocrMessage?.content, "string");
+  assert.ok(ocrMessage?.content.toUpperCase().includes("OCR"), "non-vision image uploads should be sent as local OCR text");
+  assert.equal(ocrRequest?.messages?.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")), false);
+  await page.evaluate(`(() => {
+    document.querySelector('#model-vision').checked = true;
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'scan.png', { type: 'image/png' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await waitFor(page, "document.querySelector('.attachment-chip-label')?.textContent === 'scan.png'");
+  await page.evaluate("document.querySelector('#composer-form').requestSubmit()");
+  await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'", 20_000);
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
+  const visualRequest = visionRequests.at(-1);
+  const visualMessage = visualRequest?.messages?.find((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  assert.equal(visualMessage?.content?.[0]?.type, "text");
+  assert.equal(visualMessage?.content?.[1]?.type, "image_url");
+  assert.match(visualMessage?.content?.[1]?.image_url?.url ?? "", /^data:image\/png;base64,/);
+  const previousAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([new TextEncoder().encode('name,value\\nAlice,1\\n')], 'notes.csv', { type: 'text/csv' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 20_000);
+  const documentRequest = visionRequests.at(-1);
+  const documentMessage = documentRequest?.messages?.findLast((message) => typeof message.content === "string" && message.content.includes("Alice"));
+  assert.equal(typeof documentMessage?.content, "string");
+  assert.ok(documentMessage?.content.includes("Alice"), "ordinary documents should be converted to Markdown locally before sending");
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
+  const previousPdfAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    const bytes = Uint8Array.from(atob('${scannedPdfBase64}'), (value) => value.charCodeAt(0));
+    transfer.items.add(new File([bytes], 'scanned.pdf', { type: 'application/pdf' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousPdfAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 30_000);
+  const scannedPdfRequest = visionRequests.at(-1);
+  const scannedPdfMessage = scannedPdfRequest?.messages?.find((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  assert.equal(scannedPdfMessage?.content?.[0]?.type, "text");
+  assert.equal(scannedPdfMessage?.content?.[1]?.type, "image_url");
+  await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-rich';
     document.querySelector('#connection-form').requestSubmit();
   })()`);
@@ -533,10 +649,10 @@ try {
   await page.evaluate("document.querySelector('.message.assistant:last-of-type .copy-message-button').click()");
   await waitFor(page, "document.querySelector('.message.assistant:last-of-type .copy-message-button')?.textContent === 'Copied'");
   assert.ok((await page.evaluate("window.__copiedCode.at(-1)")) .includes('# Rich response'), "the assistant message should have a copy action");
-  await page.evaluate(`document.querySelector('.message.user[data-message-index="2"] .copy-message-button').click()`);
-  await waitFor(page, `document.querySelector('.message.user[data-message-index="2"] .copy-message-button')?.textContent === 'Copied'`);
+  await page.evaluate(`(() => { const message = Array.from(document.querySelectorAll('.message.user')).find((item) => item.querySelector('.message-body')?.textContent.includes('User rich')); message?.querySelector('.copy-message-button')?.click(); })()`);
+  await waitFor(page, `Array.from(document.querySelectorAll('.message.user')).find((item) => item.querySelector('.message-body')?.textContent.includes('User rich'))?.querySelector('.copy-message-button')?.textContent === 'Copied'`);
   assert.ok((await page.evaluate("window.__copiedCode.at(-1)")) .includes('# User rich'), "the user message should have a copy action");
-  await page.evaluate(`document.querySelector('.message.user[data-message-index="2"] .edit-message-button').click()`);
+  await page.evaluate(`(() => { const message = Array.from(document.querySelectorAll('.message.user')).find((item) => item.querySelector('.message-body')?.textContent.includes('User rich')); message?.querySelector('.edit-message-button')?.click(); })()`);
   await waitFor(page, "document.querySelector('.message-edit textarea') !== null");
   const editorFocus = await page.evaluate(`(() => {
     const editor = document.querySelector('.message-edit textarea');

@@ -160,6 +160,9 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .connection-form { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 0; }
 .connection-form .field:first-child, .connection-form .connection-note, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1 / -1; }
 .connection-form .thinking-level-field { grid-column: 1 / -1; }
+.vision-setting { display: grid; grid-column: 1 / -1; gap: 4px; }
+.checkbox-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }
+.checkbox-label input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
 .field { display: grid; gap: 4px; min-width: 0; }
 .field label { color: var(--muted); font-size: 11px; font-weight: 700; }
 .field input, .field select, .composer textarea {
@@ -246,6 +249,9 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .message-edit-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .message-body > :first-child { margin-top: 0; }
 .message-body > :last-child { margin-bottom: 0; }
+.message-attachments { display: flex; flex-wrap: wrap; gap: 5px; color: var(--muted); font-size: 11px; }
+.message.user .message-attachments { justify-content: flex-end; }
+.message-attachment-chip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--border); border-radius: 999px; padding: 4px 8px; background: var(--surface-raised); }
 .message-body p { margin: 0 0 12px; }
 .message-body h1, .message-body h2, .message-body h3 { margin: 18px 0 9px; line-height: 1.25; }
 .message-body h1 { font-size: 1.45em; }
@@ -290,8 +296,17 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .tool-group .tool-detail { width: 100%; }
 
 .composer-wrap { flex-shrink: 0; padding: 0 clamp(18px, 4vw, 48px) 22px; background: var(--bg); }
-.composer { position: relative; display: grid; gap: 0; border-radius: 14px; }
+.composer { position: relative; display: grid; gap: 5px; border-radius: 14px; }
 .composer:focus-within { box-shadow: none; }
+.attachment-bar { display: flex; align-items: center; min-height: 30px; gap: 7px; }
+.attachment-button { width: 30px; min-width: 30px; min-height: 30px; height: 30px; padding: 0; border-radius: 999px; font-size: 20px; line-height: 1; }
+.attachment-list { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.attachment-chip { display: inline-flex; align-items: center; max-width: min(100%, 300px); gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 7px; background: var(--surface-raised); }
+.attachment-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-chip-remove { display: grid; width: 18px; height: 18px; place-items: center; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; }
+.attachment-chip-remove:hover { background: var(--surface-soft); color: var(--text); }
+.attachment-status { color: var(--muted); }
+.composer-input-row { position: relative; min-width: 0; }
 .composer textarea { min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; padding: 10px 54px 10px 11px; line-height: 1.45; font-size: 15px; }
 .send-button { position: absolute; top: 50%; right: 7px; display: grid; width: 36px; min-width: 36px; height: 36px; min-height: 36px; place-items: center; padding: 0; border-radius: 999px; transform: translateY(-50%); }
 .send-button[hidden] { display: none; }

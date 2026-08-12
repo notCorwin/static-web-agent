@@ -40,6 +40,58 @@ await build({
   sourcemap: false,
 });
 await rename("dist/adapters/ai-sdk.bundle.js", "dist/adapters/ai-sdk.js");
+await build({
+  entryPoints: ["dist/app/attachment-engines.js"],
+  bundle: true,
+  format: "esm",
+  minify: true,
+  outfile: "dist/app/attachment-engines.bundle.js",
+  platform: "browser",
+  external: ["fs", "path"],
+  sourcemap: false,
+});
+await rename("dist/app/attachment-engines.bundle.js", "dist/app/attachment-engines.js");
+
+await mkdir("dist/vendor/anydoc", { recursive: true });
+await copyFile("node_modules/@firecrawl/anydoc-wasm/anydoc_wasm_bg.wasm", "dist/vendor/anydoc/anydoc_wasm_bg.wasm");
+await mkdir("dist/app/assets", { recursive: true });
+await copyFile(
+  "node_modules/@paddleocr/paddleocr-js/dist/assets/worker-entry-C9UNuyOJ.js",
+  "dist/app/assets/worker-entry-C9UNuyOJ.js",
+);
+await mkdir("dist/vendor/paddleocr/ort", { recursive: true });
+for (const file of [
+  "ort-wasm-simd-threaded.mjs",
+  "ort-wasm-simd-threaded.wasm",
+  "ort-wasm-simd-threaded.jsep.mjs",
+  "ort-wasm-simd-threaded.jsep.wasm",
+  "ort-wasm-simd-threaded.asyncify.mjs",
+  "ort-wasm-simd-threaded.asyncify.wasm",
+  "ort-wasm-simd-threaded.jspi.mjs",
+  "ort-wasm-simd-threaded.jspi.wasm",
+]) {
+  await copyFile(`node_modules/onnxruntime-web/dist/${file}`, `dist/vendor/paddleocr/ort/${file}`);
+}
+
+await mkdir("dist/vendor/paddleocr/models", { recursive: true });
+await mkdir("node_modules/.cache/static-web-agent", { recursive: true });
+const paddleModels = [
+  ["PP-OCRv5_mobile_det_onnx_infer.tar", "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_onnx_infer.tar"],
+  ["PP-OCRv5_mobile_rec_onnx_infer.tar", "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_onnx_infer.tar"],
+];
+for (const [file, url] of paddleModels) {
+  const cachePath = `node_modules/.cache/static-web-agent/${file}`;
+  let bytes;
+  try {
+    bytes = await readFile(cachePath);
+  } catch {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Could not download PaddleOCR model ${file}: HTTP ${response.status}`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+    await writeFile(cachePath, bytes);
+  }
+  await writeFile(`dist/vendor/paddleocr/models/${file}`, bytes);
+}
 const path = "dist/index.html";
 const html = await readFile(path, "utf8");
 const versionedHtml = html

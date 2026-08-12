@@ -8,6 +8,7 @@ import type {
   AgentRunResult,
   AssistantMessage,
   JsonValue,
+  ModelAttachment,
   ModelAdapter,
   ModelEvent,
   ModelMessage,
@@ -143,6 +144,11 @@ function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits):
     const record = message as Record<string, unknown>;
     if (!['system', 'user', 'assistant', 'tool'].includes(String(record.role))) throw new KernelError("INVALID_MESSAGES", "Model messages have an invalid role.");
     if (typeof record.content !== "string") throw new KernelError("INVALID_MESSAGES", "Every model message needs string content.");
+    if (record.role === "user" && record.attachmentIds !== undefined) {
+      if (!Array.isArray(record.attachmentIds) || record.attachmentIds.some((id) => typeof id !== "string" || id.length === 0)) {
+        throw new KernelError("INVALID_MESSAGES", "User attachment IDs must be non-empty strings.");
+      }
+    }
     if (record.content.length > limits.maxMessageChars) {
       throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `A model message may contain at most ${limits.maxMessageChars} characters.`);
     }
@@ -161,6 +167,34 @@ function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits):
     const serialized = JSON.stringify(messages) ?? "";
     if (serialized.length > limits.maxRequestChars) {
       throw new KernelError("REQUEST_LIMIT_EXCEEDED", `The model request exceeds the ${limits.maxRequestChars}-character limit.`);
+    }
+  }
+}
+
+function assertAttachments(attachments: readonly ModelAttachment[] | undefined, messages: readonly ModelMessage[]): void {
+  const byId = new Map<string, ModelAttachment>();
+  for (const attachment of attachments ?? []) {
+    if (
+      typeof attachment !== "object" ||
+      attachment === null ||
+      typeof attachment.id !== "string" ||
+      attachment.id.length === 0 ||
+      typeof attachment.name !== "string" ||
+      attachment.name.length === 0 ||
+      typeof attachment.mediaType !== "string" ||
+      !attachment.mediaType.startsWith("image/") ||
+      !(attachment.data instanceof Uint8Array) ||
+      attachment.data.byteLength === 0
+    ) {
+      throw new KernelError("INVALID_ATTACHMENTS", "Model attachments must contain non-empty image bytes.");
+    }
+    if (byId.has(attachment.id)) throw new KernelError("INVALID_ATTACHMENTS", `Duplicate model attachment ID “${attachment.id}”.`);
+    byId.set(attachment.id, attachment);
+  }
+  for (const message of messages) {
+    if (message.role !== "user" || message.attachmentIds === undefined) continue;
+    for (const id of message.attachmentIds) {
+      if (!byId.has(id)) throw new KernelError("INVALID_ATTACHMENTS", `User message references missing attachment “${id}”.`);
     }
   }
 }
@@ -279,6 +313,7 @@ export class Agent {
 
     try {
       assertMessages(request.messages, limits);
+      assertAttachments(request.attachments, request.messages);
       messages.push(...cloneMessages(request.messages));
     } catch (error) {
       return fail(errorInfo(error, "INVALID_MESSAGES"));
@@ -315,7 +350,12 @@ export class Agent {
       let timedOut = false;
       try {
         const consume = (async () => {
-          const iterable = this.model.stream({ messages: cloneMessages(messages), tools: descriptors, signal: modelController.signal });
+          const iterable = this.model.stream({
+            messages: cloneMessages(messages),
+            ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
+            tools: descriptors,
+            signal: modelController.signal,
+          });
           const currentIterator = iterable[Symbol.asyncIterator]();
           iterator = currentIterator;
           try {

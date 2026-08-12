@@ -22,5 +22,11 @@ test("the production build emits a cache-busted release manifest and module grap
   assert.match(main, new RegExp(`from "\\./app/app\\.js\\?v=${version}"`));
   await access(join(dist, "vendor/rendering-runtime.js"));
   await access(join(dist, "vendor/katex/katex.min.css"));
+  await access(join(dist, "app/attachment-engines.js"));
+  await access(join(dist, "app/assets/worker-entry-C9UNuyOJ.js"));
+  await access(join(dist, "vendor/anydoc/anydoc_wasm_bg.wasm"));
+  await access(join(dist, "vendor/paddleocr/models/PP-OCRv5_mobile_det_onnx_infer.tar"));
+  await access(join(dist, "vendor/paddleocr/models/PP-OCRv5_mobile_rec_onnx_infer.tar"));
+  await access(join(dist, "vendor/paddleocr/ort/ort-wasm-simd-threaded.jsep.wasm"));
   await assert.rejects(access(join(dist, "plugins/local-model.js")));
 });

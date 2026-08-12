@@ -7,6 +7,7 @@ export interface RemoteModelPluginOptions {
   readonly endpoint: string;
   readonly model: string;
   readonly apiKey?: string;
+  readonly supportsVision?: boolean;
   readonly reasoning?: ReasoningLevel;
 }
 
@@ -31,6 +32,7 @@ export function createRemoteModelPlugin(options: RemoteModelPluginOptions): Plug
         id: adapterId,
         endpoint: options.endpoint,
         model: options.model,
+        ...(options.supportsVision === undefined ? {} : { supportsVision: options.supportsVision }),
         ...(options.reasoning === undefined ? {} : { reasoning: options.reasoning }),
         fetcher: async (input, init) => (await context.capabilities.get<NetworkCapability>("network")).fetch(input, init),
         ...(options.apiKey === undefined ? {} : { apiKey: options.apiKey }),

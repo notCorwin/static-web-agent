@@ -1,4 +1,4 @@
-import type { ModelMessage, ToolCallDelta } from "../core/types.js";
+import type { ModelAttachment, ModelMessage, ToolCallDelta } from "../core/types.js";
 import { bindCopyButton, renderRichContent } from "./rich-content.js";
 
 export type AppElements = Record<string, HTMLElement>;
@@ -55,6 +55,13 @@ export function renderShell(root: HTMLElement): AppElements {
                 </select>
                 <p class="field-help" id="thinking-level-help">Controls how much reasoning the model is asked to use. Providers may ignore unsupported levels.</p>
               </div>
+              <div class="vision-setting">
+                <label class="checkbox-label" for="model-vision">
+                  <input id="model-vision" name="supportsVision" type="checkbox" />
+                  <span>Model supports image input</span>
+                </label>
+                <p class="field-help">When enabled, images and scanned PDF pages are sent directly to the model. Otherwise they use local PaddleOCR.</p>
+              </div>
               <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
               <p class="credential-status" id="credential-status" role="status" aria-live="polite">The model name is the password-manager username; the API key is the password; endpoint is saved locally.</p>
               <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -74,8 +81,15 @@ export function renderShell(root: HTMLElement): AppElements {
         <div class="composer-wrap">
           <form class="composer" id="composer-form">
             <label class="sr-only" for="message-input">Message the agent</label>
-            <textarea id="message-input" name="message" rows="1" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
-            <button class="primary-button send-button" id="send-button" type="submit" aria-label="Stop generation" hidden><span class="button-content"><span class="stop-icon" aria-hidden="true"></span><span class="button-label sr-only">Stop</span></span></button>
+            <div class="attachment-bar" id="attachment-bar">
+              <button class="icon-button attachment-button" id="attachment-button" type="button" aria-label="Attach files" title="Attach files">＋</button>
+              <input id="attachment-input" type="file" accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.epub,.ppt,.pptx,.xls,.xlsx,.csv,.txt" multiple hidden />
+              <div class="attachment-list" id="attachment-list" aria-live="polite"></div>
+            </div>
+            <div class="composer-input-row">
+              <textarea id="message-input" name="message" rows="1" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
+              <button class="primary-button send-button" id="send-button" type="submit" aria-label="Stop generation" hidden><span class="button-content"><span class="stop-icon" aria-hidden="true"></span><span class="button-label sr-only">Stop</span></span></button>
+            </div>
             <p class="status-message sr-only" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </form>
         </div>
@@ -87,7 +101,12 @@ export function renderShell(root: HTMLElement): AppElements {
   return elements;
 }
 
-export function messageElement(message: ModelMessage, pending = false, messageIndex?: number): HTMLElement | null {
+function attachmentNamesForMessage(message: ModelMessage, attachmentNames: ReadonlyMap<string, ModelAttachment> | undefined): readonly string[] {
+  if (message.role !== "user" || message.attachmentIds === undefined || attachmentNames === undefined) return [];
+  return message.attachmentIds.map((id) => attachmentNames.get(id)?.name ?? id);
+}
+
+export function messageElement(message: ModelMessage, pending = false, messageIndex?: number, attachmentNames?: ReadonlyMap<string, ModelAttachment>): HTMLElement | null {
   if (message.role === "tool") {
     const details = document.createElement("details");
     details.className = `tool-detail${pending ? " pending" : ""}`;
@@ -118,6 +137,19 @@ export function messageElement(message: ModelMessage, pending = false, messageIn
     else if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
     else body.textContent = message.content;
     article.append(body);
+  }
+  const names = attachmentNamesForMessage(message, attachmentNames);
+  if (names.length > 0) {
+    const attachments = document.createElement("div");
+    attachments.className = "message-attachments";
+    for (const name of names) {
+      const chip = document.createElement("span");
+      chip.className = "message-attachment-chip";
+      chip.textContent = name;
+      chip.title = name;
+      attachments.append(chip);
+    }
+    article.append(attachments);
   }
   if ((message.role === "assistant" || message.role === "user") && !pending) {
     const actions = document.createElement("div");
@@ -225,7 +257,7 @@ export function updateToolGroupElement(details: HTMLDetailsElement, items: reado
   }
 }
 
-export function messageElements(messages: readonly ModelMessage[]): HTMLElement[] {
+export function messageElements(messages: readonly ModelMessage[], attachmentNames?: ReadonlyMap<string, ModelAttachment>): HTMLElement[] {
   const result: HTMLElement[] = [];
   let toolItems: HTMLElement[] = [];
   const flushTools = (): void => {
@@ -233,7 +265,7 @@ export function messageElements(messages: readonly ModelMessage[]): HTMLElement[
     toolItems = [];
   };
   messages.forEach((message, index) => {
-    const element = messageElement(message, false, index);
+    const element = messageElement(message, false, index, attachmentNames);
     if (element === null) return;
     if (message.role === "tool") toolItems.push(element);
     else {

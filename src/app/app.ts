@@ -10,9 +10,10 @@ import { createBrowserApiPlugin } from "../plugins/browser-api.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
+import { createPendingAttachment, disposeAttachmentEngines, processAttachmentFiles, type AttachmentProgress, type PendingAttachment, type PreparedAttachments } from "./attachments.js";
 import { DEFAULT_THINKING_LEVEL, isConnectionSettings, loadConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
 import { messageElement, messageElements, renderShell, streamingToolElement, textElement, thinkingElement, toolGroupElement, updateStreamingToolElement, updateThinkingElement, updateToolGroupElement, type AppElements } from "./view.js";
-import type { AgentEvent, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult } from "../core/types.js";
+import type { AgentEvent, ModelAttachment, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult, UserMessage } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/ai-sdk.js";
 import type { StateStore } from "../core/types.js";
 
@@ -45,6 +46,11 @@ type LiveToolEntry =
 type PendingStreamSegment =
   | { readonly key: string; readonly kind: "text" | "thinking"; readonly text: string }
   | { readonly key: string; readonly kind: "tools"; readonly toolKeys: readonly string[] };
+
+interface VisionRetry {
+  readonly content: string;
+  readonly files: readonly PendingAttachment[];
+}
 
 function browserEndpoint(value: unknown): string {
   if (typeof value !== "string") return "";
@@ -109,6 +115,10 @@ export class AgentApp {
   private renderedConnectionEditing = false;
   private connectionEditing = false;
   private autoConnectStarted = false;
+  private pendingAttachments: readonly PendingAttachment[] = [];
+  private readonly modelAttachments = new Map<string, ModelAttachment>();
+  private visionRetry: VisionRetry | undefined;
+  private attachmentProgress: AttachmentProgress | undefined;
   private readonly elements: AppElements;
 
   constructor(root: HTMLElement, options: AgentAppOptions = {}) {
@@ -177,6 +187,7 @@ export class AgentApp {
 
   async stop(): Promise<void> {
     this.runController?.abort();
+    await disposeAttachmentEngines();
     this.chatObserver?.disconnect();
     this.chatObserver = undefined;
     this.chatScrollScheduled = false;
@@ -202,6 +213,10 @@ export class AgentApp {
     if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
     for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
     this.agent = undefined;
+    this.pendingAttachments = [];
+    this.modelAttachments.clear();
+    this.visionRetry = undefined;
+    this.attachmentProgress = undefined;
     this.connectionEditing = false;
     this.autoConnectStarted = false;
     this.ready = false;
@@ -228,6 +243,26 @@ export class AgentApp {
         messageInput.dispatchEvent(new Event("input", { bubbles: true }));
       } else if (this.busy) this.runController?.abort();
       else void this.sendMessage();
+    });
+    this.elements["attachment-button"]?.addEventListener("click", () => {
+      if (this.busy) return;
+      (this.elements["attachment-input"] as HTMLInputElement | undefined)?.click();
+    });
+    this.elements["attachment-input"]?.addEventListener("change", (event) => {
+      const input = event.currentTarget as HTMLInputElement;
+      this.queueAttachments(input.files === null ? [] : [...input.files]);
+      input.value = "";
+    });
+    this.elements["attachment-list"]?.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const remove = target.closest<HTMLButtonElement>("button[data-attachment-id]");
+      if (remove !== null) {
+        this.removeAttachment(remove.dataset.attachmentId ?? "");
+        return;
+      }
+      const retry = target.closest<HTMLButtonElement>("button[data-action=vision-fallback]");
+      if (retry !== null) void this.retryWithLocalOcr();
     });
     const chat = this.elements["chat-log"];
     chat?.addEventListener("scroll", () => this.scheduleChatFollowState(), { passive: true });
@@ -298,10 +333,12 @@ export class AgentApp {
     const model = this.elements["model-name"] as HTMLInputElement | undefined;
     const apiKey = this.elements["model-key"] as HTMLInputElement | undefined;
     const thinkingLevel = this.elements["thinking-level"] as HTMLSelectElement | undefined;
+    const supportsVision = this.elements["model-vision"] as HTMLInputElement | undefined;
     if (endpoint !== undefined) endpoint.value = settings.endpoint;
     if (model !== undefined) model.value = settings.model;
     if (apiKey !== undefined) apiKey.value = settings.apiKey;
     if (thinkingLevel !== undefined) thinkingLevel.value = settings.thinkingLevel ?? DEFAULT_THINKING_LEVEL;
+    if (supportsVision !== undefined) supportsVision.checked = settings.supportsVision === true;
   }
 
   private clearFieldError(fieldId: string): void {
@@ -328,6 +365,7 @@ export class AgentApp {
     const model = String(data.get("model") ?? "").trim();
     const apiKey = String(data.get("apiKey") ?? "");
     const requestedThinkingLevel = String(data.get("thinkingLevel") ?? DEFAULT_THINKING_LEVEL);
+    const supportsVision = data.get("supportsVision") === "on";
     const thinkingLevel = THINKING_LEVELS.includes(requestedThinkingLevel as typeof THINKING_LEVELS[number])
       ? requestedThinkingLevel as typeof THINKING_LEVELS[number]
       : DEFAULT_THINKING_LEVEL;
@@ -353,7 +391,7 @@ export class AgentApp {
       this.notify("Check the highlighted connection fields.", "error");
       return undefined;
     }
-    return { endpoint, model, apiKey, thinkingLevel };
+    return { endpoint, model, apiKey, thinkingLevel, supportsVision };
   }
 
   private confirmDraft(): boolean {
@@ -362,7 +400,100 @@ export class AgentApp {
     return window.confirm("Discard this unsent draft?");
   }
 
-  private async sendMessage(): Promise<void> {
+  private visionEnabled(): boolean {
+    return (this.elements["model-vision"] as HTMLInputElement | undefined)?.checked === true;
+  }
+
+  private queueAttachments(files: readonly File[]): void {
+    if (files.length === 0) return;
+    this.visionRetry = undefined;
+    this.pendingAttachments = [...this.pendingAttachments, ...files.map((file) => createPendingAttachment(file))];
+    this.renderAttachmentList();
+  }
+
+  private removeAttachment(id: string): void {
+    if (this.busy || id.length === 0) return;
+    this.pendingAttachments = this.pendingAttachments.filter((attachment) => attachment.id !== id);
+    this.renderAttachmentList();
+  }
+
+  private attachmentProgressLabel(progress: AttachmentProgress): string {
+    const phase = progress.phase === "reading"
+      ? "Reading"
+      : progress.phase === "document"
+        ? "Parsing document"
+        : progress.phase === "rendering"
+          ? "Rendering PDF"
+          : progress.phase === "ocr"
+            ? "Running local OCR"
+            : "Ready";
+    return `${phase}${progress.detail === undefined ? "" : ` · ${progress.detail}`}`;
+  }
+
+  private renderAttachmentList(): void {
+    const list = this.elements["attachment-list"];
+    if (list === undefined) return;
+    list.replaceChildren();
+    for (const attachment of this.pendingAttachments) {
+      const chip = document.createElement("span");
+      chip.className = "attachment-chip";
+      const label = document.createElement("span");
+      label.className = "attachment-chip-label";
+      label.textContent = attachment.name;
+      label.title = attachment.name;
+      chip.append(label);
+      if (!this.busy) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "attachment-chip-remove";
+        remove.dataset.attachmentId = attachment.id;
+        remove.setAttribute("aria-label", `Remove ${attachment.name}`);
+        remove.title = "Remove attachment";
+        remove.textContent = "×";
+        chip.append(remove);
+      }
+      list.append(chip);
+    }
+    if (this.attachmentProgress !== undefined) {
+      const status = document.createElement("span");
+      status.className = "attachment-status";
+      status.textContent = this.attachmentProgressLabel(this.attachmentProgress);
+      list.append(status);
+    }
+    if (this.visionRetry !== undefined && !this.busy) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "secondary-button attachment-fallback-button";
+      retry.dataset.action = "vision-fallback";
+      retry.textContent = "改用本地 OCR 并重发";
+      list.append(retry);
+    }
+  }
+
+  private collectModelAttachments(): ModelAttachment[] {
+    const ids = new Set<string>();
+    for (const message of this.chat.messages) {
+      if (message.role !== "user") continue;
+      for (const id of message.attachmentIds ?? []) ids.add(id);
+    }
+    return [...ids].flatMap((id) => {
+      const attachment = this.modelAttachments.get(id);
+      return attachment === undefined ? [] : [attachment];
+    });
+  }
+
+  private async retryWithLocalOcr(): Promise<void> {
+    if (this.busy || this.visionRetry === undefined) return;
+    const retry = this.visionRetry;
+    this.visionRetry = undefined;
+    this.pendingAttachments = [...retry.files];
+    const input = this.elements["message-input"] as HTMLTextAreaElement;
+    input.value = retry.content;
+    this.resizeMessageInput();
+    await this.sendMessage(true);
+  }
+
+  private async sendMessage(forceLocalOcr = false): Promise<void> {
     if (!this.ready) {
       this.notify("Starting chat…");
       return;
@@ -375,7 +506,8 @@ export class AgentApp {
     }
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     const rawContent = input.value.trim();
-    if (!rawContent) {
+    const selectedAttachments = [...this.pendingAttachments];
+    if (!rawContent && selectedAttachments.length === 0) {
       this.notify("Write a message before sending.", "error");
       input.focus();
       return;
@@ -385,15 +517,48 @@ export class AgentApp {
     this.followChat = true;
     this.chatRenderScheduled = false;
     this.setBusy(true);
+    let prepared: PreparedAttachments | undefined;
     try {
-      const processed = await this.plugins.process({ role: "user", content: rawContent }, controller.signal);
+      if (selectedAttachments.length > 0) {
+        prepared = await processAttachmentFiles(
+          selectedAttachments,
+          forceLocalOcr ? false : this.visionEnabled(),
+          controller.signal,
+          {},
+          (progress) => {
+            this.attachmentProgress = progress;
+            this.renderAttachmentList();
+          },
+        );
+        this.attachmentProgress = undefined;
+        for (const attachment of prepared.attachments) this.modelAttachments.set(attachment.id, attachment);
+      }
+      const prompt = [
+        rawContent,
+        prepared?.content,
+      ].filter((value): value is string => value !== undefined && value.trim().length > 0).join("\n\n");
+      const processed = await this.plugins.process({
+        role: "user",
+        content: prompt || "Please analyze the attached files.",
+      }, controller.signal);
       if (!isMessageEnvelope(processed) || processed.role !== "user" || typeof processed.content !== "string") {
         throw new Error("A message processor must return a user message.");
       }
       const content = processed.content.trim();
       if (!content) throw new Error("The processed message is empty.");
-      this.chat.messages = normalizeMessages([...this.chat.messages, { role: "user", content }]);
+      const processedAttachmentIds = Array.isArray(processed.attachmentIds)
+        ? processed.attachmentIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [];
+      const attachmentIds = [...new Set([...processedAttachmentIds, ...(prepared?.attachmentIds ?? [])])];
+      const userMessage: UserMessage = {
+        role: "user",
+        content,
+        ...(attachmentIds.length === 0 ? {} : { attachmentIds }),
+      };
+      this.chat.messages = normalizeMessages([...this.chat.messages, userMessage]);
       input.value = "";
+      this.pendingAttachments = [];
+      this.visionRetry = undefined;
       this.resizeMessageInput();
       this.pendingToolCalls = [];
       this.liveToolEntries = [];
@@ -401,8 +566,10 @@ export class AgentApp {
       this.pendingStream = [];
       this.pendingStreamSequence = 0;
       this.renderAll();
+      const modelAttachments = this.collectModelAttachments();
       const result = await agent.run({
         messages: this.chat.messages,
+        ...(modelAttachments.length === 0 ? {} : { attachments: modelAttachments }),
         signal: controller.signal,
         onEvent: (event) => this.handleAgentEvent(event),
       });
@@ -410,10 +577,25 @@ export class AgentApp {
       if (result.status === "completed") this.notify("Response complete.", "success");
       else if (result.status === "cancelled") this.notify("Run cancelled.", "error");
       else if (result.status === "max-turns") this.notify("Run stopped at the turn limit.", "error");
-      else this.notify(result.error?.message ?? "The model could not complete this run.", "error");
+      else {
+        if (prepared?.usedVision) {
+          this.visionRetry = { content: rawContent, files: selectedAttachments };
+          this.pendingAttachments = [...selectedAttachments];
+          this.notify("The vision request failed. You can retry once with local OCR.", "error");
+        } else {
+          this.notify(result.error?.message ?? "The model could not complete this run.", "error");
+        }
+      }
     } catch (error) {
-      this.notify(error instanceof Error ? error.message : "The run failed.", "error");
+      if (prepared?.usedVision && !controller.signal.aborted) {
+        this.visionRetry = { content: rawContent, files: selectedAttachments };
+        this.pendingAttachments = [...selectedAttachments];
+        this.notify("The vision request failed. You can retry once with local OCR.", "error");
+      } else {
+        this.notify(error instanceof Error ? error.message : "The run failed.", "error");
+      }
     } finally {
+      this.attachmentProgress = undefined;
       this.pendingToolCalls = [];
       this.liveToolEntries = [];
       this.pendingStream = [];
@@ -505,8 +687,11 @@ export class AgentApp {
     const label = send.querySelector<HTMLElement>(".button-label");
     if (label !== null) label.textContent = value ? "Stop" : "Send";
     input.disabled = value;
+    const attachmentButton = this.elements["attachment-button"] as HTMLButtonElement | undefined;
+    if (attachmentButton !== undefined) attachmentButton.disabled = value;
     const spinner = send.querySelector<HTMLElement>(".spinner");
     if (spinner !== null) spinner.hidden = true;
+    this.renderAttachmentList();
   }
 
   private element<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -518,6 +703,7 @@ export class AgentApp {
   private renderAll(): void {
     this.renderChat();
     this.renderExtensions();
+    this.renderAttachmentList();
   }
 
   private scheduleChatRender(): void {
@@ -564,7 +750,7 @@ export class AgentApp {
           conversation.append(welcome);
         }
       } else {
-        conversation.append(...messageElements(this.chat.messages));
+        conversation.append(...messageElements(this.chat.messages, this.modelAttachments));
         this.appendPendingMessages(conversation);
       }
       this.renderedMessages = this.chat.messages;
@@ -940,6 +1126,7 @@ export class AgentApp {
         endpoint: values.endpoint,
         model: values.model,
         apiKey: values.apiKey,
+        supportsVision: values.supportsVision,
         reasoning: values.thinkingLevel,
       }));
       const adapter = this.plugins.modelAdapter("remote-model");
@@ -975,6 +1162,7 @@ export class AgentApp {
         model: credentialSettings.model || savedSettings?.model || "",
         apiKey: credentialSettings.apiKey || savedSettings?.apiKey || "",
         thinkingLevel: savedSettings?.thinkingLevel ?? DEFAULT_THINKING_LEVEL,
+        supportsVision: savedSettings?.supportsVision ?? false,
       };
     if (settings === undefined) return;
     if (!settings.endpoint || !settings.model) return;
