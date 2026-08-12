@@ -316,10 +316,21 @@ try {
     connectionCardVisible: document.querySelector('#connection-card')?.hidden === false,
     noComposerRows: document.querySelector('.composer-hint') === null && getComputedStyle(document.querySelector('#run-status')).position === 'absolute',
     noSeparateCancelButton: document.querySelector('#cancel-button') === null,
+    sendButtonHidden: document.querySelector('#send-button')?.hidden,
     sendButtonLabel: document.querySelector('#send-button .button-label')?.textContent,
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonLabel: "Send", compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonHidden: true, sendButtonLabel: "Stop", compactComposer: true });
+  await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+  await waitFor(page, "getComputedStyle(document.documentElement).colorScheme === 'dark'");
+  const darkTheme = await page.evaluate(`(() => ({
+    colorScheme: getComputedStyle(document.documentElement).colorScheme,
+    background: getComputedStyle(document.body).backgroundColor,
+    text: getComputedStyle(document.body).color,
+  }))()`);
+  assert.deepEqual(darkTheme, { colorScheme: "dark", background: "rgb(17, 17, 17)", text: "rgb(244, 244, 244)" });
+  await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+  await waitFor(page, "getComputedStyle(document.documentElement).colorScheme === 'light'");
   assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
   const composerLayout = await page.evaluate(`(() => {
     const shell = document.querySelector('.app-shell').getBoundingClientRect();
@@ -385,12 +396,6 @@ try {
     { selector: "#model-key", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
     { selector: "#thinking-level", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
   ]);
-  const sendAlignment = await page.evaluate(`(() => {
-    const input = document.querySelector('#message-input').getBoundingClientRect();
-    const send = document.querySelector('#send-button').getBoundingClientRect();
-    return { inputCenter: input.top + input.height / 2, sendCenter: send.top + send.height / 2 };
-  })()`);
-  assert.ok(Math.abs(sendAlignment.inputCenter - sendAlignment.sendCenter) <= 1, "the send button should be vertically aligned with the composer");
   const composerFocus = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.focus();
@@ -588,10 +593,17 @@ try {
     input.value = 'cancel request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('#send-button')?.getAttribute('aria-label') === 'Stop generation'");
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('#send-button')?.hidden === false && document.querySelector('#send-button')?.getAttribute('aria-label') === 'Stop generation'");
+  const stopButton = await page.evaluate(`(() => {
+    const button = document.querySelector('#send-button');
+    const style = getComputedStyle(button);
+    const icon = button.querySelector('.stop-icon');
+    return { width: style.width, height: style.height, borderRadius: style.borderRadius, iconWidth: getComputedStyle(icon).width, iconHeight: getComputedStyle(icon).height };
+  })()`);
+  assert.deepEqual(stopButton, { width: "36px", height: "36px", borderRadius: "999px", iconWidth: "11px", iconHeight: "11px" });
   await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
-  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Send'");
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Send' && document.querySelector('#send-button')?.hidden === true");
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-scroll';

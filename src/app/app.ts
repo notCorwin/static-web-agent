@@ -498,6 +498,7 @@ export class AgentApp {
     const send = this.elements["send-button"] as HTMLButtonElement;
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     send.disabled = false;
+    send.hidden = !value;
     send.setAttribute("aria-busy", String(value));
     send.setAttribute("aria-label", value ? "Stop generation" : "Send message");
     send.classList.toggle("stop-button", value);
