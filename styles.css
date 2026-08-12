@@ -6,6 +6,7 @@
   --surface-soft: #e9e9e9;
   --border: #d0d0d0;
   --border-strong: #a8a8a8;
+  --control-focus: #777777;
   --text: #111111;
   --muted: #666666;
   --faint: #888888;
@@ -26,14 +27,20 @@
 html { min-width: 320px; color-scheme: light; background: var(--bg); }
 body { margin: 0; min-height: 100vh; padding-bottom: env(safe-area-inset-bottom); background: var(--bg); }
 h1, h2, h3 { scroll-margin-top: 24px; }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 input, textarea { font-size: 16px; }
 button, a, summary { -webkit-tap-highlight-color: rgb(0 0 0 / 10%); touch-action: manipulation; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .58; }
 
-:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-.connection-card:focus-within { border-color: rgb(0 0 0 / 35%); }
+:focus-visible:not(input):not(textarea):not(select) { outline: 3px solid var(--accent); outline-offset: 3px; }
+:where(input, textarea, select):focus,
+:where(input, textarea, select):focus-visible {
+  outline: none !important;
+  outline-width: 0 !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
+}
 .field:focus-within label { color: var(--accent-strong); }
 
 .skip-link {
@@ -116,8 +123,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 }
 .field input, .field select { min-height: 36px; padding: 7px 9px; }
 .field input::placeholder, .composer textarea::placeholder { color: var(--faint); }
-.field input:hover, .field input:focus, .field select:hover, .field select:focus, .composer textarea:focus { border-color: var(--accent); }
-.field input:focus, .field input:focus-visible, .field select:focus, .field select:focus-visible { outline: 0 !important; outline-offset: 0; box-shadow: none; }
+.field input:hover, .field input:focus, .field select:hover, .field select:focus, .composer textarea:hover, .composer textarea:focus, .message-edit textarea:hover, .message-edit textarea:focus { border-color: var(--control-focus); }
 .field input[aria-invalid="true"] { border-color: var(--danger); }
 .faint { color: var(--faint); font-weight: 400; }
 .field-error, .field-help { min-height: 16px; margin: 0; font-size: 11px; line-height: 1.35; }
@@ -224,7 +230,6 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .composer { position: relative; display: grid; gap: 0; border-radius: 14px; }
 .composer:focus-within { box-shadow: none; }
 .composer textarea { min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; padding: 10px 78px 10px 11px; line-height: 1.45; font-size: 15px; }
-.composer textarea:focus, .composer textarea:focus-visible { outline: 0 !important; outline-offset: 0; box-shadow: none; }
 .send-button { position: absolute; top: 50%; right: 7px; min-width: 62px; transform: translateY(-50%); }
 .send-button:active { transform: translateY(calc(-50% + 1px)); }
 .stop-button { background: var(--danger); }

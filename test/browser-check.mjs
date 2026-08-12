@@ -356,16 +356,17 @@ try {
   assert.ok(connectionLayout.thinkingLabel.includes("Thinking level"));
   assert.ok(connectionLayout.thinkingHelp.includes("reasoning"));
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
-  const connectionFocus = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key'].map((selector) => {
+  const connectionFocus = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key', '#thinking-level'].map((selector) => {
     const input = document.querySelector(selector);
     input.focus();
     const style = getComputedStyle(input);
-    return { selector, outlineWidth: style.outlineWidth, boxShadow: style.boxShadow };
+    return { selector, outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, boxShadow: style.boxShadow };
   }))()`);
   assert.deepEqual(connectionFocus, [
-    { selector: "#model-endpoint", outlineWidth: "0px", boxShadow: "none" },
-    { selector: "#model-name", outlineWidth: "0px", boxShadow: "none" },
-    { selector: "#model-key", outlineWidth: "0px", boxShadow: "none" },
+    { selector: "#model-endpoint", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
+    { selector: "#model-name", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
+    { selector: "#model-key", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
+    { selector: "#thinking-level", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
   ]);
   const sendAlignment = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input').getBoundingClientRect();
@@ -514,6 +515,13 @@ try {
   assert.ok((await page.evaluate("window.__copiedCode.at(-1)")) .includes('# User rich'), "the user message should have a copy action");
   await page.evaluate(`document.querySelector('.message.user[data-message-index="2"] .edit-message-button').click()`);
   await waitFor(page, "document.querySelector('.message-edit textarea') !== null");
+  const editorFocus = await page.evaluate(`(() => {
+    const editor = document.querySelector('.message-edit textarea');
+    editor.focus();
+    const style = getComputedStyle(editor);
+    return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, boxShadow: style.boxShadow };
+  })()`);
+  assert.deepEqual(editorFocus, { outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" });
   await page.evaluate(`(() => {
     const editor = document.querySelector('.message-edit textarea');
     editor.value = '# Edited user rich\\n\\nUser math: $b^2$';
