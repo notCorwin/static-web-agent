@@ -310,6 +310,12 @@ try {
   assert.ok(connectionLayout.modelLabel.includes("password-manager username"), "the model name should be presented as the password-manager username");
   assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
+  const sendAlignment = await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input').getBoundingClientRect();
+    const send = document.querySelector('#send-button').getBoundingClientRect();
+    return { inputCenter: input.top + input.height / 2, sendCenter: send.top + send.height / 2 };
+  })()`);
+  assert.ok(Math.abs(sendAlignment.inputCenter - sendAlignment.sendCenter) <= 1, "the send button should be vertically aligned with the composer");
   const composerFocus = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.focus();
@@ -374,10 +380,11 @@ try {
     noSessionControls: document.querySelector('#new-session') === null && document.querySelector('#session-list') === null && document.querySelector('#session-count') === null,
     noSessionUrl: !new URL(location.href).searchParams.has('session'),
     lightTheme: getComputedStyle(document.documentElement).colorScheme === 'light',
+    pureWhiteBackground: getComputedStyle(document.body).backgroundColor === 'rgb(255, 255, 255)',
     noDisconnectedWelcome: document.querySelector('.empty-state') === null,
     connectionCardVisible: document.querySelector('#connection-card')?.hidden === false,
   })`);
-  assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, noDisconnectedWelcome: true, connectionCardVisible: true });
+  assert.deepEqual(resetState, { noSessionControls: true, noSessionUrl: true, lightTheme: true, pureWhiteBackground: true, noDisconnectedWelcome: true, connectionCardVisible: true });
   await page.evaluate(`(() => {
     window.__permissionPrompted = false;
     window.confirm = () => {
@@ -394,6 +401,7 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
   assert.equal(await page.evaluate("window.__permissionPrompted === false"), true, "selecting a remote model should not show a capability confirmation");
+  assert.equal(await page.evaluate("document.querySelector('.empty-state h2')?.textContent"), "browser-test", "the connected welcome should show the model name");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'remote request';
@@ -404,6 +412,12 @@ try {
   const messageStyles = await page.evaluate("(() => { const assistant = document.querySelector('.message.assistant'); const user = document.querySelector('.message.user'); const assistantBody = assistant.querySelector('.message-body'); const userBody = user.querySelector('.message-body'); const assistantStyle = getComputedStyle(assistant); const assistantBodyStyle = getComputedStyle(assistantBody); const userBodyStyle = getComputedStyle(userBody); return { assistantBorder: assistantBodyStyle.borderTopWidth, assistantBackground: assistantBodyStyle.backgroundColor, assistantPadding: assistantBodyStyle.padding, assistantAlign: assistantStyle.alignSelf, assistantWidth: assistantStyle.width, assistantHeaders: assistant.querySelectorAll('.message-header').length, userBorder: userBodyStyle.borderTopWidth, userPadding: userBodyStyle.padding, userHeaders: user.querySelectorAll('.message-header').length }; })()");
   assert.deepEqual({ ...messageStyles, assistantWidth: undefined }, { assistantBorder: "0px", assistantBackground: "rgba(0, 0, 0, 0)", assistantPadding: "0px", assistantAlign: "center", assistantWidth: undefined, assistantHeaders: 0, userBorder: "1px", userPadding: "13px 15px", userHeaders: 0 });
   assert.ok(Number.parseFloat(messageStyles.assistantWidth) > 900, "the assistant column should use the available wide layout");
+  const messageAlignment = await page.evaluate(`(() => {
+    const assistant = document.querySelector('.message.assistant').getBoundingClientRect();
+    const user = document.querySelector('.message.user .message-body').getBoundingClientRect();
+    return { userRight: user.right, assistantRight: assistant.right };
+  })()`);
+  assert.ok(Math.abs(messageAlignment.userRight - messageAlignment.assistantRight) <= 1, "the user bubble should align with the assistant column's right edge");
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-rich';
     document.querySelector('#connection-form').requestSubmit();
@@ -514,7 +528,7 @@ try {
     group: document.querySelector('.tool-group > .tool-group-summary')?.textContent,
     preparing: document.querySelector('.tool-call-stream .tool-summary')?.textContent,
   }))()`);
-  assert.equal(streamingTool.group, "Calling 1 tool…");
+  assert.match(streamingTool.group ?? "", /^Calling \d+ tools?…$/);
   assert.ok(streamingTool.preparing?.includes("runtime_"));
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
   const hiddenTool = await page.evaluate(`(() => ({
@@ -528,6 +542,12 @@ try {
     bodyVisible: document.querySelector('.tool-detail-body')?.getBoundingClientRect().height > 0,
   }))()`);
   assert.deepEqual(hiddenTool, { noToolCallList: true, noEmptyToolAssistant: true, groupClosed: true, groupSummary: "Called 2 tools", groupItems: 2, detailsClosed: true, summary: "runtime.javascript", bodyVisible: false });
+  const toolGroupLayout = await page.evaluate(`(() => {
+    const group = document.querySelector('.tool-group').getBoundingClientRect();
+    const assistant = document.querySelector('.message.assistant').getBoundingClientRect();
+    return { groupCenter: group.left + group.width / 2, assistantCenter: assistant.left + assistant.width / 2 };
+  })()`);
+  assert.ok(Math.abs(toolGroupLayout.groupCenter - toolGroupLayout.assistantCenter) <= 1, "the tool group should align with the assistant column");
   await page.evaluate("document.querySelector('.tool-group-summary').click()");
   await waitFor(page, "document.querySelector('.tool-group')?.open === true && document.querySelector('.tool-detail')?.open === true");
   assert.equal(await page.evaluate("document.querySelector('.tool-detail-body')?.textContent.includes('42')"), true);

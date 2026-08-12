@@ -485,7 +485,8 @@ export class AgentApp {
           welcome.className = "empty-state";
           const icon = textElement("div", "✦", "empty-icon");
           icon.setAttribute("aria-hidden", "true");
-          welcome.append(icon, textElement("h2", "Welcome"), textElement("p", "Your cloud model is connected. Ask anything to begin."));
+          const modelName = (this.elements["model-name"] as HTMLInputElement | undefined)?.value.trim() || "Welcome";
+          welcome.append(icon, textElement("h2", modelName), textElement("p", "Your cloud model is connected. Ask anything to begin."));
           const change = document.createElement("button");
           change.className = "secondary-button";
           change.type = "button";
