@@ -2,7 +2,22 @@
   "name": "static-web-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "A browser-native, extensible agent runtime.",
+  "description": "A browser-native Agent Runtime Harness and reference workspace.",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./remote": {
+      "types": "./dist/remote.d.ts",
+      "import": "./dist/remote.js"
+    },
+    "./app": {
+      "types": "./dist/app-entry.d.ts",
+      "import": "./dist/app-entry.js"
+    }
+  },
   "type": "module",
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/build.mjs",

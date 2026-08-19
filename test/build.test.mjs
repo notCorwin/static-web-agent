@@ -19,7 +19,17 @@ test("the production build emits a cache-busted release manifest and module grap
   assert.match(html, new RegExp(`src="\\./main\\.js\\?v=${version}"`));
 
   const main = await readFile(join(dist, "main.js"), "utf8");
-  assert.match(main, new RegExp(`from "\\./app/app\\.js\\?v=${version}"`));
+  assert.match(main, new RegExp(`from "\\./app-entry\\.js\\?v=${version}"`));
+  const lightEntry = await readFile(join(dist, "index.js"), "utf8");
+  assert.doesNotMatch(lightEntry, /"\.\/app(?:-entry|\/)|"\.\/adapters\/ai-sdk|"\.\/plugins\/remote-model/);
+  assert.match(lightEntry, new RegExp(`from "\\./harness\\.js\\?v=${version}"`));
+  const harnessTypes = await readFile(join(dist, "harness.d.ts"), "utf8");
+  assert.match(harnessTypes, /createBrowserAgentHarness/);
+  for (const method of ["install", "uninstall", "selectModel", "clearModel", "run", "process", "mountUi", "snapshot", "subscribe", "dispose"]) {
+    assert.match(harnessTypes, new RegExp(`\\b${method}\\(`));
+  }
+  const license = await readFile(join(dist, "LICENSE"), "utf8");
+  assert.match(license, /Copyright \(c\) 2026 notCorwin/);
   await access(join(dist, "vendor/rendering-runtime.js"));
   await access(join(dist, "vendor/katex/katex.min.css"));
   await access(join(dist, "app/attachment-engines.js"));

@@ -16,7 +16,7 @@ async function javascriptFiles(directory) {
   return files;
 }
 
-for (const file of ["index.html", "styles.css", "README.md"]) await copyFile(file, `dist/${file}`);
+for (const file of ["index.html", "styles.css", "README.md", "LICENSE"]) await copyFile(file, `dist/${file}`);
 await mkdir("dist/vendor/katex", { recursive: true });
 await copyFile("node_modules/katex/dist/katex.min.css", "dist/vendor/katex/katex.min.css");
 await cp("node_modules/katex/dist/fonts", "dist/vendor/katex/fonts", { recursive: true });

@@ -925,7 +925,9 @@ try {
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {
-    const { Agent, AgentApp, BrowserPageRuntime, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, AiSdkAdapter, PluginManager, ToolRegistry, createBrowserApiPlugin } = await import('/dist/index.js');
+    const { Agent, BrowserPageRuntime, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, PluginManager, ToolRegistry, createBrowserApiPlugin } = await import('/dist/index.js');
+    const { AiSdkAdapter } = await import('/dist/remote.js');
+    const { AgentApp } = await import('/dist/app-entry.js');
     const runtime = new BrowserWorkerRuntime();
     const value = await runtime.execute('return input.value + 1', { value: 2 });
     const largeWorkerValue = await runtime.execute('return "x".repeat(70_000)', null);
@@ -1013,8 +1015,11 @@ try {
     const app = new AgentApp(appRoot, { plugins: [appPlugin], autoConnect: false });
     await app.start();
     const appExtension = appRoot.textContent.includes('app extension');
-    const defaultTools = app.tools.descriptors().map((descriptor) => descriptor.name);
-    const defaultPlugins = app.runtimeHandle !== undefined && app.storageHandle !== undefined && app.browserHandle !== undefined;
+    const appSnapshot = app.runtime?.snapshot();
+    const defaultTools = appSnapshot?.tools.map((descriptor) => descriptor.name) ?? [];
+    const defaultPlugins = appSnapshot?.manifests.some((manifest) => manifest.id === 'javascript-runtime')
+      && appSnapshot?.manifests.some((manifest) => manifest.id === 'local-storage')
+      && appSnapshot?.manifests.some((manifest) => manifest.id === 'browser-api');
     await app.stop();
     appRoot.remove();
 

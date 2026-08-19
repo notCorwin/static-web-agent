@@ -3,24 +3,25 @@ import assert from "node:assert/strict";
 import {
   Agent,
   CapabilityManager,
-  CHAT_LIMITS,
-  CONNECTION_SETTINGS_KEY,
-  DEFAULT_THINKING_LEVEL,
   MemoryStateStore,
-  AiSdkAdapter,
-  createPendingAttachment,
   PluginManager,
   PrefixedStateStore,
   ResilientStateStore,
   ToolRegistry,
   createBrowserStateStore,
-  createRemoteModelPlugin,
+  validate,
+} from "../dist/index.js";
+import { AiSdkAdapter, createRemoteModelPlugin } from "../dist/remote.js";
+import {
+  CHAT_LIMITS,
+  CONNECTION_SETTINGS_KEY,
+  DEFAULT_THINKING_LEVEL,
+  createPendingAttachment,
   loadConnectionSettings,
   normalizeMessages,
   processAttachmentFiles,
   saveConnectionSettings,
-  validate,
-} from "../dist/index.js";
+} from "../dist/app-entry.js";
 
 const noSignal = () => new AbortController().signal;
 

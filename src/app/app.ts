@@ -1,26 +1,13 @@
-import { Agent } from "../core/agent.js";
-import { CapabilityManager } from "../core/capabilities.js";
-import { BrowserPageRuntime } from "../core/page-runtime.js";
-import { PluginManager } from "../core/plugin-manager.js";
-import { BrowserWorkerRuntime } from "../core/runtime.js";
-import { createBrowserStateStore, PrefixedStateStore } from "../core/state.js";
-import { ToolRegistry } from "../core/tool-registry.js";
-import { createJavaScriptRuntimePlugin } from "../plugins/javascript-runtime.js";
-import { createBrowserApiPlugin } from "../plugins/browser-api.js";
+import { createBrowserAgentHarness, type BrowserAgentHarness, type BrowserAgentHarnessPluginHandle } from "../harness.js";
+import { createBrowserStateStore } from "../core/state.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
-import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { createPendingAttachment, disposeAttachmentEngines, processAttachmentFiles, type AttachmentProgress, type PendingAttachment, type PreparedAttachments } from "./attachments.js";
 import { DEFAULT_THINKING_LEVEL, isConnectionSettings, loadConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
 import { renderRichContent } from "./rich-content.js";
 import { messageElement, messageElements, renderShell, streamingToolElement, textElement, thinkingElement, toolGroupElement, updateStreamingToolElement, updateThinkingElement, updateToolGroupElement, type AppElements } from "./view.js";
-import type { AgentEvent, ModelAttachment, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult, UserMessage } from "../core/types.js";
-import type { BrowserFetcher } from "../adapters/ai-sdk.js";
+import type { AgentEvent, ModelAttachment, ModelMessage, Plugin, ToolCall, ToolCallDelta, ToolExecutionResult, UserMessage } from "../core/types.js";
 import type { StateStore } from "../core/types.js";
-
-interface NetworkCapability {
-  readonly fetch: BrowserFetcher;
-}
 
 interface BrowserCredentialManager {
   readonly get?: (options: { readonly password: true; readonly mediation: "silent" }) => Promise<unknown>;
@@ -81,19 +68,10 @@ export interface AgentAppOptions {
 export class AgentApp {
   private readonly root: HTMLElement;
   private readonly options: AgentAppOptions;
-  private readonly runtime = new BrowserWorkerRuntime();
-  private readonly pageRuntime = new BrowserPageRuntime();
   private chat: ChatState = createChatState();
   private store!: StateStore;
-  private capabilities!: CapabilityManager;
-  private tools!: ToolRegistry;
-  private plugins!: PluginManager;
-  private agent: Agent | undefined;
-  private remoteHandle: PluginHandle | undefined;
-  private runtimeHandle: PluginHandle | undefined;
-  private storageHandle: PluginHandle | undefined;
-  private browserHandle: PluginHandle | undefined;
-  private readonly extensionHandles: PluginHandle[] = [];
+  private harness: BrowserAgentHarness | undefined;
+  private remoteHandle: BrowserAgentHarnessPluginHandle | undefined;
   private uiCleanup: (() => void) | undefined;
   private ready = false;
   private busy = false;
@@ -112,7 +90,7 @@ export class AgentApp {
   private lastChatScrollTop = 0;
   private chatObserver: MutationObserver | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
-  private renderedAgent: Agent | undefined;
+  private renderedModelId: string | undefined;
   private renderedConnectionEditing = false;
   private connectionEditing = false;
   private autoConnectStarted = false;
@@ -128,6 +106,10 @@ export class AgentApp {
     this.elements = {};
   }
 
+  get runtime(): BrowserAgentHarness | undefined {
+    return this.harness;
+  }
+
   async start(): Promise<void> {
     if ("scrollRestoration" in window.history) window.history.scrollRestoration = "auto";
     Object.assign(this.elements, renderShell(this.root));
@@ -136,46 +118,15 @@ export class AgentApp {
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
     const savedSettings = await loadConnectionSettings(this.store);
     this.applyConnectionSettings(savedSettings);
-    this.capabilities = new CapabilityManager({ decide: () => true });
-    this.capabilities.register("runtime", { provide: () => this.runtime });
-    this.capabilities.register("network", {
-      provide: (): NetworkCapability => ({ fetch: globalThis.fetch.bind(globalThis) }),
+    this.harness = await createBrowserAgentHarness({
+      stateStore: this.store,
+      ...(this.options.plugins === undefined ? {} : { plugins: this.options.plugins }),
+      ...(this.options.initialModelId === undefined ? {} : { initialModelId: this.options.initialModelId }),
     });
-    this.capabilities.register("page", { provide: () => this.pageRuntime });
-    this.capabilities.register("storage", {
-      provide: ({ pluginId }): StorageCapability => {
-        const scoped = new PrefixedStateStore(this.store, `plugin:${pluginId}`);
-        return {
-          get: (key) => scoped.get(key),
-          set: (key, value) => scoped.set(key, value),
-          remove: (key) => scoped.remove(key),
-          keys: () => scoped.keys(),
-        };
-      },
-    });
-    this.tools = new ToolRegistry(this.capabilities);
-    this.plugins = new PluginManager(this.tools, this.capabilities);
-    try {
-      this.runtimeHandle = await this.plugins.install(createJavaScriptRuntimePlugin());
-      this.storageHandle = await this.plugins.install(createStoragePlugin());
-      this.browserHandle = await this.plugins.install(createBrowserApiPlugin());
-      for (const plugin of this.options.plugins ?? []) this.extensionHandles.push(await this.plugins.install(plugin));
-    } catch (error) {
-      if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
-      this.storageHandle = undefined;
-      if (this.browserHandle !== undefined) await this.browserHandle.uninstall();
-      this.browserHandle = undefined;
-      if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
-      this.runtimeHandle = undefined;
-      for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
-      throw error;
-    }
-    const model = this.options.initialModelId === undefined ? undefined : this.plugins.modelAdapter(this.options.initialModelId);
-    if (this.options.initialModelId !== undefined && model === undefined) throw new Error(`Model adapter “${this.options.initialModelId}” is not available.`);
-    if (model !== undefined) this.agent = new Agent(model, this.tools);
-    this.plugins.subscribe(() => {
+    this.harness.subscribe(() => {
       if (this.ready) {
         this.renderExtensions();
+        this.renderChat();
       }
     });
     this.normalizeUrl(false);
@@ -204,16 +155,13 @@ export class AgentApp {
     this.pendingStream = [];
     this.pendingStreamSequence = 0;
     this.renderedMessages = undefined;
-    this.renderedAgent = undefined;
+    this.renderedModelId = undefined;
     this.renderedConnectionEditing = false;
     this.uiCleanup?.();
     this.uiCleanup = undefined;
-    if (this.remoteHandle !== undefined) await this.remoteHandle.uninstall();
-    if (this.browserHandle !== undefined) await this.browserHandle.uninstall();
-    if (this.runtimeHandle !== undefined) await this.runtimeHandle.uninstall();
-    if (this.storageHandle !== undefined) await this.storageHandle.uninstall();
-    for (const handle of this.extensionHandles.reverse()) await handle.uninstall();
-    this.agent = undefined;
+    await this.harness?.dispose();
+    this.harness = undefined;
+    this.remoteHandle = undefined;
     this.pendingAttachments = [];
     this.modelAttachments.clear();
     this.visionRetry = undefined;
@@ -500,8 +448,8 @@ export class AgentApp {
       return;
     }
     if (this.busy) return;
-    const agent = this.agent;
-    if (agent === undefined) {
+    const harness = this.harness;
+    if (harness === undefined || harness.snapshot().selectedModelId === undefined) {
       this.notify("Connect a remote model before sending.", "error");
       return;
     }
@@ -538,7 +486,7 @@ export class AgentApp {
         rawContent,
         prepared?.content,
       ].filter((value): value is string => value !== undefined && value.trim().length > 0).join("\n\n");
-      const processed = await this.plugins.process({
+      const processed = await harness.process({
         role: "user",
         content: prompt || "Please analyze the attached files.",
       }, controller.signal);
@@ -568,7 +516,7 @@ export class AgentApp {
       this.pendingStreamSequence = 0;
       this.renderAll();
       const modelAttachments = this.collectModelAttachments();
-      const result = await agent.run({
+      const result = await harness.run({
         messages: this.chat.messages,
         ...(modelAttachments.length === 0 ? {} : { attachments: modelAttachments }),
         signal: controller.signal,
@@ -730,14 +678,15 @@ export class AgentApp {
     const connectionCard = this.elements["connection-card"];
     if (chat === undefined || conversation === undefined || connectionCard === undefined) return;
     chat.setAttribute("aria-busy", String(this.busy));
-    connectionCard.hidden = this.agent !== undefined && !this.connectionEditing;
+    const selectedModelId = this.harness?.snapshot().selectedModelId;
+    connectionCard.hidden = selectedModelId !== undefined && !this.connectionEditing;
     const fullRender = this.renderedMessages !== this.chat.messages
-      || this.renderedAgent !== this.agent
+      || this.renderedModelId !== selectedModelId
       || this.renderedConnectionEditing !== this.connectionEditing;
     if (fullRender) {
       conversation.replaceChildren();
       if (this.chat.messages.length === 0 && this.pendingStream.length === 0 && this.liveToolEntries.length === 0) {
-        if (this.agent !== undefined) {
+        if (selectedModelId !== undefined) {
           const welcome = document.createElement("div");
           welcome.className = "empty-state";
           const icon = textElement("div", "✦", "empty-icon");
@@ -761,7 +710,7 @@ export class AgentApp {
         this.appendPendingMessages(conversation);
       }
       this.renderedMessages = this.chat.messages;
-      this.renderedAgent = this.agent;
+      this.renderedModelId = selectedModelId;
       this.renderedConnectionEditing = this.connectionEditing;
     } else {
       this.updatePendingMessages(conversation);
@@ -1107,13 +1056,13 @@ export class AgentApp {
   }
 
   private renderExtensions(): void {
-    if (this.plugins === undefined) return;
+    if (this.harness === undefined) return;
     const extensionHost = this.elements["extension-host"];
     if (extensionHost === undefined) return;
     this.uiCleanup?.();
     this.uiCleanup = undefined;
     extensionHost.replaceChildren();
-    this.uiCleanup = this.plugins.mountUi(extensionHost);
+    this.uiCleanup = this.harness.mountUi(extensionHost);
   }
 
   private async connectRemote(form: HTMLFormElement, automatic = false): Promise<void> {
@@ -1130,25 +1079,28 @@ export class AgentApp {
         await this.remoteHandle.uninstall();
         this.remoteHandle = undefined;
       }
-      this.agent = undefined;
-      const handle = await this.plugins.install(createRemoteModelPlugin({
+      const harness = this.harness;
+      if (harness === undefined) throw new Error("The Browser Agent Harness is not ready.");
+      const handle = await harness.install(createRemoteModelPlugin({
         endpoint: values.endpoint,
         model: values.model,
         apiKey: values.apiKey,
         supportsVision: values.supportsVision,
         reasoning: values.thinkingLevel,
       }));
-      const adapter = this.plugins.modelAdapter("remote-model");
-      if (adapter === undefined) throw new Error("The remote model plugin did not register an adapter.");
       this.remoteHandle = handle;
-      this.agent = new Agent(adapter, this.tools);
+      harness.selectModel("remote-model");
       await saveConnectionSettings(this.store, values);
       await this.saveBrowserCredential(values);
       this.connectionEditing = false;
       this.element("connection-status").textContent = "Remote model selected. Connection settings saved in this browser.";
       this.notify("Remote model selected.", "success");
     } catch (error) {
-      this.agent = undefined;
+      if (this.remoteHandle !== undefined) {
+        await this.remoteHandle.uninstall();
+        this.remoteHandle = undefined;
+      }
+      this.harness?.clearModel();
       this.connectionEditing = true;
       this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not select the model.";
       this.notify(this.element("connection-status").textContent, "error");
@@ -1163,7 +1115,7 @@ export class AgentApp {
     if (this.autoConnectStarted || !this.ready) return;
     this.autoConnectStarted = true;
     const credentialSettings = await this.readBrowserCredential();
-    if (!this.ready || this.agent !== undefined) return;
+    if (!this.ready || this.harness?.snapshot().selectedModelId !== undefined) return;
     const settings = credentialSettings === undefined
       ? savedSettings
       : {

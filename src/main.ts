@@ -1,4 +1,4 @@
-import { startApp } from "./app/app.js";
+import { startApp } from "./app-entry.js";
 import { reloadIfOutdated } from "./app/update-check.js";
 
 const root = document.getElementById("app");
