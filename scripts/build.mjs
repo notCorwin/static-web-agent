@@ -51,10 +51,22 @@ await build({
   sourcemap: false,
 });
 await rename("dist/app/attachment-engines.bundle.js", "dist/app/attachment-engines.js");
+await mkdir("dist/app/assets", { recursive: true });
+await build({
+  entryPoints: ["dist/app/anydoc-worker.js"],
+  bundle: true,
+  format: "esm",
+  minify: true,
+  outfile: "dist/app/anydoc-worker.bundle.js",
+  platform: "browser",
+  sourcemap: false,
+});
+await rename("dist/app/anydoc-worker.bundle.js", "dist/app/assets/anydoc-worker.js");
 
 await mkdir("dist/vendor/anydoc", { recursive: true });
 await copyFile("node_modules/@firecrawl/anydoc-wasm/anydoc_wasm_bg.wasm", "dist/vendor/anydoc/anydoc_wasm_bg.wasm");
-await mkdir("dist/app/assets", { recursive: true });
+await mkdir("dist/vendor/pdfjs", { recursive: true });
+await copyFile("node_modules/pdfjs-dist/build/pdf.worker.mjs", "dist/vendor/pdfjs/pdf.worker.mjs");
 await copyFile(
   "node_modules/@paddleocr/paddleocr-js/dist/assets/worker-entry-C9UNuyOJ.js",
   "dist/app/assets/worker-entry-C9UNuyOJ.js",

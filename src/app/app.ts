@@ -12,6 +12,7 @@ import { createStoragePlugin } from "../plugins/storage.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { createPendingAttachment, disposeAttachmentEngines, processAttachmentFiles, type AttachmentProgress, type PendingAttachment, type PreparedAttachments } from "./attachments.js";
 import { DEFAULT_THINKING_LEVEL, isConnectionSettings, loadConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
+import { renderRichContent } from "./rich-content.js";
 import { messageElement, messageElements, renderShell, streamingToolElement, textElement, thinkingElement, toolGroupElement, updateStreamingToolElement, updateThinkingElement, updateToolGroupElement, type AppElements } from "./view.js";
 import type { AgentEvent, ModelAttachment, ModelMessage, Plugin, PluginHandle, StorageCapability, ToolCall, ToolCallDelta, ToolExecutionResult, UserMessage } from "../core/types.js";
 import type { BrowserFetcher } from "../adapters/ai-sdk.js";
@@ -623,6 +624,9 @@ export class AgentApp {
         this.pendingToolCalls = [];
         this.ensurePendingThinking();
         this.notify(`Thinking · turn ${event.turn}…`);
+        // Paint the open thinking placeholder immediately so very short
+        // streams cannot finish before the first animation-frame update.
+        this.renderChat();
         break;
       case "tool-call-delta": {
         const previous = this.pendingToolCalls.find((delta) => delta.index === event.delta.index);
@@ -710,11 +714,14 @@ export class AgentApp {
     if (this.chatRenderScheduled) return;
     this.chatRenderScheduled = true;
     const render = () => {
+      if (!this.chatRenderScheduled) return;
       this.chatRenderScheduled = false;
       if (this.ready) this.renderChat();
     };
-    if (typeof queueMicrotask === "function") queueMicrotask(render);
-    else setTimeout(render, 0);
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(render);
+    // A backgrounded or headless tab may throttle animation frames. The
+    // timeout is a safety net and is ignored when the frame already flushed.
+    window.setTimeout(render, 50);
   }
 
   private renderChat(): void {
@@ -828,7 +835,9 @@ export class AgentApp {
       body.className = "message-body";
       element.append(body);
     }
-    if (body.textContent !== segment.text) body.textContent = segment.text;
+    if (body.dataset.renderedSource === segment.text) return;
+    body.dataset.renderedSource = segment.text;
+    renderRichContent(body, segment.text, { streaming: true });
   }
 
   private pendingToolGroupElement(

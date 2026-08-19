@@ -594,6 +594,29 @@ test("scanned PDF pages preserve order in vision and OCR routes", async () => {
   assert.match(text.content, /scan\.pdf · page 2/);
 });
 
+test("streamed PDF pages are OCRed in bounded batches without retaining the full document", async () => {
+  const pending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "long-scan.pdf", { type: "application/pdf" }));
+  const batchSizes = [];
+  let renderedPages = 0;
+  const result = await processAttachmentFiles([pending], false, noSignal(), {
+    documentToMarkdown: async () => undefined,
+    streamPdfPages: async function* () {
+      for (let page = 1; page <= 10; page += 1) {
+        renderedPages += 1;
+        yield { name: `long-scan.pdf · page ${page}`, mediaType: "image/png", data: new Uint8Array([page]) };
+      }
+    },
+    recognizeImages: async (inputs) => {
+      batchSizes.push(inputs.length);
+      return inputs.map((input) => `OCR page ${input.data[0]}`);
+    },
+  });
+  assert.equal(renderedPages, 10);
+  assert.deepEqual(batchSizes, [8, 2]);
+  assert.match(result.content, /long-scan\.pdf · page 1/);
+  assert.match(result.content, /OCR page 10/);
+});
+
 test("ordinary documents use anydoc output without OCR or page rendering", async () => {
   const file = new File([new Uint8Array([1, 2, 3])], "notes.docx", { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
   const pending = createPendingAttachment(file);
@@ -670,6 +693,35 @@ test("AI SDK adapter converts vision attachments to OpenAI-compatible file parts
   assert.equal(content[0].type, "text");
   assert.equal(content[1].type, "image_url");
   assert.match(content[1].image_url.url, /^data:image\/png;base64,/);
+});
+
+test("AI SDK adapter preserves every visual attachment in order", async () => {
+  let requestBody;
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
+    model: "vision-demo",
+    supportsVision: true,
+    fetcher: async (_input, init) => {
+      requestBody = JSON.parse(init.body);
+      return sseResponse([
+        { choices: [{ delta: { content: "ok" } }] },
+        { choices: [{ delta: {}, finish_reason: "stop" }] },
+      ]);
+    },
+  });
+  const attachments = [
+    { id: "page-1", name: "scan · page 1.png", mediaType: "image/png", data: new Uint8Array([1, 2, 3]) },
+    { id: "page-2", name: "scan · page 2.png", mediaType: "image/png", data: new Uint8Array([4, 5, 6]) },
+  ];
+  for await (const _event of adapter.stream({
+    messages: [{ role: "user", content: "describe both pages", attachmentIds: attachments.map((attachment) => attachment.id) }],
+    attachments,
+    tools: [],
+    signal: noSignal(),
+  })) {}
+  const imageParts = requestBody.messages[0].content.filter((part) => part.type === "image_url");
+  assert.equal(imageParts.length, 2);
+  assert.ok(imageParts.every((part) => /^data:image\/png;base64,/.test(part.image_url.url)));
 });
 
 test("AI SDK adapter refuses image attachments unless vision is explicitly enabled", async () => {

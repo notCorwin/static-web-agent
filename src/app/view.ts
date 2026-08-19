@@ -133,7 +133,7 @@ export function messageElement(message: ModelMessage, pending = false, messageIn
   if (message.content.length > 0) {
     const body = document.createElement("div");
     body.className = "message-body";
-    if (pending) body.textContent = message.content;
+    if (pending) renderRichContent(body, message.content, { streaming: true });
     else if (message.role === "assistant" || message.role === "user") renderRichContent(body, message.content);
     else body.textContent = message.content;
     article.append(body);
@@ -187,7 +187,10 @@ export function thinkingElement(reasoning: string, pending = false): HTMLDetails
   summary.textContent = pending ? "Thinking…" : "Thinking";
   const body = document.createElement("div");
   body.className = "thinking-body";
-  if (pending) body.textContent = reasoning;
+  if (pending) {
+    body.dataset.renderedSource = reasoning;
+    renderRichContent(body, reasoning, { streaming: true });
+  }
   else renderRichContent(body, reasoning);
   details.append(summary, body);
   details.open = pending;
@@ -202,7 +205,10 @@ export function updateThinkingElement(details: HTMLDetailsElement, reasoning: st
   if (summary === null || body === null) return;
   summary.textContent = pending ? "Thinking…" : "Thinking";
   if (pending) {
-    if (body.textContent !== reasoning) body.textContent = reasoning;
+    if (body.dataset.renderedSource !== reasoning) {
+      body.dataset.renderedSource = reasoning;
+      renderRichContent(body, reasoning, { streaming: true });
+    }
   } else {
     body.replaceChildren();
     renderRichContent(body, reasoning);

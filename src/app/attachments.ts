@@ -36,6 +36,7 @@ export interface OcrImageInput {
 export interface AttachmentProcessingDependencies {
   readonly documentToMarkdown?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<string | undefined>;
   readonly renderPdfPages?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<readonly RenderedPdfPage[]>;
+  readonly streamPdfPages?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => AsyncIterable<RenderedPdfPage>;
   readonly recognizeImage?: (data: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<string>;
   readonly recognizeImages?: (inputs: readonly OcrImageInput[], signal: AbortSignal) => Promise<readonly string[]>;
 }
@@ -142,13 +143,25 @@ async function readFileBytes(file: File, signal: AbortSignal): Promise<Uint8Arra
 async function defaultDocumentToMarkdown(bytes: Uint8Array, fileName: string, signal: AbortSignal): Promise<string | undefined> {
   throwIfAborted(signal);
   const engines = await loadEngines();
-  return engines.documentToMarkdown(bytes, fileName, assetUrl("vendor/anydoc/anydoc_wasm_bg.wasm"), signal);
+  return engines.documentToMarkdown(
+    bytes,
+    fileName,
+    assetUrl("app/assets/anydoc-worker.js"),
+    assetUrl("vendor/anydoc/anydoc_wasm_bg.wasm"),
+    signal,
+  );
 }
 
 async function defaultRenderPdfPages(bytes: Uint8Array, fileName: string, signal: AbortSignal): Promise<readonly RenderedPdfPage[]> {
   throwIfAborted(signal);
   const engines = await loadEngines();
-  return engines.renderPdfPages(bytes, fileName, signal);
+  return engines.renderPdfPages(bytes, fileName, signal, { workerUrl: assetUrl("vendor/pdfjs/pdf.worker.mjs") });
+}
+
+async function* defaultStreamPdfPages(bytes: Uint8Array, fileName: string, signal: AbortSignal): AsyncGenerator<RenderedPdfPage> {
+  throwIfAborted(signal);
+  const engines = await loadEngines();
+  yield* engines.streamPdfPages(bytes, fileName, signal, { workerUrl: assetUrl("vendor/pdfjs/pdf.worker.mjs") });
 }
 
 async function defaultRecognizeImage(data: Uint8Array, mediaType: string, signal: AbortSignal): Promise<string> {
@@ -175,6 +188,12 @@ async function loadEngines(): Promise<typeof import("./attachment-engines.js")> 
   return enginesPromise;
 }
 
+async function yieldToBrowser(signal: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+  throwIfAborted(signal);
+}
+
 export async function disposeAttachmentEngines(): Promise<void> {
   if (enginesPromise === undefined) return;
   try {
@@ -199,14 +218,50 @@ export async function processAttachmentFiles(
   const renderPdfPages = dependencies.renderPdfPages ?? defaultRenderPdfPages;
   const recognizeImage = dependencies.recognizeImage ?? defaultRecognizeImage;
   const recognizeImages = dependencies.recognizeImages ?? defaultRecognizeImages;
+  const streamPdfPages = dependencies.streamPdfPages ?? (dependencies.renderPdfPages === undefined
+    ? defaultStreamPdfPages
+    : async function* (bytes: Uint8Array, fileName: string, pageSignal: AbortSignal): AsyncGenerator<RenderedPdfPage> {
+      for (const page of await renderPdfPages(bytes, fileName, pageSignal)) yield page;
+    });
   const ocrQueue: Array<{
     readonly input: OcrImageInput;
     readonly contentIndex: number;
     readonly attachment: PendingAttachment;
-    readonly detail: string;
     readonly heading?: string;
     readonly required: boolean;
   }> = [];
+  const readyOcrAttachments = new Set<string>();
+  const ocrBatchSize = 8;
+  let ocrCompleted = 0;
+
+  const processOcrBatch = async (batch: readonly typeof ocrQueue[number][]): Promise<void> => {
+    if (batch.length === 0) return;
+    throwIfAborted(signal);
+    const batchTexts = dependencies.recognizeImages === undefined
+      ? await Promise.all(batch.map((item) => recognizeImage(item.input.data, item.input.mediaType, signal)))
+      : await recognizeImages(batch.map((item) => item.input), signal);
+    for (const [index, item] of batch.entries()) {
+      const text = normalizeOcrText(batchTexts[index] ?? "");
+      if (!text && item.required) {
+        throw new AttachmentProcessingError("ATTACHMENT_PARSE_FAILED", `PaddleOCR found no text in “${item.attachment.name}”.`);
+      }
+      content[item.contentIndex] = text === "" ? "" : item.heading === undefined
+        ? documentBlock(item.attachment.name, text)
+        : `${item.heading}\n\n${text}`;
+      readyOcrAttachments.add(item.attachment.id);
+    }
+    ocrCompleted += batch.length;
+    const last = batch.at(-1);
+    if (last !== undefined) onProgress?.({ attachment: last.attachment, phase: "ocr", detail: `PaddleOCR · ${ocrCompleted} page${ocrCompleted === 1 ? "" : "s"}` });
+    await yieldToBrowser(signal);
+  };
+
+  const flushOcrQueue = async (): Promise<void> => {
+    while (ocrQueue.length > 0) {
+      const batch = ocrQueue.splice(0, ocrBatchSize);
+      await processOcrBatch(batch);
+    }
+  };
 
   for (const attachment of files) {
     throwIfAborted(signal);
@@ -224,15 +279,16 @@ export async function processAttachmentFiles(
           input: { data: bytes, mediaType: attachment.mediaType },
           contentIndex: content.push("") - 1,
           attachment,
-          detail: "PaddleOCR",
           required: true,
         });
+        if (ocrQueue.length >= ocrBatchSize) await flushOcrQueue();
       }
       if (supportsVision) onProgress?.({ attachment, phase: "ready" });
       continue;
     }
 
     if (isPdf(attachment)) {
+      await flushOcrQueue();
       onProgress?.({ attachment, phase: "document", detail: "anydoc" });
       const markdown = await documentToMarkdown(bytes, attachment.name, signal);
       if (isMeaningfulMarkdown(markdown)) {
@@ -241,27 +297,33 @@ export async function processAttachmentFiles(
         continue;
       }
       onProgress?.({ attachment, phase: "rendering", detail: "PDF pages" });
-      const pages = await renderPdfPages(bytes, attachment.name, signal);
-      if (pages.length === 0) throw new AttachmentProcessingError("ATTACHMENT_PARSE_FAILED", `Could not find pages in “${attachment.name}”.`);
-      for (const [index, page] of pages.entries()) {
+      let pageCount = 0;
+      let ocrPageBatch: Array<typeof ocrQueue[number]> = [];
+      for await (const page of streamPdfPages(bytes, attachment.name, signal)) {
+        pageCount += 1;
         throwIfAborted(signal);
-        const pageId = `${attachment.id}-page-${index + 1}`;
+        const pageId = `${attachment.id}-page-${pageCount}`;
         if (supportsVision) {
           attachments.push({ id: pageId, name: page.name, mediaType: page.mediaType, data: page.data });
           attachmentIds.push(pageId);
           content.push(visionLabel(page.name));
         } else {
-          onProgress?.({ attachment, phase: "ocr", detail: `PaddleOCR page ${index + 1}/${pages.length}` });
-          ocrQueue.push({
+          onProgress?.({ attachment, phase: "ocr", detail: `PaddleOCR page ${pageCount}` });
+          ocrPageBatch.push({
             input: { data: page.data, mediaType: page.mediaType },
             contentIndex: content.push("") - 1,
             attachment,
-            detail: `PaddleOCR page ${index + 1}/${pages.length}`,
-            heading: pageHeading(attachment.name, index + 1),
+            heading: pageHeading(attachment.name, pageCount),
             required: false,
           });
+          if (ocrPageBatch.length >= ocrBatchSize) {
+            await processOcrBatch(ocrPageBatch);
+            ocrPageBatch = [];
+          }
         }
       }
+      if (pageCount === 0) throw new AttachmentProcessingError("ATTACHMENT_PARSE_FAILED", `Could not find pages in “${attachment.name}”.`);
+      if (ocrPageBatch.length > 0) await processOcrBatch(ocrPageBatch);
       if (supportsVision) onProgress?.({ attachment, phase: "ready" });
       continue;
     }
@@ -275,31 +337,9 @@ export async function processAttachmentFiles(
     onProgress?.({ attachment, phase: "ready" });
   }
 
-  if (ocrQueue.length > 0) {
-    const batchSize = 8;
-    const texts: string[] = [];
-    for (let start = 0; start < ocrQueue.length; start += batchSize) {
-      throwIfAborted(signal);
-      const batch = ocrQueue.slice(start, start + batchSize);
-      const batchTexts = dependencies.recognizeImages === undefined
-        ? await Promise.all(batch.map((item) => recognizeImage(item.input.data, item.input.mediaType, signal)))
-        : await recognizeImages(batch.map((item) => item.input), signal);
-      texts.push(...batchTexts);
-    }
-    const ready = new Set<string>();
-    for (const [index, item] of ocrQueue.entries()) {
-      const text = normalizeOcrText(texts[index] ?? "");
-      if (!text && item.required) {
-        throw new AttachmentProcessingError("ATTACHMENT_PARSE_FAILED", `PaddleOCR found no text in “${item.attachment.name}”.`);
-      }
-      content[item.contentIndex] = text === "" ? "" : item.heading === undefined
-        ? documentBlock(item.attachment.name, text)
-        : `${item.heading}\n\n${text}`;
-      ready.add(item.attachment.id);
-    }
-    for (const attachment of files) {
-      if (ready.has(attachment.id)) onProgress?.({ attachment, phase: "ready" });
-    }
+  await flushOcrQueue();
+  for (const attachment of files) {
+    if (readyOcrAttachments.has(attachment.id)) onProgress?.({ attachment, phase: "ready" });
   }
 
   return {

@@ -3,6 +3,10 @@ import { DOMPurify, katex, marked, mermaid } from "../vendor/rendering-runtime.j
 let mermaidConfigured = false;
 let mermaidSequence = 0;
 
+export interface RichContentOptions {
+  readonly streaming?: boolean;
+}
+
 interface CommentSyntax {
   readonly line: readonly string[];
   readonly block: readonly { readonly start: string; readonly end: string }[];
@@ -232,10 +236,11 @@ function enhanceCodeBlocks(container: HTMLElement): void {
   }
 }
 
-export function renderRichContent(container: HTMLElement, source: string): void {
+export function renderRichContent(container: HTMLElement, source: string, options: RichContentOptions = {}): void {
   const rendered = marked.parse(source, { async: false, breaks: true, gfm: true });
   const html = typeof rendered === "string" ? rendered : source;
   container.innerHTML = String(DOMPurify.sanitize(html));
+  if (options.streaming === true) return;
   renderMath(container);
   enhanceCodeBlocks(container);
   void renderMermaidBlocks(container);

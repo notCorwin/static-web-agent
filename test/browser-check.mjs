@@ -35,15 +35,17 @@ function contentType(path) {
     case ".mjs": return "text/javascript; charset=utf-8";
     case ".css": return "text/css; charset=utf-8";
     case ".json": return "application/json; charset=utf-8";
+    case ".wasm": return "application/wasm";
     default: return "application/octet-stream";
   }
 }
 
-function createScannedPdf() {
+function createScannedPdf(pageCount = 1) {
+  const pageRefs = Array.from({ length: pageCount }, (_, index) => `${index + 3} 0 R`).join(" ");
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Resources << >> >>",
+    `<< /Type /Pages /Kids [${pageRefs}] /Count ${pageCount} >>`,
+    ...Array.from({ length: pageCount }, () => "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Resources << >> >>"),
   ];
   let source = "%PDF-1.4\n";
   const offsets = [0];
@@ -67,7 +69,7 @@ async function startStaticServer() {
   const server = createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
-      if (pathname.includes("paddleocr") || pathname.includes("onnxruntime")) assetRequests.push(pathname);
+      if (pathname.includes("paddleocr") || pathname.includes("onnxruntime") || pathname.includes("pdfjs") || pathname.includes("anydoc")) assetRequests.push(pathname);
       if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning" || pathname === "/test-vision") {
         if (pathname === "/test-reasoning") {
           const rawBody = await new Promise((resolve) => {
@@ -83,11 +85,16 @@ async function startStaticServer() {
             request.on("data", (chunk) => { body += chunk.toString(); });
             request.on("end", () => resolve(body));
           });
-          try { visionRequests.push(JSON.parse(rawBody)); } catch { visionRequests.push(undefined); }
+          try {
+            visionRequests.push(JSON.parse(rawBody));
+          } catch {
+            visionRequests.push(undefined);
+          }
         }
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         if (pathname === "/test-scroll") {
           const chunks = [
+            "# Streaming heading\n\n",
             Array.from({ length: 32 }, (_, index) => `Scroll line ${index + 1}`).join("\n") + "\n",
             ...Array.from({ length: 20 }, (_, index) => `stream chunk ${index + 1}\n`),
             "The stream finished.\n",
@@ -98,7 +105,7 @@ async function startStaticServer() {
             if (index < chunks.length) {
               response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[index] } }] })}\n\n`);
               index += 1;
-              setTimeout(sendChunk, 35);
+              setTimeout(sendChunk, 250);
               return;
             }
             response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
@@ -180,13 +187,13 @@ async function startStaticServer() {
             if (index < chunks.length) {
               response.write(`data: ${JSON.stringify(chunks[index])}\n\n`);
               index += 1;
-              setTimeout(sendReasoningChunk, 80);
+              setTimeout(sendReasoningChunk, 1200);
               return;
             }
             response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
             response.end("data: [DONE]\n\n");
           };
-          setTimeout(sendReasoningChunk, 120);
+          setTimeout(sendReasoningChunk, 1200);
           return;
         } else if (pathname === "/test-tool" && toolRequests++ === 0) {
           response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "browser-tool-call", type: "function", function: { name: "runtime_javascript", arguments: '{"code":"return 42"}' } }] } }] })}\n\n`);
@@ -312,8 +319,18 @@ if (browser === undefined) {
   process.exit(0);
 }
 
+const externalLongPdfPath = process.env.E2E_LONG_PDF_PATH;
+const externalLongPdfPages = Number.parseInt(process.env.E2E_LONG_PDF_PAGES ?? "", 10);
+const externalLongPdfVision = process.env.E2E_LONG_PDF_VISION !== "0";
+const externalLongPdfBase64 = externalLongPdfPath === undefined
+  ? undefined
+  : (await readFile(externalLongPdfPath)).toString("base64");
+if (externalLongPdfBase64 !== undefined && !Number.isInteger(externalLongPdfPages)) {
+  throw new Error("E2E_LONG_PDF_PAGES is required when E2E_LONG_PDF_PATH is set.");
+}
 const { server, port, reasoningRequests, visionRequests, assetRequests } = await startStaticServer();
 const scannedPdfBase64 = Buffer.from(createScannedPdf()).toString("base64");
+const longScannedPdfBase64 = Buffer.from(createScannedPdf(12)).toString("base64");
 const release = JSON.parse(await readFile(join(root, "dist/version.json"), "utf8"));
 const profile = await mkdtemp(join(tmpdir(), "static-web-agent-browser-"));
 const child = spawn(browser, [
@@ -585,7 +602,7 @@ try {
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'", 20_000);
   await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
   const visualRequest = visionRequests.at(-1);
-  const visualMessage = visualRequest?.messages?.find((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  const visualMessage = visualRequest?.messages?.findLast((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
   assert.equal(visualMessage?.content?.[0]?.type, "text");
   assert.equal(visualMessage?.content?.[1]?.type, "image_url");
   assert.match(visualMessage?.content?.[1]?.image_url?.url ?? "", /^data:image\/png;base64,/);
@@ -603,6 +620,8 @@ try {
   const documentMessage = documentRequest?.messages?.findLast((message) => typeof message.content === "string" && message.content.includes("Alice"));
   assert.equal(typeof documentMessage?.content, "string");
   assert.ok(documentMessage?.content.includes("Alice"), "ordinary documents should be converted to Markdown locally before sending");
+  assert.ok(assetRequests.some((path) => path.endsWith("/app/assets/anydoc-worker.js")), "document conversion should run in its dedicated worker");
+  assert.ok(assetRequests.some((path) => path.endsWith("/vendor/anydoc/anydoc_wasm_bg.wasm")), "the anydoc worker should load its WASM from the same origin");
   await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
   const previousPdfAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
   await page.evaluate(`(() => {
@@ -616,9 +635,57 @@ try {
   })()`);
   await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousPdfAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 30_000);
   const scannedPdfRequest = visionRequests.at(-1);
-  const scannedPdfMessage = scannedPdfRequest?.messages?.find((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  const scannedPdfMessage = scannedPdfRequest?.messages?.findLast((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
   assert.equal(scannedPdfMessage?.content?.[0]?.type, "text");
   assert.equal(scannedPdfMessage?.content?.[1]?.type, "image_url");
+  assert.ok(assetRequests.some((path) => path.endsWith("/vendor/pdfjs/pdf.worker.mjs")), "scanned PDF rendering should use a dedicated PDF worker");
+  const previousLongPdfAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    const bytes = Uint8Array.from(atob('${longScannedPdfBase64}'), (value) => value.charCodeAt(0));
+    transfer.items.add(new File([bytes], 'long-scanned.pdf', { type: 'application/pdf' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#message-input').value = 'long PDF worker E2E';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousLongPdfAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 30_000);
+  const longPdfAttachmentCount = await page.evaluate("Array.from(document.querySelectorAll('article.message.user')).at(-1)?.querySelectorAll('.message-attachment-chip').length ?? 0");
+  assert.equal(longPdfAttachmentCount, 12, `long scanned PDF should retain all rendered page attachments in the user message, got ${longPdfAttachmentCount}`);
+  const longPdfRequest = visionRequests.at(-1);
+  const longPdfMessage = longPdfRequest?.messages?.findLast((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  assert.equal(longPdfMessage?.content?.filter((part) => part.type === "image_url").length, 12, "long scanned PDFs should render and retain every page without blocking the UI");
+  if (externalLongPdfBase64 !== undefined) {
+    await page.evaluate(`(() => {
+      document.querySelector('#model-vision').checked = ${externalLongPdfVision ? "true" : "false"};
+      document.querySelector('#connection-form').requestSubmit();
+    })()`);
+    await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+    const previousExternalPdfAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+    await page.evaluate(`(() => {
+      const input = document.querySelector('#attachment-input');
+      const transfer = new DataTransfer();
+      const bytes = Uint8Array.from(atob('${externalLongPdfBase64}'), (value) => value.charCodeAt(0));
+      transfer.items.add(new File([bytes], 'folder-long-scanned.pdf', { type: 'application/pdf' }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      document.querySelector('#message-input').value = 'folder long PDF worker E2E';
+      document.querySelector('#composer-form').requestSubmit();
+    })()`);
+    await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousExternalPdfAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 180_000);
+    const externalAttachmentCount = await page.evaluate("Array.from(document.querySelectorAll('article.message.user')).at(-1)?.querySelectorAll('.message-attachment-chip').length ?? 0");
+    assert.equal(externalAttachmentCount, externalLongPdfVision ? externalLongPdfPages : 0, "the folder PDF should expose visual page attachments only in vision mode");
+    const externalRequest = visionRequests.at(-1);
+    const externalMessage = externalRequest?.messages?.at(-1);
+    if (externalLongPdfVision) {
+      assert.equal(externalMessage?.content?.filter((part) => part.type === "image_url").length, externalLongPdfPages, "the folder PDF should send every rendered page to the vision model");
+    } else {
+      assert.equal(typeof externalMessage?.content, "string", "the local OCR route should send text instead of page images");
+      assert.match(externalMessage?.content ?? "", /folder-long-scanned\.pdf/);
+    }
+  }
+  if (externalLongPdfBase64 === undefined) {
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-rich';
     document.querySelector('#connection-form').requestSubmit();
@@ -742,11 +809,12 @@ try {
   const midStreamScroll = await page.evaluate(`(() => {
     const chat = document.querySelector('#chat-log');
     const pendingBody = document.querySelector('.message.assistant.pending .message-body');
-    return { overflow: chat.scrollHeight > chat.clientHeight, distance: chat.scrollHeight - chat.scrollTop - chat.clientHeight, pendingChildren: pendingBody?.children.length ?? 0 };
+    return { overflow: chat.scrollHeight > chat.clientHeight, distance: chat.scrollHeight - chat.scrollTop - chat.clientHeight, pendingChildren: pendingBody?.children.length ?? 0, pendingHeading: pendingBody?.querySelector('h1')?.textContent ?? null };
   })()`);
   assert.equal(midStreamScroll.overflow, true);
   assert.ok(midStreamScroll.distance <= 2, "the conversation should follow the bottom while the model streams");
-  assert.equal(midStreamScroll.pendingChildren, 0, "streaming text should update without rebuilding rich-content DOM");
+  assert.ok(midStreamScroll.pendingChildren > 0, "streaming text should render Markdown before completion");
+  assert.equal(midStreamScroll.pendingHeading, "Streaming heading");
   await page.evaluate("(() => { const chat = document.querySelector('#chat-log'); chat.scrollTop = 0; chat.dispatchEvent(new Event('scroll')); })()");
   await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === false");
   const detachedStreamScroll = await page.evaluate(`(() => {
@@ -968,6 +1036,7 @@ try {
     };
   })()`);
   assert.deepEqual(browserBoundaries, { worker: true, workerUnboundedOutput: true, workerAmbientApis: true, workerTimeout: true, pageRuntime: true, pageUnboundedOutput: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
+  }
   console.log("Browser checks passed: compact UI, page Web APIs, remote-only chat, default plugins, IndexedDB, SSE, and cancellation.");
 } finally {
   await page?.close();
@@ -984,5 +1053,6 @@ try {
   if (child.exitCode === null) child.kill("SIGTERM");
   await childExited;
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  server.closeAllConnections?.();
   await new Promise((resolve) => server.close(resolve));
 }
