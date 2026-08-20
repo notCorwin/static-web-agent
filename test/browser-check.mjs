@@ -1151,10 +1151,12 @@ try {
   assert.ok(finishedStreamScroll > 2, "the conversation should preserve the user's position after streaming");
   const scrollButtonLayout = await page.evaluate(`(() => {
     const button = document.querySelector('#scroll-bottom-button').getBoundingClientRect();
-    const chat = document.querySelector('#chat-log').getBoundingClientRect();
-    return { buttonCenter: button.left + button.width / 2, chatCenter: chat.left + chat.width / 2, buttonBottom: button.bottom, chatBottom: chat.bottom };
+    const chatElement = document.querySelector('#chat-log');
+    const chat = chatElement.getBoundingClientRect();
+    const chatViewportCenter = chat.left + chatElement.clientLeft + chatElement.clientWidth / 2;
+    return { buttonCenter: button.left + button.width / 2, chatViewportCenter, buttonBottom: button.bottom, chatBottom: chat.bottom };
   })()`);
-  assert.ok(Math.abs(scrollButtonLayout.buttonCenter - scrollButtonLayout.chatCenter) <= 1, "the scroll button should be horizontally centered in the chat viewport");
+  assert.ok(Math.abs(scrollButtonLayout.buttonCenter - scrollButtonLayout.chatViewportCenter) <= 1, "the scroll button should be horizontally centered in the visible chat viewport");
   assert.ok(scrollButtonLayout.buttonBottom <= scrollButtonLayout.chatBottom - 15, "the scroll button should be anchored inside the chat viewport");
   await page.evaluate("document.querySelector('#scroll-bottom-button').click()");
   await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === true && (() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()");
