@@ -339,7 +339,8 @@ class CdpPage {
 async function waitFor(page, expression, timeoutMs = 8_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await page.evaluate(expression)) return;
+    const value = await page.evaluate(expression);
+    if (value) return value;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`Timed out waiting for: ${expression}`);
@@ -1078,14 +1079,13 @@ try {
     input.value = 'scroll request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && (() => { const body = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).at(-1); return body?.textContent.includes('Scroll line 32') && body.querySelector('h1')?.textContent === 'Streaming heading'; })()", 20_000);
-  await page.evaluate("new Promise((resolve) => setTimeout(resolve, 100))");
-  await waitFor(page, "(() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()", 5_000);
-  const midStreamScroll = await page.evaluate(`(() => {
+  const midStreamScroll = await waitFor(page, `(() => {
     const chat = document.querySelector('#chat-log');
-    const pendingBody = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).at(-1);
-    return { overflow: chat.scrollHeight > chat.clientHeight, distance: chat.scrollHeight - chat.scrollTop - chat.clientHeight, pendingChildren: pendingBody?.children.length ?? 0, pendingHeading: pendingBody?.querySelector('h1')?.textContent ?? null };
-  })()`);
+    const pendingBody = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((body) => body.textContent.includes('Scroll line 32') && body.querySelector('h1')?.textContent === 'Streaming heading');
+    const distance = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+    if (document.querySelector('#send-button .button-label')?.textContent !== 'Stop' || pendingBody === undefined || pendingBody.children.length === 0 || distance > 2) return false;
+    return { overflow: chat.scrollHeight > chat.clientHeight, distance, pendingChildren: pendingBody.children.length, pendingHeading: pendingBody.querySelector('h1')?.textContent ?? null };
+  })()`, 20_000);
   assert.equal(midStreamScroll.overflow, true);
   assert.ok(midStreamScroll.distance <= 2, "the conversation should follow the bottom while the model streams");
   assert.ok(midStreamScroll.pendingChildren > 0, "streaming text should render Markdown before completion");
