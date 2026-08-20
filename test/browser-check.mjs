@@ -1078,7 +1078,7 @@ try {
     input.value = 'scroll request';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('.message.assistant.pending .message-body')?.textContent.includes('Scroll line 32')", 20_000);
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('.message.assistant.pending .message-body')?.textContent.includes('Scroll line 32') && document.querySelector('.message.assistant.pending .message-body h1')?.textContent === 'Streaming heading'", 20_000);
   await page.evaluate("new Promise((resolve) => setTimeout(resolve, 100))");
   await waitFor(page, "(() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()", 5_000);
   const midStreamScroll = await page.evaluate(`(() => {

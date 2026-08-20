@@ -400,7 +400,8 @@ export function createDomStreamPresentationAdapter(options: DomStreamPresentatio
   let scheduled = false;
   let latest: StreamPresentationSnapshot | undefined;
   const updateButton = (snapshot: StreamPresentationSnapshot): void => {
-    options.scrollButton.hidden = !snapshot.showScrollButton;
+    const distance = options.chat.scrollHeight - options.chat.scrollTop - options.chat.clientHeight;
+    options.scrollButton.hidden = snapshot.followChat || distance <= 1;
   };
   const scrollToBottom = (): void => {
     options.chat.scrollTop = Math.max(0, options.chat.scrollHeight - options.chat.clientHeight);
@@ -425,11 +426,12 @@ export function createDomStreamPresentationAdapter(options: DomStreamPresentatio
     render: (snapshot) => {
       latest = snapshot;
       updatePendingMessages(options.conversation, snapshot);
+      updateButton(snapshot);
       if (snapshot.followChat || !options.hasCommittedMessages() || snapshot.scrollToLatest) {
         scrollToBottom();
         scheduleScroll();
+        updateButton(snapshot);
       }
-      else updateButton(snapshot);
     },
   };
 }
