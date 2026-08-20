@@ -153,12 +153,13 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 
 .connection-card { position: absolute; z-index: 4; top: 50%; left: 50%; width: min(760px, calc(100% - 36px)); max-height: calc(100% - 48px); margin: 0; overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
 .connection-card[hidden] { display: none; }
-.connection-intro { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
-.connection-icon { display: grid; width: 42px; height: 42px; flex-shrink: 0; place-items: center; border: 1px solid var(--icon-border); border-radius: 13px; background: var(--icon-surface); color: var(--accent); font-size: 19px; }
+.connection-intro { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
 .connection-intro h2 { margin: 0; font-size: 22px; letter-spacing: -.03em; }
-.connection-intro p { margin: 7px 0 0; color: var(--muted); line-height: 1.5; }
+.connection-save-button { flex-shrink: 0; }
 .connection-form { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 0; }
-.connection-form .field:first-child, .connection-form .connection-note, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1 / -1; }
+.connection-form .field:first-child, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1 / -1; }
+.connection-form .credential-field { grid-column: 1 / -1; }
+.connection-form .api-key-field { padding-bottom: 16px; }
 .connection-form .thinking-level-field { grid-column: 1 / -1; }
 .vision-setting { display: grid; grid-column: 1 / -1; gap: 4px; }
 .checkbox-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; font-weight: 700; }
@@ -189,14 +190,11 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .field input::placeholder, .composer textarea::placeholder { color: var(--faint); }
 .field input:hover, .field input:focus, .field select:hover, .field select:focus, .composer textarea:hover, .composer textarea:focus, .message-edit textarea:hover, .message-edit textarea:focus { border-color: var(--control-focus); }
 .field input[aria-invalid="true"] { border-color: var(--danger); }
-.faint { color: var(--faint); font-weight: 400; }
 .field-error, .field-help { min-height: 16px; margin: 0; font-size: 11px; line-height: 1.35; }
 .field-error { color: var(--danger); }
 .field-help { color: var(--faint); }
-.connection-note { grid-column: 1 / -1; margin: 0; color: var(--faint); font-size: 12px; overflow-wrap: anywhere; }
 .credential-status { grid-column: 1 / -1; margin: 0; color: var(--faint); font-size: 11px; overflow-wrap: anywhere; }
 .connection-status { grid-column: 1 / -1; min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.connection-form > .primary-button { grid-column: 3; align-self: start; width: 100%; margin-top: 19px; }
 
 .chat-scroll {
   display: flex;
@@ -298,8 +296,8 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .composer-wrap { flex-shrink: 0; padding: 0 clamp(18px, 4vw, 48px) 22px; background: var(--bg); }
 .composer { position: relative; display: grid; gap: 5px; border-radius: 14px; }
 .composer:focus-within { box-shadow: none; }
-.attachment-bar { display: flex; align-items: center; min-height: 30px; gap: 7px; }
-.attachment-button { width: 30px; min-width: 30px; min-height: 30px; height: 30px; padding: 0; border-radius: 999px; font-size: 20px; line-height: 1; }
+.attachment-bar { display: flex; align-items: center; min-height: 0; gap: 7px; }
+.attachment-button { display: grid; width: 30px; min-width: 30px; min-height: 30px; height: 30px; place-items: center; padding: 0; border-radius: 999px; font-size: 20px; line-height: 1; }
 .attachment-list { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
 .attachment-chip { display: inline-flex; align-items: center; max-width: min(100%, 300px); gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 7px; background: var(--surface-raised); }
 .attachment-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -307,7 +305,8 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .attachment-chip-remove:hover { background: var(--surface-soft); color: var(--text); }
 .attachment-status { color: var(--muted); }
 .composer-input-row { position: relative; min-width: 0; }
-.composer textarea { min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; padding: 10px 54px 10px 11px; line-height: 1.45; font-size: 15px; }
+.composer-input-row > .attachment-button { position: absolute; z-index: 1; top: calc(50% - 2px); left: 7px; transform: translateY(-50%); }
+.composer textarea { min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; border-radius: 999px; padding: 10px 54px 10px 54px; line-height: 1.45; font-size: 15px; }
 .send-button { position: absolute; top: 50%; right: 7px; display: grid; width: 36px; min-width: 36px; height: 36px; min-height: 36px; place-items: center; padding: 0; border-radius: 999px; transform: translateY(-50%); }
 .send-button[hidden] { display: none; }
 .send-button:active { transform: translateY(calc(-50% + 1px)); }
@@ -339,16 +338,14 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 
 @media (max-width: 900px) and (min-width: 721px) {
   .connection-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .connection-form .field:first-child, .connection-form .connection-note, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1 / -1; }
-  .connection-form > .primary-button { grid-column: 1 / -1; width: 100%; margin-top: 0; }
+  .connection-form .field:first-child, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1 / -1; }
 }
 
 @media (max-width: 720px) {
   .connection-card { width: calc(100% - 32px); padding: 20px 16px; }
   .connection-intro h2 { font-size: 20px; }
   .connection-form { grid-template-columns: 1fr; }
-  .connection-form .field:first-child, .connection-form .connection-note, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1; }
-  .connection-form > .primary-button { grid-column: 1; width: 100%; margin-top: 0; }
+  .connection-form .field:first-child, .connection-form .credential-status, .connection-form .connection-status { grid-column: 1; }
   .chat-scroll { min-height: 420px; padding: 22px 16px; }
   .message { max-width: 100%; }
   .composer-wrap { padding: 0 16px 16px; }

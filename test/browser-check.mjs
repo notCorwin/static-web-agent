@@ -423,19 +423,20 @@ try {
     const workspace = document.querySelector('#main-content').getBoundingClientRect();
     const card = document.querySelector('#connection-card').getBoundingClientRect();
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
-    const buttonTop = document.querySelector('#connection-form > .primary-button').getBoundingClientRect().top;
     return {
       cardCenter: { x: card.left + card.width / 2, y: card.top + card.height / 2 },
       workspaceCenter: { x: workspace.left + workspace.width / 2, y: workspace.top + workspace.height / 2 },
       inputTops,
-      buttonTop,
+      saveButtonLabel: document.querySelector('#connection-submit .button-label')?.textContent,
+      saveButtonInIntro: document.querySelector('#connection-submit')?.closest('.connection-intro') !== null,
+      noConnectionIcon: document.querySelector('.connection-icon') === null,
       composerHeight: document.querySelector('#message-input').getBoundingClientRect().height,
       modelAutocomplete: document.querySelector('#model-name').autocomplete,
       keyAutocomplete: document.querySelector('#model-key').autocomplete,
       modelLabel: document.querySelector('label[for="model-name"]').textContent,
       endpointLabel: document.querySelector('label[for="model-endpoint"]').textContent,
       keyLabel: document.querySelector('label[for="model-key"]').textContent,
-      keyHelp: document.querySelector('#key-help').textContent,
+      noKeyHelp: document.querySelector('#key-help') === null,
       thinkingValue: document.querySelector('#thinking-level').value,
       thinkingLabel: document.querySelector('label[for="thinking-level"]').textContent,
       thinkingHelp: document.querySelector('#thinking-level-help').textContent,
@@ -443,16 +444,18 @@ try {
   })()`);
   assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.workspaceCenter.x) <= 1, "the connection card should be horizontally centered in the workspace");
   assert.ok(Math.abs(connectionLayout.cardCenter.y - connectionLayout.workspaceCenter.y) <= 1, "the connection card should be vertically centered in the workspace");
-  assert.ok(Math.abs(connectionLayout.inputTops[1] - connectionLayout.inputTops[2]) <= 1, "model and API key inputs should share a top alignment");
-  assert.ok(Math.abs(connectionLayout.buttonTop - connectionLayout.inputTops[1]) <= 2, "connection button should align with the model fields");
+  assert.ok(connectionLayout.inputTops[1] < connectionLayout.inputTops[2], "model and API key inputs should occupy separate rows");
+  assert.equal(connectionLayout.saveButtonLabel, "Save");
+  assert.equal(connectionLayout.saveButtonInIntro, true);
+  assert.equal(connectionLayout.noConnectionIcon, true);
   assert.equal(connectionLayout.modelAutocomplete, "username");
   assert.equal(connectionLayout.keyAutocomplete, "current-password");
-  assert.ok(connectionLayout.modelLabel.includes("password-manager username"), "the model name should be presented as the password-manager username");
-  assert.ok(connectionLayout.endpointLabel.includes("saved locally"), "the endpoint should be presented as browser-local state");
-  assert.ok(connectionLayout.keyLabel.includes("password manager + local"), "the API key should be presented as password-manager and local state");
-  assert.ok(connectionLayout.keyHelp.includes("password-manager password"), "the API key help should explain its password-manager role");
+  assert.equal(connectionLayout.modelLabel, "Model name");
+  assert.equal(connectionLayout.endpointLabel, "OpenAI-compatible endpoint or API base");
+  assert.equal(connectionLayout.keyLabel, "API key");
+  assert.equal(connectionLayout.noKeyHelp, true);
   assert.equal(connectionLayout.thinkingValue, "provider-default");
-  assert.ok(connectionLayout.thinkingLabel.includes("Thinking level"));
+  assert.equal(connectionLayout.thinkingLabel, "Thinking level");
   assert.ok(connectionLayout.thinkingHelp.includes("reasoning"));
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
   const controlMetrics = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key', '#thinking-level'].map((selector) => {

@@ -1085,10 +1085,11 @@ export class AgentApp {
 
   private async connectRemote(form: HTMLFormElement, automatic = false): Promise<void> {
     if (!this.ready || this.busy) return;
-    const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
+    const submit = this.elements["connection-submit"] as HTMLButtonElement | undefined;
     const spinner = submit?.querySelector<HTMLElement>(".spinner");
     const values = this.connectionValues(form);
     if (values === undefined) return;
+    this.element("connection-status").className = "connection-status sr-only";
     if (automatic) this.element("connection-status").textContent = "Restoring your saved cloud model…";
     if (submit !== null && submit !== undefined) submit.disabled = true;
     if (spinner !== null && spinner !== undefined) spinner.hidden = false;
@@ -1120,8 +1121,10 @@ export class AgentApp {
       }
       this.harness?.clearModel();
       this.connectionEditing = true;
-      this.element("connection-status").textContent = error instanceof Error ? error.message : "Could not select the model.";
-      this.notify(this.element("connection-status").textContent, "error");
+      const status = this.element("connection-status");
+      status.className = "connection-status";
+      status.textContent = error instanceof Error ? error.message : "Could not select the model.";
+      this.notify(status.textContent, "error");
     } finally {
       if (submit !== null && submit !== undefined) submit.disabled = false;
       if (spinner !== null && spinner !== undefined) spinner.hidden = true;

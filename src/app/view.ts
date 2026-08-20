@@ -19,31 +19,26 @@ export function renderShell(root: HTMLElement): AppElements {
         <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
           <section class="connection-card" id="connection-card" aria-labelledby="connection-title">
             <div class="connection-intro">
-              <div class="connection-icon" aria-hidden="true">✦</div>
-              <div>
-                <h2 id="connection-title">Connect your cloud model</h2>
-                <p>Enter your OpenAI-compatible endpoint, model name, and API key. The model name is used as your password-manager username; the endpoint and API key are remembered in this browser.</p>
-              </div>
+              <h2 id="connection-title">Connect your cloud model</h2>
+              <button class="primary-button connection-save-button" id="connection-submit" form="connection-form" type="submit"><span class="button-content"><span class="button-label">Save</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
             </div>
             <form class="connection-form" id="connection-form" novalidate>
               <div class="field">
-                <label for="model-endpoint">OpenAI-compatible endpoint or API base <span class="faint">(saved locally)</span></label>
+                <label for="model-endpoint">OpenAI-compatible endpoint or API base</label>
                 <input id="model-endpoint" name="endpoint" type="url" inputmode="url" autocomplete="url" aria-describedby="endpoint-error" aria-invalid="false" placeholder="https://provider.example/v1 or …/chat/completions" />
                 <p class="field-error" id="endpoint-error" role="status" aria-live="polite"></p>
               </div>
-              <div class="field">
-                <label for="model-name">Model name <span class="faint">(password-manager username)</span></label>
+              <div class="field credential-field">
+                <label for="model-name">Model name</label>
                 <input id="model-name" name="model" type="text" inputmode="text" autocomplete="username" aria-describedby="model-error" aria-invalid="false" placeholder="model-name…" />
                 <p class="field-error" id="model-error" role="status" aria-live="polite"></p>
               </div>
-              <div class="field">
-                <label for="model-key">API key <span class="faint">(password manager + local)</span></label>
-                <input id="model-key" name="apiKey" type="password" autocomplete="current-password" aria-describedby="key-help" placeholder="Paste a key…" />
-                <p class="field-help" id="key-help">Stored locally and saved as the password-manager password when supported.</p>
+              <div class="field credential-field api-key-field">
+                <label for="model-key">API key</label>
+                <input id="model-key" name="apiKey" type="password" autocomplete="current-password" placeholder="Paste a key…" />
               </div>
-              <button class="primary-button" type="submit"><span class="button-content"><span class="button-label">Connect model</span><span class="spinner" hidden aria-hidden="true"></span></span></button>
               <div class="field thinking-level-field">
-                <label for="thinking-level">Thinking level <span class="faint">(saved locally)</span></label>
+                <label for="thinking-level">Thinking level</label>
                 <select id="thinking-level" name="thinkingLevel" aria-describedby="thinking-level-help">
                   <option value="provider-default">Auto (provider default)</option>
                   <option value="none">Off</option>
@@ -60,11 +55,9 @@ export function renderShell(root: HTMLElement): AppElements {
                   <input id="model-vision" name="supportsVision" type="checkbox" />
                   <span>Model supports image input</span>
                 </label>
-                <p class="field-help">When enabled, images and scanned PDF pages are sent directly to the model. Otherwise they use local PaddleOCR.</p>
               </div>
-              <p class="connection-note">Requests go directly from this page to the endpoint. The endpoint must permit browser CORS; connection settings, including the API key, are stored only in this browser.</p>
-              <p class="credential-status" id="credential-status" role="status" aria-live="polite">The model name is the password-manager username; the API key is the password; endpoint is saved locally.</p>
-              <p class="connection-status" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
+              <p class="credential-status sr-only" id="credential-status" role="status" aria-live="polite">The model name is the password-manager username; the API key is the password; endpoint is saved locally.</p>
+              <p class="connection-status sr-only" id="connection-status" role="status" aria-live="polite" aria-atomic="true"></p>
             </form>
           </section>
           <div class="conversation-content" id="conversation-content">
@@ -82,11 +75,11 @@ export function renderShell(root: HTMLElement): AppElements {
           <form class="composer" id="composer-form">
             <label class="sr-only" for="message-input">Message the agent</label>
             <div class="attachment-bar" id="attachment-bar">
-              <button class="icon-button attachment-button" id="attachment-button" type="button" aria-label="Attach files" title="Attach files">＋</button>
               <input id="attachment-input" type="file" accept="image/*,.pdf,.doc,.docx,.odt,.rtf,.epub,.ppt,.pptx,.xls,.xlsx,.csv,.txt" multiple hidden />
               <div class="attachment-list" id="attachment-list" aria-live="polite"></div>
             </div>
             <div class="composer-input-row">
+              <button class="icon-button attachment-button" id="attachment-button" type="button" aria-label="Attach files" title="Attach files">＋</button>
               <textarea id="message-input" name="message" rows="1" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true"></textarea>
               <button class="primary-button send-button" id="send-button" type="submit" aria-label="Stop generation" hidden><span class="button-content"><span class="stop-icon" aria-hidden="true"></span><span class="button-label sr-only">Stop</span></span></button>
             </div>
