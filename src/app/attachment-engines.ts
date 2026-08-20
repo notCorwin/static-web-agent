@@ -1,6 +1,6 @@
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
 import { PaddleOCR } from "@paddleocr/paddleocr-js";
-import type { RenderedPdfPage } from "./attachments.js";
+import type { PdfPageContent, RenderedPdfPage } from "./attachments.js";
 
 interface OcrAssets {
   readonly workerUrl: string;
@@ -20,6 +20,8 @@ export interface OcrImageInput {
 }
 
 let paddle: Promise<Awaited<ReturnType<typeof PaddleOCR.create>>> | undefined;
+let paddleWorker: Worker | undefined;
+let paddleGeneration = 0;
 
 let pdfWorkerUrl: string | undefined;
 let anydocWorker: Worker | undefined;
@@ -112,12 +114,58 @@ async function yieldToBrowser(signal: AbortSignal): Promise<void> {
   throwIfAborted(signal);
 }
 
-export async function* streamPdfPages(
+function extractPdfText(items: readonly unknown[]): string {
+  let value = "";
+  for (const item of items) {
+    if (typeof item !== "object" || item === null || !("str" in item) || typeof item.str !== "string") continue;
+    if (value.length > 0 && !value.endsWith("\n") && item.str.length > 0) value += " ";
+    value += item.str;
+    if ("hasEOL" in item && item.hasEOL === true) value += "\n";
+  }
+  return value.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+async function renderPdfPage(page: pdfjs.PDFPageProxy, fileName: string, pageNumber: number, signal: AbortSignal): Promise<RenderedPdfPage> {
+  throwIfAborted(signal);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const scale = Math.min(1.8, Math.max(1, 1440 / Math.max(baseViewport.width, baseViewport.height)));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(viewport.width));
+  canvas.height = Math.max(1, Math.ceil(viewport.height));
+  try {
+    const context = canvas.getContext("2d", { alpha: false });
+    if (context === null) throw new Error(`Could not render page ${pageNumber} of “${fileName}”.`);
+    const renderTask = page.render({ canvasContext: context, canvas, viewport, intent: "print" });
+    const abortRender = (): void => renderTask.cancel();
+    signal.addEventListener("abort", abortRender, { once: true });
+    try {
+      await renderTask.promise;
+    } finally {
+      signal.removeEventListener("abort", abortRender);
+    }
+    throwIfAborted(signal);
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => value === null ? reject(new Error("Canvas encoding failed.")) : resolve(value), "image/png");
+    });
+    return {
+      name: `${fileName} · page ${pageNumber}`,
+      mediaType: "image/png",
+      data: new Uint8Array(await blob.arrayBuffer()),
+    };
+  } finally {
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+}
+
+async function* streamPdf<T>(
   bytes: Uint8Array,
   fileName: string,
   signal: AbortSignal,
   assets: PdfAssets,
-): AsyncGenerator<RenderedPdfPage> {
+  transform: (page: pdfjs.PDFPageProxy, pageNumber: number) => Promise<T>,
+): AsyncGenerator<T> {
   throwIfAborted(signal);
   configurePdfWorker(assets);
   const worker = pdfjs.PDFWorker.create({});
@@ -133,40 +181,7 @@ export async function* streamPdfPages(
       throwIfAborted(signal);
       const page = await pdf.getPage(pageNumber);
       try {
-        const baseViewport = page.getViewport({ scale: 1 });
-        const scale = Math.min(1.8, Math.max(1, 1440 / Math.max(baseViewport.width, baseViewport.height)));
-        const viewport = page.getViewport({ scale });
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.ceil(viewport.width));
-        canvas.height = Math.max(1, Math.ceil(viewport.height));
-        try {
-          const context = canvas.getContext("2d", { alpha: false });
-          if (context === null) throw new Error(`Could not render page ${pageNumber} of “${fileName}”.`);
-          const renderTask = page.render({ canvasContext: context, canvas, viewport, intent: "print" });
-          const abortRender = (): void => renderTask.cancel();
-          signal.addEventListener("abort", abortRender, { once: true });
-          try {
-            await renderTask.promise;
-          } finally {
-            signal.removeEventListener("abort", abortRender);
-          }
-          throwIfAborted(signal);
-          const blob = await new Promise<Blob>((resolve, reject) => {
-            canvas.toBlob((value) => value === null ? reject(new Error("Canvas encoding failed.")) : resolve(value), "image/png");
-          });
-          const result: RenderedPdfPage = {
-            name: `${fileName} · page ${pageNumber}`,
-            mediaType: "image/png",
-            data: new Uint8Array(await blob.arrayBuffer()),
-          };
-          canvas.width = 1;
-          canvas.height = 1;
-          page.cleanup();
-          yield result;
-        } finally {
-          canvas.width = 1;
-          canvas.height = 1;
-        }
+        yield await transform(page, pageNumber);
       } finally {
         page.cleanup();
       }
@@ -182,6 +197,28 @@ export async function* streamPdfPages(
       // A cancelled loading task may already have destroyed the worker.
     }
   }
+}
+
+export async function* streamPdfPages(
+  bytes: Uint8Array,
+  fileName: string,
+  signal: AbortSignal,
+  assets: PdfAssets,
+): AsyncGenerator<RenderedPdfPage> {
+  yield* streamPdf(bytes, fileName, signal, assets, (page, pageNumber) => renderPdfPage(page, fileName, pageNumber, signal));
+}
+
+export async function* streamPdfContentPages(
+  bytes: Uint8Array,
+  fileName: string,
+  signal: AbortSignal,
+  assets: PdfAssets,
+): AsyncGenerator<PdfPageContent> {
+  yield* streamPdf(bytes, fileName, signal, assets, async (page, pageNumber): Promise<PdfPageContent> => {
+    const text = extractPdfText((await page.getTextContent()).items);
+    if (text.length > 0) return { kind: "text", pageNumber, text };
+    return { kind: "image", pageNumber, image: await renderPdfPage(page, fileName, pageNumber, signal) };
+  });
 }
 
 export async function renderPdfPages(
@@ -215,24 +252,30 @@ async function blobFromBytes(data: Uint8Array, mediaType: string): Promise<Blob>
 
 async function getPaddle(assets: OcrAssets): Promise<Awaited<ReturnType<typeof PaddleOCR.create>>> {
   if (paddle === undefined) {
+    const generation = ++paddleGeneration;
     paddle = PaddleOCR.create({
       lang: "ch",
       ocrVersion: "PP-OCRv5",
       worker: {
-        createWorker: () => new Worker(assets.workerUrl, { type: "module" }),
+        createWorker: () => {
+          const worker = new Worker(assets.workerUrl, { type: "module" });
+          if (generation !== paddleGeneration) {
+            worker.terminate();
+            throw new Error("OCR worker generation was cancelled.");
+          }
+          paddleWorker = worker;
+          return worker;
+        },
       },
       ortOptions: {
-        backend: "wasm",
+        backend: "auto",
         numThreads: 1,
-        // PaddleOCR.js currently types wasmPaths as a string, but ONNX
-        // Runtime also accepts an explicit { mjs, wasm } mapping. Using the
-        // non-JSEP WASM pair avoids downloading the WebGPU/JSEP binary when
-        // this pipeline is explicitly configured for the WASM backend.
         wasmPaths: {
           mjs: assets.wasmModuleUrl,
           wasm: assets.wasmBinaryUrl,
         } as unknown as string,
       },
+      batch_size: 2,
       textDetectionBatchSize: 2,
       textRecognitionBatchSize: 8,
       textDetectionModelName: "PP-OCRv5_mobile_det",
@@ -240,21 +283,49 @@ async function getPaddle(assets: OcrAssets): Promise<Awaited<ReturnType<typeof P
       textRecognitionModelName: "PP-OCRv5_mobile_rec",
       textRecognitionModelAsset: { url: assets.recognitionModelUrl },
     }).catch((error) => {
-      paddle = undefined;
+      if (generation === paddleGeneration) paddle = undefined;
       throw error;
     });
   }
   return paddle;
 }
 
+function cancelPaddle(): void {
+  paddleGeneration += 1;
+  paddle = undefined;
+  paddleWorker?.terminate();
+  paddleWorker = undefined;
+}
+
 export async function recognizeImages(inputs: readonly OcrImageInput[], assets: OcrAssets, signal: AbortSignal): Promise<readonly string[]> {
   if (inputs.length === 0) return [];
   throwIfAborted(signal);
-  const ocr = await getPaddle(assets);
-  throwIfAborted(signal);
-  const result = await ocr.predict(await Promise.all(inputs.map((input) => blobFromBytes(input.data, input.mediaType))));
-  throwIfAborted(signal);
-  return result.map((item) => sortOcrItems(item.items).join("\n"));
+  const operation = (async (): Promise<readonly string[]> => {
+    const ocr = await getPaddle(assets);
+    throwIfAborted(signal);
+    const result = await ocr.predict(await Promise.all(inputs.map((input) => blobFromBytes(input.data, input.mediaType))));
+    throwIfAborted(signal);
+    return result.map((item) => sortOcrItems(item.items).join("\n"));
+  })();
+  let rejectAbort: (reason?: unknown) => void = () => undefined;
+  const abortPromise = new Promise<readonly string[]>((_resolve, reject) => { rejectAbort = reject; });
+  let aborted = false;
+  const abort = (): void => {
+    if (aborted) return;
+    aborted = true;
+    cancelPaddle();
+    const error = new Error("Attachment processing was cancelled.");
+    error.name = "AbortError";
+    rejectAbort(error);
+  };
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    if (signal.aborted) abort();
+    return await Promise.race([operation, abortPromise]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+    void operation.catch(() => undefined);
+  }
 }
 
 export async function recognizeImage(data: Uint8Array, mediaType: string, assets: OcrAssets, signal: AbortSignal): Promise<string> {
@@ -262,15 +333,7 @@ export async function recognizeImage(data: Uint8Array, mediaType: string, assets
 }
 
 export async function disposeAttachmentEngines(): Promise<void> {
-  const current = paddle;
-  paddle = undefined;
-  if (current !== undefined) {
-    try {
-      await (await current).dispose();
-    } catch {
-      // Disposal is best effort when the page is already unloading.
-    }
-  }
+  cancelPaddle();
   const currentAnydoc = anydocWorker;
   anydocWorker = undefined;
   for (const request of anydocRequests.values()) request.reject(new Error("Document conversion was stopped."));

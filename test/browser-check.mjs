@@ -60,9 +60,32 @@ function createScannedPdf(pageCount = 1) {
   return new TextEncoder().encode(source);
 }
 
+function createMixedPdf() {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Resources << /Font << /F1 6 0 R >> >> /Contents 5 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 120] /Resources << >> >>",
+    "<< /Length 41 >>\nstream\nBT /F1 18 Tf 20 60 Td (MIXED TEXT) Tj ET\nendstream",
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+  let source = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(source.length);
+    source += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = source.length;
+  source += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets.slice(1)) source += `${String(offset).padStart(10, "0")} 00000 n \n`;
+  source += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return new TextEncoder().encode(source);
+}
+
 async function startStaticServer() {
   let toolRequests = 0;
   let streamedToolRequests = 0;
+  let failedVisionRequests = 0;
   const reasoningRequests = [];
   const visionRequests = [];
   const assetRequests = [];
@@ -70,7 +93,7 @@ async function startStaticServer() {
     try {
       const pathname = decodeURIComponent(new URL(request.url ?? "/", "http://127.0.0.1").pathname);
       if (pathname.includes("paddleocr") || pathname.includes("onnxruntime") || pathname.includes("pdfjs") || pathname.includes("anydoc")) assetRequests.push(pathname);
-      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning" || pathname === "/test-vision") {
+      if (pathname === "/test-sse" || pathname === "/test-rich" || pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-scroll" || pathname === "/test-hang" || pathname === "/test-reasoning" || pathname === "/test-vision" || pathname === "/test-vision-fail") {
         if (pathname === "/test-reasoning") {
           const rawBody = await new Promise((resolve) => {
             let body = "";
@@ -79,7 +102,7 @@ async function startStaticServer() {
           });
           try { reasoningRequests.push(JSON.parse(rawBody)); } catch { reasoningRequests.push(undefined); }
         }
-        if (pathname === "/test-vision") {
+        if (pathname === "/test-vision" || pathname === "/test-vision-fail") {
           const rawBody = await new Promise((resolve) => {
             let body = "";
             request.on("data", (chunk) => { body += chunk.toString(); });
@@ -90,6 +113,11 @@ async function startStaticServer() {
           } catch {
             visionRequests.push(undefined);
           }
+        }
+        if (pathname === "/test-vision-fail" && failedVisionRequests++ === 0) {
+          response.writeHead(500, { "content-type": "text/plain" });
+          response.end("intentional vision failure");
+          return;
         }
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         if (pathname === "/test-scroll") {
@@ -133,7 +161,7 @@ async function startStaticServer() {
             "console.log(value);",
             "```",
           ].join("\n")
-          : pathname === "/test-vision"
+          : pathname === "/test-vision" || pathname === "/test-vision-fail"
             ? "vision complete"
             : pathname === "/test-tool" || pathname === "/test-tool-stream" || pathname === "/test-reasoning"
             ? "tool complete"
@@ -322,6 +350,7 @@ if (browser === undefined) {
 const externalLongPdfPath = process.env.E2E_LONG_PDF_PATH;
 const externalLongPdfPages = Number.parseInt(process.env.E2E_LONG_PDF_PAGES ?? "", 10);
 const externalLongPdfVision = process.env.E2E_LONG_PDF_VISION !== "0";
+const useWebGpu = process.env.E2E_WEBGPU === "1";
 const externalLongPdfBase64 = externalLongPdfPath === undefined
   ? undefined
   : (await readFile(externalLongPdfPath)).toString("base64");
@@ -331,12 +360,13 @@ if (externalLongPdfBase64 !== undefined && !Number.isInteger(externalLongPdfPage
 const { server, port, reasoningRequests, visionRequests, assetRequests } = await startStaticServer();
 const scannedPdfBase64 = Buffer.from(createScannedPdf()).toString("base64");
 const longScannedPdfBase64 = Buffer.from(createScannedPdf(12)).toString("base64");
+const mixedPdfBase64 = Buffer.from(createMixedPdf()).toString("base64");
 const release = JSON.parse(await readFile(join(root, "dist/version.json"), "utf8"));
 const profile = await mkdtemp(join(tmpdir(), "static-web-agent-browser-"));
 const child = spawn(browser, [
   "--headless=new",
   "--no-sandbox",
-  "--disable-gpu",
+  ...(useWebGpu ? ["--enable-unsafe-webgpu"] : ["--disable-gpu"]),
   "--disable-dev-shm-usage",
   "--no-first-run",
   "--no-default-browser-check",
@@ -555,6 +585,61 @@ try {
     document.querySelector('#connection-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(() => {
+    const NativeWorker = window.Worker;
+    const stats = { created: 0, terminated: 0, predicts: 0, predictBatchSizes: [], runtimes: [], delayed: false };
+    window.__ocrWorkerStats = stats;
+    window.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        super(url, options);
+        this.__ocrWorker = String(url).includes('worker-entry');
+        this.__ocrTimers = new Set();
+        this.__ocrRequestTypes = new Map();
+        if (this.__ocrWorker) {
+          stats.created += 1;
+          this.addEventListener('message', (event) => {
+            const response = event.data;
+            if (response?.kind !== 'worker-transport-response') return;
+            const type = this.__ocrRequestTypes.get(response.requestId);
+            this.__ocrRequestTypes.delete(response.requestId);
+            if (response.status !== 'success') return;
+            const runtime = type === 'init'
+              ? response.payload?.summary
+              : type === 'predict' && Array.isArray(response.payload)
+                ? response.payload[0]?.runtime
+                : undefined;
+            if (runtime !== undefined) stats.runtimes.push(runtime);
+          });
+        }
+        const post = this.postMessage.bind(this);
+        this.postMessage = (message, transferables) => {
+          if (this.__ocrWorker && message?.kind === 'worker-transport-request') {
+            this.__ocrRequestTypes.set(message.requestId, message.type);
+            if (message.type === 'predict') {
+              stats.predicts += 1;
+              stats.predictBatchSizes.push(message.payload?.sources?.length ?? 0);
+            }
+          }
+          if (this.__ocrWorker && stats.delayed && message?.kind === 'worker-transport-request' && message.type === 'predict') {
+            const timer = setTimeout(() => {
+              this.__ocrTimers.delete(timer);
+              try { post(message, transferables); } catch {}
+            }, 5000);
+            this.__ocrTimers.add(timer);
+            return;
+          }
+          post(message, transferables);
+        };
+      }
+
+      terminate() {
+        for (const timer of this.__ocrTimers) clearTimeout(timer);
+        this.__ocrTimers.clear();
+        if (this.__ocrWorker) stats.terminated += 1;
+        return super.terminate();
+      }
+    };
+  })()`);
   const previousOcrAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
   await page.evaluate(`(async () => {
     const canvas = document.createElement('canvas');
@@ -571,7 +656,7 @@ try {
     const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value === null ? reject(new Error('Could not create OCR fixture.')) : resolve(value), 'image/png'));
     const input = document.querySelector('#attachment-input');
     const transfer = new DataTransfer();
-    transfer.items.add(new File([blob], 'ocr.png', { type: 'image/png' }));
+    transfer.items.add(new File([blob], 'fixture.png', { type: 'image/png' }));
     input.files = transfer.files;
     input.dispatchEvent(new Event('change', { bubbles: true }));
     document.querySelector('#composer-form').requestSubmit();
@@ -581,10 +666,102 @@ try {
   const ocrRequest = visionRequests.at(-1);
   const ocrMessage = ocrRequest?.messages?.findLast((message) => typeof message.content === "string" && message.content.toUpperCase().includes("OCR"));
   assert.equal(typeof ocrMessage?.content, "string");
-  assert.ok(ocrMessage?.content.toUpperCase().includes("OCR"), "non-vision image uploads should be sent as local OCR text");
+  assert.ok(ocrMessage?.content.includes("OCR E2E"), "non-vision image uploads should preserve recognized OCR text");
   assert.equal(ocrRequest?.messages?.some((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url")), false);
-  assert.ok(assetRequests.some((path) => path.endsWith("/ort-wasm-simd-threaded.wasm")), "local OCR should load the regular WASM runtime");
-  assert.equal(assetRequests.some((path) => path.includes(".jsep.")), false, "local OCR should not load the larger JSEP runtime");
+  const initialOcrStats = await page.evaluate("window.__ocrWorkerStats");
+  assert.equal(initialOcrStats.predicts, 1, "one image should produce one OCR prediction");
+  const initialRuntime = initialOcrStats.runtimes.at(-1);
+  assert.equal(initialRuntime?.detProvider, useWebGpu ? "webgpu" : "wasm", "OCR detection provider should match the selected E2E backend");
+  assert.equal(initialRuntime?.recProvider, useWebGpu ? "webgpu" : "wasm", "OCR recognition provider should match the selected E2E backend");
+  assert.equal(initialRuntime?.webgpuAvailable, useWebGpu, "OCR runtime metadata should report WebGPU availability accurately");
+  if (!useWebGpu) assert.ok(assetRequests.some((path) => path.endsWith("/ort-wasm-simd-threaded.jsep.wasm")), "local OCR should load the JSEP runtime");
+  assert.equal(assetRequests.some((path) => path.endsWith("/ort-wasm-simd-threaded.wasm")), false, "local OCR should not load the legacy runtime");
+  const predictsBeforeBatch = initialOcrStats.predicts;
+  const previousBatchAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 160;
+    const context = canvas.getContext('2d');
+    context.fillStyle = 'white';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'black';
+    context.font = '64px Arial';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('OCR E2E', canvas.width / 2, canvas.height / 2);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value === null ? reject(new Error('Could not create batch fixture.')) : resolve(value), 'image/png'));
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'batch-a.png', { type: 'image/png' }));
+    transfer.items.add(new File([blob], 'batch-b.png', { type: 'image/png' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousBatchAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 120_000);
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true", 120_000);
+  const batchOcrStats = await page.evaluate("window.__ocrWorkerStats");
+  assert.equal(batchOcrStats.predicts - predictsBeforeBatch, 1, "two images should produce one batched OCR prediction");
+  assert.equal(batchOcrStats.predictBatchSizes.at(-1), 2, "the OCR worker should receive both images in one batch");
+  assert.ok(batchOcrStats.predictBatchSizes.every((size) => size <= 2), "the OCR worker should never receive more than two images at once");
+  await page.evaluate(`(async () => {
+    window.__ocrWorkerStats.delayed = true;
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 160;
+    const context = canvas.getContext('2d');
+    context.fillStyle = 'white';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'black';
+    context.font = '64px Arial';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('OCR E2E', canvas.width / 2, canvas.height / 2);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value === null ? reject(new Error('Could not create cancellation fixture.')) : resolve(value), 'image/png'));
+    transfer.items.add(new File([blob], 'cancel.png', { type: 'image/png' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#message-input').value = 'cancel OCR';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await page.evaluate("document.querySelector('#composer-form').requestSubmit()");
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true", 2_000);
+  const cancelledOcrStats = await page.evaluate("window.__ocrWorkerStats");
+  assert.ok(cancelledOcrStats.terminated >= 1, "stopping local OCR should terminate its worker");
+  const requestsBeforeRecreatedOcr = visionRequests.length;
+  await page.evaluate(`(() => {
+    window.__ocrWorkerStats.delayed = false;
+    document.querySelector('#message-input').value = 'OCR after cancellation';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  const retryAfterCancellationDeadline = Date.now() + 120_000;
+  while (visionRequests.length <= requestsBeforeRecreatedOcr && Date.now() < retryAfterCancellationDeadline) await new Promise((resolve) => setTimeout(resolve, 100));
+  if (visionRequests.length <= requestsBeforeRecreatedOcr) throw new Error("Timed out waiting for OCR after cancellation.");
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true", 120_000);
+  const recreatedOcrStats = await page.evaluate("window.__ocrWorkerStats");
+  assert.ok(recreatedOcrStats.created >= 2, "local OCR should recreate a worker after cancellation");
+  assert.match(visionRequests.at(-1)?.messages?.findLast((message) => message.role === "user")?.content ?? "", /OCR E2E/);
+  const previousMixedLocalAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    const bytes = Uint8Array.from(atob('${mixedPdfBase64}'), (value) => value.charCodeAt(0));
+    transfer.items.add(new File([bytes], 'mixed.pdf', { type: 'application/pdf' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#message-input').value = 'mixed local PDF';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousMixedLocalAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 30_000);
+  const mixedLocalRequest = visionRequests.at(-1);
+  const mixedLocalMessage = mixedLocalRequest?.messages?.findLast((message) => typeof message.content === "string" && message.content.includes("MIXED TEXT"));
+  assert.equal(typeof mixedLocalMessage?.content, "string");
+  assert.equal(mixedLocalRequest?.messages?.some((message) => Array.isArray(message.content)), false, "mixed local PDFs should not send page images");
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
   await page.evaluate(`(() => {
     document.querySelector('#model-vision').checked = true;
     document.querySelector('#connection-form').requestSubmit();
@@ -606,6 +783,51 @@ try {
   assert.equal(visualMessage?.content?.[0]?.type, "text");
   assert.equal(visualMessage?.content?.[1]?.type, "image_url");
   assert.match(visualMessage?.content?.[1]?.image_url?.url ?? "", /^data:image\/png;base64,/);
+  await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = location.origin + '/test-vision-fail';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
+  await page.evaluate(`(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 640;
+    canvas.height = 160;
+    const context = canvas.getContext('2d');
+    context.fillStyle = 'white';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'black';
+    context.font = '64px Arial';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText('OCR E2E', canvas.width / 2, canvas.height / 2);
+    const blob = await new Promise((resolve, reject) => canvas.toBlob((value) => value === null ? reject(new Error('Could not create retry fixture.')) : resolve(value), 'image/png'));
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([blob], 'retry.png', { type: 'image/png' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#message-input').value = 'retry vision request';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('[data-action=vision-fallback]') !== null", 20_000);
+  const failedVisionRequest = visionRequests.at(-1);
+  const failedVisionImageCount = failedVisionRequest?.messages?.reduce((count, message) => count + (Array.isArray(message.content) ? message.content.filter((part) => part.type === "image_url").length : 0), 0) ?? 0;
+  const failedVisionUserCount = failedVisionRequest?.messages?.filter((message) => message.role === "user").length ?? 0;
+  const failedVisionRequestCount = visionRequests.length;
+  await page.evaluate("document.querySelector('[data-action=vision-fallback]').click()");
+  const retryRequestDeadline = Date.now() + 120_000;
+  while (visionRequests.length <= failedVisionRequestCount && Date.now() < retryRequestDeadline) await new Promise((resolve) => setTimeout(resolve, 100));
+  if (visionRequests.length <= failedVisionRequestCount) throw new Error("Timed out waiting for local OCR retry request.");
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true", 120_000);
+  const retriedVisionRequest = visionRequests.at(-1);
+  const retriedVisionImageCount = retriedVisionRequest?.messages?.reduce((count, message) => count + (Array.isArray(message.content) ? message.content.filter((part) => part.type === "image_url").length : 0), 0) ?? 0;
+  const retriedVisionUserCount = retriedVisionRequest?.messages?.filter((message) => message.role === "user").length ?? 0;
+  const retriedVisionMessage = retriedVisionRequest?.messages?.findLast((message) => message.role === "user");
+  assert.equal(retriedVisionUserCount, failedVisionUserCount, "local OCR retry should replace the failed user turn");
+  assert.equal(retriedVisionImageCount, failedVisionImageCount - 1, "local OCR retry should remove the failed visual attachment");
+  assert.equal(typeof retriedVisionMessage?.content, "string");
+  assert.match(retriedVisionMessage?.content ?? "", /OCR E2E/);
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
   const previousAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
   await page.evaluate(`(() => {
     const input = document.querySelector('#attachment-input');
@@ -622,6 +844,22 @@ try {
   assert.ok(documentMessage?.content.includes("Alice"), "ordinary documents should be converted to Markdown locally before sending");
   assert.ok(assetRequests.some((path) => path.endsWith("/app/assets/anydoc-worker.js")), "document conversion should run in its dedicated worker");
   assert.ok(assetRequests.some((path) => path.endsWith("/vendor/anydoc/anydoc_wasm_bg.wasm")), "the anydoc worker should load its WASM from the same origin");
+  await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
+  const previousMixedVisualAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#attachment-input');
+    const transfer = new DataTransfer();
+    const bytes = Uint8Array.from(atob('${mixedPdfBase64}'), (value) => value.charCodeAt(0));
+    transfer.items.add(new File([bytes], 'mixed.pdf', { type: 'application/pdf' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousMixedVisualAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 30_000);
+  const mixedVisualRequest = visionRequests.at(-1);
+  const mixedVisualMessage = mixedVisualRequest?.messages?.findLast((message) => Array.isArray(message.content) && message.content.some((part) => part.type === "image_url"));
+  assert.equal(mixedVisualMessage?.content?.filter((part) => part.type === "image_url").length, 1, "mixed PDFs should send only their image-only page");
+  assert.ok(mixedVisualMessage?.content?.some((part) => part.type === "text" && part.text.includes("MIXED TEXT")), "mixed PDFs should retain their text page");
   await waitFor(page, "document.querySelector('#send-button')?.hidden === true");
   const previousPdfAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
   await page.evaluate(`(() => {
@@ -663,6 +901,7 @@ try {
     })()`);
     await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
     const previousExternalPdfAssistantCount = await page.evaluate("document.querySelectorAll('.message.assistant .message-body').length");
+    const externalPdfStartedAt = Date.now();
     await page.evaluate(`(() => {
       const input = document.querySelector('#attachment-input');
       const transfer = new DataTransfer();
@@ -674,6 +913,9 @@ try {
       document.querySelector('#composer-form').requestSubmit();
     })()`);
     await waitFor(page, `document.querySelectorAll('.message.assistant .message-body').length > ${previousExternalPdfAssistantCount} && Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'vision complete'`, 180_000);
+    const externalPdfElapsedMs = Date.now() - externalPdfStartedAt;
+    if (useWebGpu && !externalLongPdfVision && externalLongPdfPages === 1) assert.ok(externalPdfElapsedMs <= 60_000, `single-page WebGPU OCR took ${externalPdfElapsedMs}ms`);
+    if (useWebGpu && !externalLongPdfVision && externalLongPdfPages === 35) assert.ok(externalPdfElapsedMs <= 180_000, `35-page WebGPU OCR took ${externalPdfElapsedMs}ms`);
     const externalAttachmentCount = await page.evaluate("Array.from(document.querySelectorAll('article.message.user')).at(-1)?.querySelectorAll('.message-attachment-chip').length ?? 0");
     assert.equal(externalAttachmentCount, externalLongPdfVision ? externalLongPdfPages : 0, "the folder PDF should expose visual page attachments only in vision mode");
     const externalRequest = visionRequests.at(-1);

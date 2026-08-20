@@ -169,6 +169,8 @@ The remote adapter uses ordinary browser `fetch` and therefore remains subject t
 
 The reference app stores connection settings in its existing browser-local IndexedDB database (`static-web-agent`, `workspace` object store) and keeps chat messages and attachment bytes in memory. The `local-storage` plugin uses its own `plugin:<plugin-id>` namespace; it does not share or rewrite the app's connection-settings record.
 
+PDF attachments are processed page by page with PDF.js: pages with a non-empty text layer become ordered text blocks, while image-only pages are rendered for vision or local PaddleOCR. `PdfPageContent` and the optional `streamPdfContentPages` dependency are exported from the app entry point; the older image-page callbacks remain compatible. Local OCR selects WebGPU automatically and falls back to the bundled WASM runtime.
+
 ## Browser security boundaries
 
 The browser sandbox is intentional. The Harness does not emulate shell commands, arbitrary host filesystem paths, native processes, unrestricted cross-origin requests, other tabs, or unavailable browser APIs. `browser.evaluate` uses the current page realm and can only call the APIs that page actually has. Providers, CORS, same-origin policy, permissions, memory/CPU, and context windows remain external limits.

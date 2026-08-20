@@ -73,8 +73,8 @@ await copyFile(
 );
 await mkdir("dist/vendor/paddleocr/ort", { recursive: true });
 for (const file of [
-  "ort-wasm-simd-threaded.mjs",
-  "ort-wasm-simd-threaded.wasm",
+  "ort-wasm-simd-threaded.jsep.mjs",
+  "ort-wasm-simd-threaded.jsep.wasm",
 ]) {
   await copyFile(`node_modules/onnxruntime-web/dist/${file}`, `dist/vendor/paddleocr/ort/${file}`);
 }

@@ -511,6 +511,34 @@ test("attachment processing routes non-vision images through local OCR", async (
   assert.equal(result.usedVision, false);
 });
 
+test("image extensions recover an empty or generic MIME type", async () => {
+  const emptyType = createPendingAttachment(new File([new Uint8Array([1])], "scan.png"));
+  const genericType = createPendingAttachment(new File([new Uint8Array([1])], "scan.jpg", { type: "application/octet-stream" }));
+  assert.equal(emptyType.mediaType, "image/png");
+  assert.equal(genericType.mediaType, "image/jpeg");
+  const result = await processAttachmentFiles([emptyType], false, noSignal(), { recognizeImage: async () => "recognized" });
+  assert.match(result.content, /recognized/);
+});
+
+test("text attachments decode UTF-8 and UTF-16 BOMs without AnyDoc", async () => {
+  const utf8 = createPendingAttachment(new File([new Uint8Array([0xef, 0xbb, 0xbf, 0x55, 0x54, 0x46, 0x38])], "utf8.txt"));
+  const utf16le = createPendingAttachment(new File([new Uint8Array([0xff, 0xfe, 0x55, 0x00, 0x54, 0x00, 0x46, 0x00])], "utf16le.txt"));
+  const utf16be = createPendingAttachment(new File([new Uint8Array([0xfe, 0xff, 0x00, 0x55, 0x00, 0x54, 0x00, 0x46])], "utf16be.txt"));
+  let anydocCalls = 0;
+  const result = await processAttachmentFiles([utf8, utf16le, utf16be], false, noSignal(), {
+    documentToMarkdown: async () => {
+      anydocCalls += 1;
+      return "unexpected";
+    },
+  });
+  assert.equal(anydocCalls, 0);
+  assert.equal((result.content.match(/UTF/g) ?? []).length, 3);
+  const whitespace = createPendingAttachment(new File([new TextEncoder().encode(" \n")], "empty.txt", { type: "text/plain" }));
+  await assert.rejects(processAttachmentFiles([whitespace], false, noSignal()), (error) => error.code === "ATTACHMENT_PARSE_FAILED");
+  const invalid = createPendingAttachment(new File([new Uint8Array([0xff])], "invalid.txt", { type: "text/plain" }));
+  await assert.rejects(processAttachmentFiles([invalid], false, noSignal()), (error) => error.code === "ATTACHMENT_PARSE_FAILED");
+});
+
 test("attachment OCR failure is surfaced once without an automatic retry", async () => {
   const pending = createPendingAttachment(new File([new Uint8Array([1, 2])], "scan.png", { type: "image/png" }));
   let calls = 0;
@@ -602,7 +630,7 @@ test("streamed PDF pages are OCRed in bounded batches without retaining the full
   const result = await processAttachmentFiles([pending], false, noSignal(), {
     documentToMarkdown: async () => undefined,
     streamPdfPages: async function* () {
-      for (let page = 1; page <= 10; page += 1) {
+      for (let page = 1; page <= 5; page += 1) {
         renderedPages += 1;
         yield { name: `long-scan.pdf · page ${page}`, mediaType: "image/png", data: new Uint8Array([page]) };
       }
@@ -612,10 +640,76 @@ test("streamed PDF pages are OCRed in bounded batches without retaining the full
       return inputs.map((input) => `OCR page ${input.data[0]}`);
     },
   });
-  assert.equal(renderedPages, 10);
-  assert.deepEqual(batchSizes, [8, 2]);
+  assert.equal(renderedPages, 5);
+  assert.deepEqual(batchSizes, [2, 2, 1]);
   assert.match(result.content, /long-scan\.pdf · page 1/);
-  assert.match(result.content, /OCR page 10/);
+  assert.match(result.content, /OCR page 5/);
+});
+
+test("mixed PDF pages preserve order and process only image pages", async () => {
+  const pending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "mixed.pdf", { type: "application/pdf" }));
+  const pages = [
+    { kind: "text", pageNumber: 1, text: "first page text" },
+    { kind: "image", pageNumber: 2, image: { name: "mixed.pdf · page 2", mediaType: "image/png", data: new Uint8Array([2]) } },
+    { kind: "text", pageNumber: 3, text: "last page text" },
+  ];
+  let ocrCalls = 0;
+  const visual = await processAttachmentFiles([pending], true, noSignal(), {
+    streamPdfContentPages: async function* () { yield* pages; },
+  });
+  assert.deepEqual(visual.attachmentIds, [`${pending.id}-page-2`]);
+  assert.ok(visual.content.indexOf("first page text") < visual.content.indexOf("page 2"));
+  assert.ok(visual.content.indexOf("page 2") < visual.content.indexOf("last page text"));
+
+  const text = await processAttachmentFiles([pending], false, noSignal(), {
+    streamPdfContentPages: async function* () { yield* pages; },
+    recognizeImages: async (inputs) => {
+      ocrCalls += 1;
+      assert.deepEqual(inputs.map((input) => input.data[0]), [2]);
+      return ["scanned page text"];
+    },
+  });
+  assert.equal(ocrCalls, 1);
+  assert.ok(text.content.indexOf("first page text") < text.content.indexOf("scanned page text"));
+  assert.ok(text.content.indexOf("scanned page text") < text.content.indexOf("last page text"));
+});
+
+test("text-only PDFs do not render or OCR pages", async () => {
+  const pending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "text.pdf", { type: "application/pdf" }));
+  let rendered = false;
+  let ocr = false;
+  const result = await processAttachmentFiles([pending], false, noSignal(), {
+    streamPdfContentPages: async function* () {
+      yield { kind: "text", pageNumber: 1, text: "PDF text" };
+    },
+    recognizeImages: async () => { ocr = true; return []; },
+    renderPdfPages: async () => { rendered = true; return []; },
+  });
+  assert.match(result.content, /PDF text/);
+  assert.equal(rendered, false);
+  assert.equal(ocr, false);
+});
+
+test("a PDF with no OCR text fails, while blank pages beside text remain usable", async () => {
+  const emptyPending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "empty.pdf", { type: "application/pdf" }));
+  const emptyPages = [{ kind: "image", pageNumber: 1, image: { name: "empty.pdf · page 1", mediaType: "image/png", data: new Uint8Array([1]) } }];
+  await assert.rejects(
+    processAttachmentFiles([emptyPending], false, noSignal(), {
+      streamPdfContentPages: async function* () { yield* emptyPages; },
+      recognizeImages: async () => [""],
+    }),
+    (error) => error.code === "ATTACHMENT_PARSE_FAILED",
+  );
+
+  const usablePending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "usable.pdf", { type: "application/pdf" }));
+  const usable = await processAttachmentFiles([usablePending], false, noSignal(), {
+    streamPdfContentPages: async function* () {
+      yield { kind: "image", pageNumber: 1, image: { name: "usable.pdf · page 1", mediaType: "image/png", data: new Uint8Array([1]) } };
+      yield { kind: "image", pageNumber: 2, image: { name: "usable.pdf · page 2", mediaType: "image/png", data: new Uint8Array([2]) } };
+    },
+    recognizeImages: async () => ["", "page two"],
+  });
+  assert.match(usable.content, /page two/);
 });
 
 test("ordinary documents use anydoc output without OCR or page rendering", async () => {

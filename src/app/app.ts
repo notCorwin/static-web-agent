@@ -38,6 +38,7 @@ type PendingStreamSegment =
 interface VisionRetry {
   readonly content: string;
   readonly files: readonly PendingAttachment[];
+  readonly historyLength: number;
 }
 
 function browserEndpoint(value: unknown): string {
@@ -431,10 +432,24 @@ export class AgentApp {
     });
   }
 
+  private pruneModelAttachments(): void {
+    const liveIds = new Set<string>();
+    for (const message of this.chat.messages) {
+      if (message.role !== "user") continue;
+      for (const id of message.attachmentIds ?? []) liveIds.add(id);
+    }
+    for (const id of this.modelAttachments.keys()) {
+      if (!liveIds.has(id)) this.modelAttachments.delete(id);
+    }
+  }
+
   private async retryWithLocalOcr(): Promise<void> {
     if (this.busy || this.visionRetry === undefined) return;
     const retry = this.visionRetry;
     this.visionRetry = undefined;
+    this.chat.messages = normalizeMessages(this.chat.messages.slice(0, retry.historyLength));
+    this.pruneModelAttachments();
+    this.renderedMessages = undefined;
     this.pendingAttachments = [...retry.files];
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     input.value = retry.content;
@@ -456,6 +471,7 @@ export class AgentApp {
     const input = this.elements["message-input"] as HTMLTextAreaElement;
     const rawContent = input.value.trim();
     const selectedAttachments = [...this.pendingAttachments];
+    const historyLength = this.chat.messages.length;
     if (!rawContent && selectedAttachments.length === 0) {
       this.notify("Write a message before sending.", "error");
       input.focus();
@@ -523,12 +539,13 @@ export class AgentApp {
         onEvent: (event) => this.handleAgentEvent(event),
       });
       this.chat.messages = normalizeMessages(result.messages);
+      this.pruneModelAttachments();
       if (result.status === "completed") this.notify("Response complete.", "success");
       else if (result.status === "cancelled") this.notify("Run cancelled.", "error");
       else if (result.status === "max-turns") this.notify("Run stopped at the turn limit.", "error");
       else {
         if (prepared?.usedVision) {
-          this.visionRetry = { content: rawContent, files: selectedAttachments };
+          this.visionRetry = { content: rawContent, files: selectedAttachments, historyLength };
           this.pendingAttachments = [...selectedAttachments];
           this.notify("The vision request failed. You can retry once with local OCR.", "error");
         } else {
@@ -537,7 +554,7 @@ export class AgentApp {
       }
     } catch (error) {
       if (prepared?.usedVision && !controller.signal.aborted) {
-        this.visionRetry = { content: rawContent, files: selectedAttachments };
+        this.visionRetry = { content: rawContent, files: selectedAttachments, historyLength };
         this.pendingAttachments = [...selectedAttachments];
         this.notify("The vision request failed. You can retry once with local OCR.", "error");
       } else {
@@ -1026,6 +1043,7 @@ export class AgentApp {
       return;
     }
     this.chat.messages = normalizeMessages(this.chat.messages.slice(0, index));
+    this.pruneModelAttachments();
     this.renderedMessages = undefined;
     this.renderChat();
     const input = this.elements["message-input"] as HTMLTextAreaElement;
