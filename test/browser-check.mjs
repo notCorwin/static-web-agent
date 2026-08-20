@@ -160,6 +160,11 @@ async function startStaticServer() {
             "/* remove block comment */",
             "console.log(value);",
             "```",
+            "",
+            "```text",
+            ".:-=+*#%@".repeat(220),
+            ...Array.from({ length: 80 }, (_, index) => `${String(index).padStart(2, "0")} ${"@".repeat(120)}`),
+            "```",
           ].join("\n")
           : pathname === "/test-vision" || pathname === "/test-vision-fail"
             ? "vision complete"
@@ -945,6 +950,31 @@ try {
   const richFeatures = await page.evaluate("(() => { const assistant = Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1); const user = Array.from(document.querySelectorAll('.message.user .message-body')).at(-1); return { assistantMarkdown: assistant?.querySelector('h1')?.textContent === 'Rich response', assistantLatex: assistant?.querySelector('.katex') !== null, assistantMermaid: assistant?.querySelector('.mermaid-diagram svg') !== null, userMarkdown: user?.querySelector('h1')?.textContent === 'User rich', userLatex: user?.querySelector('.katex') !== null }; })()");
   assert.deepEqual(richFeatures, { assistantMarkdown: true, assistantLatex: true, assistantMermaid: true, userMarkdown: true, userLatex: true });
   await waitFor(page, "document.querySelector('.message.assistant:last-of-type .code-copy-button') !== null");
+  const longCodeLayout = await page.evaluate(`(() => {
+    const assistant = document.querySelector('.message.assistant:last-of-type .message-body');
+    const block = Array.from(assistant?.querySelectorAll('.code-block') ?? []).find((item) => item.querySelector('.code-language')?.textContent === 'text');
+    const pre = block?.querySelector('pre');
+    const chat = document.querySelector('#chat-log');
+    const body = assistant;
+    if (assistant === null || block === undefined || pre === null || chat === null || body === null) return null;
+    const maxHeight = Math.min(window.innerHeight * 0.6, 560);
+    return {
+      boundedWidth: block.getBoundingClientRect().width <= body.getBoundingClientRect().width + 1,
+      boundedHeight: pre.getBoundingClientRect().height <= maxHeight + 1,
+      verticalOverflow: pre.scrollHeight > pre.clientHeight,
+      horizontalOverflow: pre.scrollWidth > pre.clientWidth,
+      chatHasNoHorizontalOverflow: chat.scrollWidth <= chat.clientWidth + 1,
+      sourceOnly: pre.querySelector(':scope > code') !== null && assistant.querySelector('iframe, canvas') === null,
+    };
+  })()`);
+  assert.deepEqual(longCodeLayout, {
+    boundedWidth: true,
+    boundedHeight: true,
+    verticalOverflow: true,
+    horizontalOverflow: true,
+    chatHasNoHorizontalOverflow: true,
+    sourceOnly: true,
+  });
   await page.evaluate(`(() => {
     window.__copiedCode = [];
     const writeText = async (value) => window.__copiedCode.push(value);
