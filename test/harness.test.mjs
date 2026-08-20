@@ -20,6 +20,24 @@ function modelPlugin(id, response = id) {
   };
 }
 
+function fakeContainer() {
+  const children = [];
+  return {
+    children,
+    ownerDocument: {
+      createElement() {
+        return {
+          dataset: {},
+          textContent: "",
+          removed: false,
+          remove() { this.removed = true; },
+        };
+      },
+    },
+    append(slot) { children.push(slot); },
+  };
+}
+
 test("browser harness preinstalls browser tools and exposes a light snapshot", async () => {
   const harness = await createBrowserAgentHarness({ stateStore: new MemoryStateStore() });
   const snapshot = harness.snapshot();
@@ -71,6 +89,87 @@ test("harness installs trusted plugins, publishes snapshots, and rolls back fail
   await handle.uninstall();
   assert.equal(harness.snapshot().manifests.length, 0);
   unsubscribe();
+  await harness.dispose();
+});
+
+test("plugin installation rollback owns and removes every contribution", async () => {
+  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const failed = {
+    manifest: {
+      apiVersion: "1",
+      id: "rollback-plugin",
+      name: "Rollback",
+      version: "1.0.0",
+      permissions: [{ name: "secret", reason: "test" }],
+    },
+    setup(context) {
+      context.registerTool({ name: "rollback.tool", description: "Rollback.", inputSchema: { type: "object" }, execute: () => true });
+      context.registerCapability({ name: "secret", provider: { provide: () => ({ value: 1 }) } });
+      context.registerModelAdapter({ id: "rollback-model", async *stream() { yield { type: "completed", message: { role: "assistant", content: "rollback" } }; } });
+      context.registerProcessor({ id: "rollback.processor", description: "Rollback.", process: (value) => value });
+      context.registerUi({ id: "rollback.ui", mount: () => {} });
+      throw new Error("rollback setup failed");
+    },
+  };
+
+  await assert.rejects(harness.install(failed), /rollback setup failed/);
+  assert.equal(harness.snapshot().tools.some((tool) => tool.name === "rollback.tool"), false);
+  assert.equal(harness.snapshot().models.some((model) => model.id === "rollback-model"), false);
+  assert.equal(await harness.process("kept"), "kept");
+  const container = fakeContainer();
+  const unmount = harness.mountUi(container);
+  assert.equal(container.children.length, 0);
+  unmount();
+  await harness.dispose();
+});
+
+test("plugin teardown failure still aborts lifecycle and cleans contributions", async () => {
+  const events = [];
+  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const plugin = {
+    manifest: { apiVersion: "1", id: "teardown-plugin", name: "Teardown", version: "1.0.0", permissions: [] },
+    setup(context) {
+      context.signal.addEventListener("abort", () => events.push("abort"));
+      context.registerTool({ name: "teardown.tool", description: "Teardown.", inputSchema: { type: "object" }, execute: () => true });
+      context.registerUi({ id: "teardown.ui", mount: () => () => events.push("ui-cleanup") });
+    },
+    teardown() {
+      events.push("teardown");
+      throw new Error("teardown failed");
+    },
+  };
+  const handle = await harness.install(plugin);
+  const container = fakeContainer();
+  const unmount = harness.mountUi(container);
+  await assert.rejects(handle.uninstall(), /teardown failed/);
+  assert.deepEqual(events, ["teardown", "abort", "ui-cleanup"]);
+  assert.equal(container.children[0].removed, true);
+  assert.equal(harness.snapshot().tools.some((tool) => tool.name === "teardown.tool"), false);
+  await handle.uninstall();
+  unmount();
+  await harness.dispose();
+});
+
+test("UI mount failures leave an error slot and cleanup continues after a broken unmount", async () => {
+  const events = [];
+  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const plugin = {
+    manifest: { apiVersion: "1", id: "ui-failure-plugin", name: "UI failure", version: "1.0.0", permissions: [] },
+    setup(context) {
+      context.registerUi({ id: "broken", mount: () => { throw new Error("mount failed"); } });
+      context.registerUi({ id: "cleanup-a", mount: () => () => { events.push("a"); throw new Error("cleanup failed"); } });
+      context.registerUi({ id: "cleanup-b", mount: () => () => events.push("b") });
+    },
+  };
+  const handle = await harness.install(plugin);
+  const container = fakeContainer();
+  const unmount = harness.mountUi(container);
+  assert.equal(container.children.length, 3);
+  assert.equal(container.children[0].textContent, "Extension failed: mount failed");
+  unmount();
+  assert.deepEqual(events, ["b", "a"]);
+  assert.equal(container.children.every((slot) => slot.removed), true);
+  await handle.uninstall();
   await harness.dispose();
 });
 

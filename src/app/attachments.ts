@@ -37,13 +37,22 @@ export interface OcrImageInput {
   readonly mediaType: string;
 }
 
-export interface AttachmentProcessingDependencies {
-  readonly documentToMarkdown?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<string | undefined>;
-  readonly renderPdfPages?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<readonly RenderedPdfPage[]>;
-  readonly streamPdfPages?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => AsyncIterable<RenderedPdfPage>;
-  readonly streamPdfContentPages?: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => AsyncIterable<PdfPageContent>;
-  readonly recognizeImage?: (data: Uint8Array, mediaType: string, signal: AbortSignal) => Promise<string>;
-  readonly recognizeImages?: (inputs: readonly OcrImageInput[], signal: AbortSignal) => Promise<readonly string[]>;
+export interface AttachmentProcessingOptions {
+  readonly supportsVision: boolean;
+  readonly signal: AbortSignal;
+  readonly onProgress?: (progress: AttachmentProgress) => void;
+}
+
+export interface AttachmentEngineAdapter {
+  readonly documentToMarkdown: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => Promise<string | undefined>;
+  readonly streamPdfContentPages: (bytes: Uint8Array, fileName: string, signal: AbortSignal) => AsyncIterable<PdfPageContent>;
+  readonly recognizeImages: (inputs: readonly OcrImageInput[], signal: AbortSignal) => Promise<readonly string[]>;
+  readonly dispose?: () => void | Promise<void>;
+}
+
+export interface AttachmentIntake {
+  readonly process: (files: readonly PendingAttachment[], options: AttachmentProcessingOptions) => Promise<PreparedAttachments>;
+  readonly dispose: () => Promise<void>;
 }
 
 export class AttachmentProcessingError extends Error {
@@ -215,56 +224,38 @@ async function loadEngines(): Promise<typeof import("./attachment-engines.js")> 
   return enginesPromise;
 }
 
+const defaultAttachmentEngines: AttachmentEngineAdapter = {
+  documentToMarkdown: defaultDocumentToMarkdown,
+  streamPdfContentPages: defaultStreamPdfContentPages,
+  recognizeImages: defaultRecognizeImages,
+  dispose: async () => {
+    if (enginesPromise === undefined) return;
+    try {
+      await (await enginesPromise).disposeAttachmentEngines();
+    } catch {
+      // A failed or already-terminated worker must not prevent the app from stopping.
+    }
+  },
+};
+
 async function yieldToBrowser(signal: AbortSignal): Promise<void> {
   throwIfAborted(signal);
   await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
   throwIfAborted(signal);
 }
 
-export async function disposeAttachmentEngines(): Promise<void> {
-  if (enginesPromise === undefined) return;
-  try {
-    await (await enginesPromise).disposeAttachmentEngines();
-  } catch {
-    // A failed or already-terminated worker must not prevent the app from stopping.
-  }
-}
-
-export async function processAttachmentFiles(
+async function processAttachmentFilesInternal(
   files: readonly PendingAttachment[],
-  supportsVision: boolean,
-  signal: AbortSignal,
-  dependencies: AttachmentProcessingDependencies = {},
-  onProgress?: (progress: AttachmentProgress) => void,
+  options: AttachmentProcessingOptions,
+  engines: AttachmentEngineAdapter,
 ): Promise<PreparedAttachments> {
+  const { supportsVision, signal, onProgress } = options;
   const attachments: ModelAttachment[] = [];
   const attachmentIds: string[] = [];
   const labels: string[] = [];
   const content: string[] = [];
-  const documentToMarkdown = dependencies.documentToMarkdown ?? defaultDocumentToMarkdown;
-  const legacyRenderPdfPages = dependencies.renderPdfPages;
-  const batchRecognizeImage = dependencies.recognizeImage;
-  const batchRecognizeImages = dependencies.recognizeImages;
-  const legacyStreamPdfPages = dependencies.streamPdfPages ?? (legacyRenderPdfPages === undefined
-    ? undefined
-    : async function* (bytes: Uint8Array, fileName: string, pageSignal: AbortSignal): AsyncGenerator<RenderedPdfPage> {
-      for (const page of await legacyRenderPdfPages(bytes, fileName, pageSignal)) yield page;
-    });
-  const streamPdfContentPages = dependencies.streamPdfContentPages ?? (async function* (
-    bytes: Uint8Array,
-    fileName: string,
-    pageSignal: AbortSignal,
-  ): AsyncGenerator<PdfPageContent> {
-    if (legacyStreamPdfPages === undefined) {
-      yield* defaultStreamPdfContentPages(bytes, fileName, pageSignal);
-      return;
-    }
-    let pageNumber = 0;
-    for await (const page of legacyStreamPdfPages(bytes, fileName, pageSignal)) {
-      pageNumber += 1;
-      yield { kind: "image", pageNumber, image: page };
-    }
-  });
+  const documentToMarkdown = engines.documentToMarkdown;
+  const streamPdfContentPages = engines.streamPdfContentPages;
   const ocrQueue: Array<{
     readonly input: OcrImageInput;
     readonly contentIndex: number;
@@ -279,11 +270,7 @@ export async function processAttachmentFiles(
   const processOcrBatch = async (batch: readonly typeof ocrQueue[number][]): Promise<boolean> => {
     if (batch.length === 0) return false;
     throwIfAborted(signal);
-    const batchTexts = batchRecognizeImages !== undefined
-      ? await batchRecognizeImages(batch.map((item) => item.input), signal)
-      : batchRecognizeImage !== undefined
-        ? await Promise.all(batch.map((item) => batchRecognizeImage(item.input.data, item.input.mediaType, signal)))
-        : await defaultRecognizeImages(batch.map((item) => item.input), signal);
+    const batchTexts = await engines.recognizeImages(batch.map((item) => item.input), signal);
     let foundText = false;
     for (const [index, item] of batch.entries()) {
       const text = normalizeOcrText(batchTexts[index] ?? "");
@@ -408,4 +395,39 @@ export async function processAttachmentFiles(
     labels,
     usedVision: supportsVision && attachmentIds.length > 0,
   };
+}
+
+export function createAttachmentIntake(engines: AttachmentEngineAdapter = defaultAttachmentEngines): AttachmentIntake {
+  let enginePromise: Promise<AttachmentEngineAdapter> | undefined;
+  let disposed = false;
+  const resolveEngines = (): Promise<AttachmentEngineAdapter> => enginePromise ??= Promise.resolve(engines);
+  return {
+    process: async (files, options) => {
+      if (disposed) throw new AttachmentProcessingError("ATTACHMENT_CANCELLED", "Attachment intake is no longer available.");
+      return processAttachmentFilesInternal(files, options, await resolveEngines());
+    },
+    dispose: async () => {
+      if (disposed) return;
+      disposed = true;
+      if (enginePromise === undefined) return;
+      try {
+        await (await enginePromise).dispose?.();
+      } catch {
+        // A failed or already-terminated worker must not prevent the app from stopping.
+      }
+    },
+  };
+}
+
+const defaultIntake = createAttachmentIntake();
+
+export async function processAttachmentFiles(
+  files: readonly PendingAttachment[],
+  options: AttachmentProcessingOptions,
+): Promise<PreparedAttachments> {
+  return defaultIntake.process(files, options);
+}
+
+export async function disposeAttachmentEngines(): Promise<void> {
+  await defaultIntake.dispose();
 }

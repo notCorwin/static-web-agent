@@ -169,7 +169,17 @@ The remote adapter uses ordinary browser `fetch` and therefore remains subject t
 
 The reference app stores connection settings in its existing browser-local IndexedDB database (`static-web-agent`, `workspace` object store) and keeps chat messages and attachment bytes in memory. The `local-storage` plugin uses its own `plugin:<plugin-id>` namespace; it does not share or rewrite the app's connection-settings record.
 
-PDF attachments are processed page by page with PDF.js: pages with a non-empty text layer become ordered text blocks, while image-only pages are rendered for vision or local PaddleOCR. `PdfPageContent` and the optional `streamPdfContentPages` dependency are exported from the app entry point; the older image-page callbacks remain compatible. Local OCR selects WebGPU automatically and falls back to the bundled WASM runtime.
+PDF attachments are processed page by page with PDF.js: pages with a non-empty text layer become ordered text blocks, while image-only pages are rendered for vision or local PaddleOCR. The public attachment operation is now options-based:
+
+```ts
+const prepared = await processAttachmentFiles(files, {
+  supportsVision: true,
+  signal: controller.signal,
+  onProgress: (progress) => console.log(progress.phase, progress.attachment.name),
+});
+```
+
+`app-entry` keeps `processAttachmentFiles`, `PreparedAttachments`, `AttachmentProgress`, and the existing error codes. Engine adapters are internal to the intake module; the old aggregate dependency fields and legacy positional arguments are not part of the app contract. Local OCR selects WebGPU automatically and falls back to the bundled WASM runtime.
 
 ## Browser security boundaries
 
