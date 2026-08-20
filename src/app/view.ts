@@ -67,10 +67,10 @@ export function renderShell(root: HTMLElement): AppElements {
               <span class="loading-label">Starting chat…</span>
             </div>
           </div>
+          <button class="scroll-bottom-button" id="scroll-bottom-button" type="button" aria-label="Scroll to latest response" title="Scroll to latest response" hidden>
+            <span aria-hidden="true">↓</span>
+          </button>
         </section>
-        <button class="scroll-bottom-button" id="scroll-bottom-button" type="button" aria-label="Scroll to latest response" title="Scroll to latest response" hidden>
-          <span aria-hidden="true">↓</span>
-        </button>
         <div class="composer-wrap">
           <form class="composer" id="composer-form">
             <label class="sr-only" for="message-input">Message the agent</label>

@@ -421,17 +421,36 @@ try {
   assert.equal(await page.evaluate("document.querySelector('meta[name=\\\"build-version\\\"]')?.content"), release.version);
   const composerLayout = await page.evaluate(`(() => {
     const shell = document.querySelector('.app-shell').getBoundingClientRect();
+    const workspace = document.querySelector('#main-content').getBoundingClientRect();
+    const chat = document.querySelector('#chat-log').getBoundingClientRect();
     const composer = document.querySelector('.composer-wrap').getBoundingClientRect();
-    return { bottomGap: shell.bottom - composer.bottom, composerTop: composer.top, viewportBottom: window.innerHeight };
+    const row = document.querySelector('.composer-input-row');
+    return {
+      bottomGap: shell.bottom - composer.bottom,
+      chatComposerGap: composer.top - chat.bottom,
+      workspaceDisplay: getComputedStyle(document.querySelector('#main-content')).display,
+      workspaceHeight: workspace.height,
+      chatPosition: getComputedStyle(document.querySelector('#chat-log')).position,
+      rowDisplay: getComputedStyle(row).display,
+      attachmentPosition: getComputedStyle(document.querySelector('#attachment-button')).position,
+      sendPosition: getComputedStyle(document.querySelector('#send-button')).position,
+    };
   })()`);
   assert.ok(composerLayout.bottomGap <= 1, "the composer should stay at the bottom of the workspace");
+  assert.ok(Math.abs(composerLayout.chatComposerGap) <= 1, "the chat viewport and composer should occupy adjacent layout rows");
+  assert.equal(composerLayout.workspaceDisplay, "grid");
+  assert.ok(composerLayout.workspaceHeight > 0, "the workspace should have a definite viewport height");
+  assert.equal(composerLayout.chatPosition, "relative");
+  assert.equal(composerLayout.rowDisplay, "grid");
+  assert.equal(composerLayout.attachmentPosition, "static");
+  assert.equal(composerLayout.sendPosition, "static");
   const connectionLayout = await page.evaluate(`(() => {
-    const workspace = document.querySelector('#main-content').getBoundingClientRect();
+    const chat = document.querySelector('#chat-log').getBoundingClientRect();
     const card = document.querySelector('#connection-card').getBoundingClientRect();
     const inputTops = ['#model-endpoint', '#model-name', '#model-key'].map((selector) => document.querySelector(selector).getBoundingClientRect().top);
     return {
       cardCenter: { x: card.left + card.width / 2, y: card.top + card.height / 2 },
-      workspaceCenter: { x: workspace.left + workspace.width / 2, y: workspace.top + workspace.height / 2 },
+      chatCenter: { x: chat.left + chat.width / 2, y: chat.top + chat.height / 2 },
       inputTops,
       saveButtonLabel: document.querySelector('#connection-submit .button-label')?.textContent,
       saveButtonInIntro: document.querySelector('#connection-submit')?.closest('.connection-intro') !== null,
@@ -448,8 +467,8 @@ try {
       thinkingHelp: document.querySelector('#thinking-level-help').textContent,
     };
   })()`);
-  assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.workspaceCenter.x) <= 1, "the connection card should be horizontally centered in the workspace");
-  assert.ok(Math.abs(connectionLayout.cardCenter.y - connectionLayout.workspaceCenter.y) <= 1, "the connection card should be vertically centered in the workspace");
+  assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.chatCenter.x) <= 1, "the connection card should be horizontally centered in the chat viewport");
+  assert.ok(Math.abs(connectionLayout.cardCenter.y - connectionLayout.chatCenter.y) <= 1, "the connection card should be vertically centered in the chat viewport");
   assert.ok(connectionLayout.inputTops[1] < connectionLayout.inputTops[2], "model and API key inputs should occupy separate rows");
   assert.equal(connectionLayout.saveButtonLabel, "Save");
   assert.equal(connectionLayout.saveButtonInIntro, true);
@@ -464,6 +483,21 @@ try {
   assert.equal(connectionLayout.thinkingLabel, "Thinking level");
   assert.ok(connectionLayout.thinkingHelp.includes("reasoning"));
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+  const mobileConnectionLayout = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log').getBoundingClientRect();
+    const card = document.querySelector('#connection-card').getBoundingClientRect();
+    const composer = document.querySelector('.composer-wrap').getBoundingClientRect();
+    return {
+      noPageOverflow: document.documentElement.scrollWidth <= window.innerWidth + 1,
+      cardFits: card.width <= window.innerWidth - 32 + 1,
+      cardCenteredX: Math.abs(card.left + card.width / 2 - (chat.left + chat.width / 2)) <= 1,
+      cardCenteredY: Math.abs(card.top + card.height / 2 - (chat.top + chat.height / 2)) <= 1,
+      composerAtBottom: Math.abs(composer.bottom - window.innerHeight) <= 1,
+    };
+  })()`);
+  assert.deepEqual(mobileConnectionLayout, { noPageOverflow: true, cardFits: true, cardCenteredX: true, cardCenteredY: true, composerAtBottom: true });
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1035, height: 922, deviceScaleFactor: 1, mobile: false });
   const controlMetrics = await page.evaluate(`(() => ['#model-endpoint', '#model-name', '#model-key', '#thinking-level'].map((selector) => {
     const style = getComputedStyle(document.querySelector(selector));
     return { selector, height: style.height, fontSize: style.fontSize, lineHeight: style.lineHeight, appearance: style.appearance };
@@ -1060,11 +1094,21 @@ try {
   await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop' && document.querySelector('#send-button')?.hidden === false && document.querySelector('#send-button')?.getAttribute('aria-label') === 'Stop generation'");
   const stopButton = await page.evaluate(`(() => {
     const button = document.querySelector('#send-button');
+    const input = document.querySelector('#message-input');
     const style = getComputedStyle(button);
     const icon = button.querySelector('.stop-icon');
-    return { width: style.width, height: style.height, borderRadius: style.borderRadius, iconWidth: getComputedStyle(icon).width, iconHeight: getComputedStyle(icon).height };
+    const buttonRect = button.getBoundingClientRect();
+    const inputRect = input.getBoundingClientRect();
+    return {
+      width: style.width,
+      height: style.height,
+      borderRadius: style.borderRadius,
+      iconWidth: getComputedStyle(icon).width,
+      iconHeight: getComputedStyle(icon).height,
+      centered: Math.abs(buttonRect.top + buttonRect.height / 2 - (inputRect.top + inputRect.height / 2)) <= 1,
+    };
   })()`);
-  assert.deepEqual(stopButton, { width: "36px", height: "36px", borderRadius: "999px", iconWidth: "11px", iconHeight: "11px" });
+  assert.deepEqual(stopButton, { width: "36px", height: "36px", borderRadius: "999px", iconWidth: "11px", iconHeight: "11px", centered: true });
   await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
   await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Send' && document.querySelector('#send-button')?.hidden === true");
@@ -1107,10 +1151,11 @@ try {
   assert.ok(finishedStreamScroll > 2, "the conversation should preserve the user's position after streaming");
   const scrollButtonLayout = await page.evaluate(`(() => {
     const button = document.querySelector('#scroll-bottom-button').getBoundingClientRect();
-    const workspace = document.querySelector('#main-content').getBoundingClientRect();
-    return { buttonCenter: button.left + button.width / 2, workspaceCenter: workspace.left + workspace.width / 2 };
+    const chat = document.querySelector('#chat-log').getBoundingClientRect();
+    return { buttonCenter: button.left + button.width / 2, chatCenter: chat.left + chat.width / 2, buttonBottom: button.bottom, chatBottom: chat.bottom };
   })()`);
-  assert.ok(Math.abs(scrollButtonLayout.buttonCenter - scrollButtonLayout.workspaceCenter) <= 1, "the scroll button should be horizontally centered");
+  assert.ok(Math.abs(scrollButtonLayout.buttonCenter - scrollButtonLayout.chatCenter) <= 1, "the scroll button should be horizontally centered in the chat viewport");
+  assert.ok(scrollButtonLayout.buttonBottom <= scrollButtonLayout.chatBottom - 15, "the scroll button should be anchored inside the chat viewport");
   await page.evaluate("document.querySelector('#scroll-bottom-button').click()");
   await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === true && (() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()");
 
