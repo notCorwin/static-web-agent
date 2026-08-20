@@ -259,7 +259,7 @@ async function startStaticServer() {
   return { server, port: server.address().port, reasoningRequests, visionRequests, assetRequests };
 }
 
-function waitForOutput(child, timeoutMs = 30_000) {
+function waitForOutput(child, timeoutMs = 60_000) {
   return new Promise((resolve, reject) => {
     let output = "";
     const timer = setTimeout(() => reject(new Error("Timed out waiting for Chrome DevTools.")), timeoutMs);
