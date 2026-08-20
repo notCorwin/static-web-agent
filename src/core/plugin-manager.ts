@@ -29,11 +29,28 @@ type MountedUi = {
 type InstalledPlugin = {
   readonly plugin: Plugin;
   readonly context: PluginContext;
-  readonly cleanup: (() => void)[];
+  readonly ownership: (() => void)[];
   readonly lifecycle: AbortController;
   readonly gate: { value: boolean };
   active: boolean;
 };
+
+function ownContribution(ownership: (() => void)[], release: () => void): () => void {
+  let active = true;
+  const cleanup = (): void => {
+    if (!active) return;
+    active = false;
+    release();
+  };
+  ownership.push(cleanup);
+  return cleanup;
+}
+
+function releaseContributions(ownership: readonly (() => void)[]): void {
+  for (const cleanup of [...ownership].reverse()) {
+    try { cleanup(); } catch { /* One broken contribution must not leak the others. */ }
+  }
+}
 
 function loggerFor(pluginId: string): Logger {
   const prefix = `[plugin:${pluginId}]`;
@@ -111,7 +128,7 @@ export class PluginManager {
     if (signal.aborted) throw abortError();
     this.installing.add(manifest.id);
 
-    const cleanup: (() => void)[] = [];
+    const ownership: (() => void)[] = [];
     const lifecycle = new AbortController();
     const active = { value: true };
     let published = false;
@@ -138,11 +155,10 @@ export class PluginManager {
             }
           }
           const unregisterTool = this.tools.register({ ...tool, pluginId: manifest.id }, manifest.id);
-          const unregister = () => {
+          const unregister = ownContribution(ownership, () => {
             unregisterTool();
             if (published) this.changed();
-          };
-          cleanup.push(unregister);
+          });
           if (published) this.changed();
           return unregister;
         },
@@ -150,11 +166,10 @@ export class PluginManager {
           this.assertActive(active, manifest.id);
           if (typeof contribution !== "object" || contribution === null || typeof contribution.name !== "string" || typeof contribution.provider?.provide !== "function") throw new PluginError("INVALID_CAPABILITY", "Capability contributions need a name and provide function.");
           const unregisterCapability = this.capabilities.register(contribution.name, contribution.provider);
-          const unregister = () => {
+          const unregister = ownContribution(ownership, () => {
             unregisterCapability();
             if (published) this.changed();
-          };
-          cleanup.push(unregister);
+          });
           if (published) this.changed();
           return unregister;
         },
@@ -163,11 +178,10 @@ export class PluginManager {
           if (typeof adapter !== "object" || adapter === null || typeof adapter.id !== "string" || !adapter.id.trim() || typeof adapter.stream !== "function") throw new PluginError("INVALID_MODEL_ADAPTER", "Model adapters need an ID and stream function.");
           if (this.models.has(adapter.id)) throw new PluginError("DUPLICATE_MODEL_ADAPTER", `Model adapter “${adapter.id}” is already registered.`);
           this.models.set(adapter.id, adapter);
-          const unregister = () => {
+          const unregister = ownContribution(ownership, () => {
             if (this.models.get(adapter.id) === adapter) this.models.delete(adapter.id);
             if (published) this.changed();
-          };
-          cleanup.push(unregister);
+          });
           if (published) this.changed();
           return unregister;
         },
@@ -176,11 +190,10 @@ export class PluginManager {
           if (typeof processor !== "object" || processor === null || typeof processor.id !== "string" || !processor.id.trim() || typeof processor.description !== "string" || !processor.description.trim() || typeof processor.process !== "function") throw new PluginError("INVALID_PROCESSOR", "Processors need an ID, description, and process function.");
           if (this.processorMap.has(processor.id)) throw new PluginError("DUPLICATE_PROCESSOR", `Processor “${processor.id}” is already registered.`);
           this.processorMap.set(processor.id, processor);
-          const unregister = () => {
+          const unregister = ownContribution(ownership, () => {
             if (this.processorMap.get(processor.id) === processor) this.processorMap.delete(processor.id);
             if (published) this.changed();
-          };
-          cleanup.push(unregister);
+          });
           if (published) this.changed();
           return unregister;
         },
@@ -189,13 +202,12 @@ export class PluginManager {
           if (typeof contribution !== "object" || contribution === null || typeof contribution.id !== "string" || !contribution.id.trim() || typeof contribution.mount !== "function") throw new PluginError("INVALID_UI_CONTRIBUTION", "UI contributions need an ID and mount function.");
           if (this.ui.has(contribution.id)) throw new PluginError("DUPLICATE_UI_CONTRIBUTION", `UI contribution “${contribution.id}” is already registered.`);
           this.ui.set(contribution.id, contribution);
-          const unregister = () => {
+          const unregister = ownContribution(ownership, () => {
             if (this.ui.get(contribution.id) !== contribution) return;
             this.ui.delete(contribution.id);
             this.removeMountedUi(contribution);
             if (published) this.changed();
-          };
-          cleanup.push(unregister);
+          });
           if (published) this.changed();
           return unregister;
         },
@@ -205,7 +217,7 @@ export class PluginManager {
       await plugin.setup(context);
       await this.capabilities.request(manifest.id, manifest.permissions, signal);
       if (signal.aborted) throw abortError();
-      const installed: InstalledPlugin = { plugin, context, cleanup, lifecycle, gate: active, active: true };
+      const installed: InstalledPlugin = { plugin, context, ownership, lifecycle, gate: active, active: true };
       this.plugins.set(manifest.id, installed);
       published = true;
       this.changed();
@@ -216,9 +228,7 @@ export class PluginManager {
     } catch (error) {
       active.value = false;
       lifecycle.abort(error);
-      for (const undo of cleanup.reverse()) {
-        try { undo(); } catch { /* One broken contribution must not leak the others. */ }
-      }
+      releaseContributions(ownership);
       this.capabilities.revoke(manifest.id);
       throw error;
     } finally {
@@ -231,19 +241,23 @@ export class PluginManager {
     if (!installed.active) return false;
     installed.active = false;
     installed.gate.value = false;
+    let teardownFailed = false;
+    let teardownError: unknown;
     try {
       if (installed.plugin.teardown !== undefined) await installed.plugin.teardown(installed.context);
+    } catch (error) {
+      teardownFailed = true;
+      teardownError = error;
     } finally {
       installed.lifecycle.abort(abortError());
-      for (const undo of installed.cleanup.reverse()) {
-        try { undo(); } catch { /* One broken contribution must not leak the others. */ }
-      }
+      releaseContributions(installed.ownership);
       const pluginId = installed.context.manifest.id;
       this.tools.unregisterByPlugin(pluginId);
       this.capabilities.revoke(pluginId);
       if (this.plugins.get(pluginId) === installed) this.plugins.delete(pluginId);
       this.changed();
     }
+    if (teardownFailed) throw teardownError;
     return true;
   }
 
@@ -289,15 +303,16 @@ export class PluginManager {
   private removeMountedUi(contribution: UiContribution): void {
     for (const mounted of this.uiMounts) {
       for (const item of mounted.filter((candidate) => candidate.contribution === contribution)) {
-        if (item.removed) continue;
-        item.removed = true;
-        try {
-          item.cleanup?.();
-        } finally {
-          item.slot.remove();
-        }
+        this.releaseMountedUi(item);
       }
     }
+  }
+
+  private releaseMountedUi(item: MountedUi): void {
+    if (item.removed) return;
+    item.removed = true;
+    try { item.cleanup?.(); } catch { /* A broken UI cleanup must not block other slots. */ }
+    finally { item.slot.remove(); }
   }
 
   mountUi(container: HTMLElement): () => void {
@@ -317,13 +332,7 @@ export class PluginManager {
     }
     return () => {
       for (const item of mounted.reverse()) {
-        if (item.removed) continue;
-        item.removed = true;
-        try {
-          item.cleanup?.();
-        } finally {
-          item.slot.remove();
-        }
+        this.releaseMountedUi(item);
       }
       this.uiMounts.delete(mounted);
     };

@@ -12,6 +12,7 @@ import {
   validate,
 } from "../dist/index.js";
 import { AiSdkAdapter, createRemoteModelPlugin } from "../dist/remote.js";
+import { createAttachmentIntake } from "../dist/app/attachments.js";
 import {
   CHAT_LIMITS,
   CONNECTION_SETTINGS_KEY,
@@ -24,6 +25,28 @@ import {
 } from "../dist/app-entry.js";
 
 const noSignal = () => new AbortController().signal;
+
+function attachmentIntake(overrides = {}) {
+  return createAttachmentIntake({
+    documentToMarkdown: async () => undefined,
+    async *streamPdfContentPages() {},
+    recognizeImages: async (inputs) => inputs.map(() => ""),
+    ...overrides,
+  });
+}
+
+async function processAttachments(files, supportsVision, signal, engines = {}, onProgress) {
+  const intake = attachmentIntake(engines);
+  try {
+    return await intake.process(files, {
+      supportsVision,
+      signal,
+      ...(onProgress === undefined ? {} : { onProgress }),
+    });
+  } finally {
+    await intake.dispose();
+  }
+}
 
 function scriptedAdapter(turns) {
   let index = 0;
@@ -491,7 +514,7 @@ test("connection settings persist as a browser-local state record", async () => 
 test("attachment processing sends images as direct model attachments when vision is enabled", async () => {
   const file = new File([new Uint8Array([137, 80, 78, 71])], "scan.png", { type: "image/png" });
   const pending = createPendingAttachment(file);
-  const result = await processAttachmentFiles([pending], true, noSignal());
+  const result = await processAttachmentFiles([pending], { supportsVision: true, signal: noSignal() });
   assert.deepEqual(result.attachmentIds, [pending.id]);
   assert.equal(result.attachments[0].mediaType, "image/png");
   assert.deepEqual([...result.attachments[0].data], [137, 80, 78, 71]);
@@ -502,8 +525,8 @@ test("attachment processing sends images as direct model attachments when vision
 test("attachment processing routes non-vision images through local OCR", async () => {
   const file = new File([new Uint8Array([1, 2])], "scan.png", { type: "image/png" });
   const pending = createPendingAttachment(file);
-  const result = await processAttachmentFiles([pending], false, noSignal(), {
-    recognizeImage: async () => "OCR line 1\nOCR line 2",
+  const result = await processAttachments([pending], false, noSignal(), {
+    recognizeImages: async () => ["OCR line 1\nOCR line 2"],
   });
   assert.deepEqual(result.attachmentIds, []);
   assert.equal(result.attachments.length, 0);
@@ -516,7 +539,7 @@ test("image extensions recover an empty or generic MIME type", async () => {
   const genericType = createPendingAttachment(new File([new Uint8Array([1])], "scan.jpg", { type: "application/octet-stream" }));
   assert.equal(emptyType.mediaType, "image/png");
   assert.equal(genericType.mediaType, "image/jpeg");
-  const result = await processAttachmentFiles([emptyType], false, noSignal(), { recognizeImage: async () => "recognized" });
+  const result = await processAttachments([emptyType], false, noSignal(), { recognizeImages: async () => ["recognized"] });
   assert.match(result.content, /recognized/);
 });
 
@@ -525,7 +548,7 @@ test("text attachments decode UTF-8 and UTF-16 BOMs without AnyDoc", async () =>
   const utf16le = createPendingAttachment(new File([new Uint8Array([0xff, 0xfe, 0x55, 0x00, 0x54, 0x00, 0x46, 0x00])], "utf16le.txt"));
   const utf16be = createPendingAttachment(new File([new Uint8Array([0xfe, 0xff, 0x00, 0x55, 0x00, 0x54, 0x00, 0x46])], "utf16be.txt"));
   let anydocCalls = 0;
-  const result = await processAttachmentFiles([utf8, utf16le, utf16be], false, noSignal(), {
+  const result = await processAttachments([utf8, utf16le, utf16be], false, noSignal(), {
     documentToMarkdown: async () => {
       anydocCalls += 1;
       return "unexpected";
@@ -534,17 +557,17 @@ test("text attachments decode UTF-8 and UTF-16 BOMs without AnyDoc", async () =>
   assert.equal(anydocCalls, 0);
   assert.equal((result.content.match(/UTF/g) ?? []).length, 3);
   const whitespace = createPendingAttachment(new File([new TextEncoder().encode(" \n")], "empty.txt", { type: "text/plain" }));
-  await assert.rejects(processAttachmentFiles([whitespace], false, noSignal()), (error) => error.code === "ATTACHMENT_PARSE_FAILED");
+  await assert.rejects(processAttachments([whitespace], false, noSignal()), (error) => error.code === "ATTACHMENT_PARSE_FAILED");
   const invalid = createPendingAttachment(new File([new Uint8Array([0xff])], "invalid.txt", { type: "text/plain" }));
-  await assert.rejects(processAttachmentFiles([invalid], false, noSignal()), (error) => error.code === "ATTACHMENT_PARSE_FAILED");
+  await assert.rejects(processAttachments([invalid], false, noSignal()), (error) => error.code === "ATTACHMENT_PARSE_FAILED");
 });
 
 test("attachment OCR failure is surfaced once without an automatic retry", async () => {
   const pending = createPendingAttachment(new File([new Uint8Array([1, 2])], "scan.png", { type: "image/png" }));
   let calls = 0;
   await assert.rejects(
-    processAttachmentFiles([pending], false, noSignal(), {
-      recognizeImage: async () => {
+    processAttachments([pending], false, noSignal(), {
+      recognizeImages: async () => {
         calls += 1;
         throw new Error("OCR unavailable");
       },
@@ -558,7 +581,7 @@ test("attachment processing batches local OCR inputs while preserving order", as
   const first = createPendingAttachment(new File([new Uint8Array([1])], "first.png", { type: "image/png" }));
   const second = createPendingAttachment(new File([new Uint8Array([2])], "second.png", { type: "image/png" }));
   let batchCalls = 0;
-  const result = await processAttachmentFiles([first, second], false, noSignal(), {
+  const result = await processAttachments([first, second], false, noSignal(), {
     recognizeImages: async (inputs) => {
       batchCalls += 1;
       assert.deepEqual(inputs.map((input) => input.data[0]), [1, 2]);
@@ -576,7 +599,7 @@ test("attachment processing stops before parsing when cancelled", async () => {
   controller.abort();
   let parsed = false;
   await assert.rejects(
-    processAttachmentFiles([pending], false, controller.signal, {
+    processAttachments([pending], false, controller.signal, {
       documentToMarkdown: async () => {
         parsed = true;
         return "never";
@@ -590,8 +613,22 @@ test("attachment processing stops before parsing when cancelled", async () => {
 test("unsupported attachments produce an explicit processing error", async () => {
   const pending = createPendingAttachment(new File([new Uint8Array([1])], "archive.zip", { type: "application/zip" }));
   await assert.rejects(
-    processAttachmentFiles([pending], false, noSignal(), { documentToMarkdown: async () => undefined }),
+    processAttachments([pending], false, noSignal(), { documentToMarkdown: async () => undefined }),
     (error) => error.code === "ATTACHMENT_UNSUPPORTED",
+  );
+});
+
+test("attachment intake owns engine disposal and rejects work after shutdown", async () => {
+  let disposals = 0;
+  const intake = attachmentIntake({ dispose: () => { disposals += 1; } });
+  const pending = createPendingAttachment(new File([new Uint8Array([1])], "scan.png", { type: "image/png" }));
+  await intake.process([pending], { supportsVision: true, signal: noSignal() });
+  await intake.dispose();
+  await intake.dispose();
+  assert.equal(disposals, 1);
+  await assert.rejects(
+    intake.process([pending], { supportsVision: true, signal: noSignal() }),
+    (error) => error.code === "ATTACHMENT_CANCELLED",
   );
 });
 
@@ -602,20 +639,22 @@ test("scanned PDF pages preserve order in vision and OCR routes", async () => {
     { name: "scan.pdf · page 1", mediaType: "image/png", data: new Uint8Array([1]) },
     { name: "scan.pdf · page 2", mediaType: "image/png", data: new Uint8Array([2]) },
   ];
-  const visual = await processAttachmentFiles([pending], true, noSignal(), {
-    documentToMarkdown: async () => undefined,
-    renderPdfPages: async () => pages,
+  const visual = await processAttachments([pending], true, noSignal(), {
+    streamPdfContentPages: async function* () {
+      for (const [index, image] of pages.entries()) yield { kind: "image", pageNumber: index + 1, image };
+    },
   });
   assert.deepEqual(visual.attachmentIds, [`${pending.id}-page-1`, `${pending.id}-page-2`]);
   assert.deepEqual(visual.attachments.map((item) => item.name), pages.map((page) => page.name));
 
   const ocrPages = [];
-  const text = await processAttachmentFiles([pending], false, noSignal(), {
-    documentToMarkdown: async () => undefined,
-    renderPdfPages: async () => pages,
-    recognizeImage: async (data) => {
-      ocrPages.push(data[0]);
-      return `page ${data[0]}`;
+  const text = await processAttachments([pending], false, noSignal(), {
+    streamPdfContentPages: async function* () {
+      for (const [index, image] of pages.entries()) yield { kind: "image", pageNumber: index + 1, image };
+    },
+    recognizeImages: async (inputs) => {
+      ocrPages.push(...inputs.map((input) => input.data[0]));
+      return inputs.map((input) => `page ${input.data[0]}`);
     },
   });
   assert.deepEqual(ocrPages, [1, 2]);
@@ -627,12 +666,11 @@ test("streamed PDF pages are OCRed in bounded batches without retaining the full
   const pending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "long-scan.pdf", { type: "application/pdf" }));
   const batchSizes = [];
   let renderedPages = 0;
-  const result = await processAttachmentFiles([pending], false, noSignal(), {
-    documentToMarkdown: async () => undefined,
-    streamPdfPages: async function* () {
+  const result = await processAttachments([pending], false, noSignal(), {
+    streamPdfContentPages: async function* () {
       for (let page = 1; page <= 5; page += 1) {
         renderedPages += 1;
-        yield { name: `long-scan.pdf · page ${page}`, mediaType: "image/png", data: new Uint8Array([page]) };
+        yield { kind: "image", pageNumber: page, image: { name: `long-scan.pdf · page ${page}`, mediaType: "image/png", data: new Uint8Array([page]) } };
       }
     },
     recognizeImages: async (inputs) => {
@@ -654,14 +692,14 @@ test("mixed PDF pages preserve order and process only image pages", async () => 
     { kind: "text", pageNumber: 3, text: "last page text" },
   ];
   let ocrCalls = 0;
-  const visual = await processAttachmentFiles([pending], true, noSignal(), {
+  const visual = await processAttachments([pending], true, noSignal(), {
     streamPdfContentPages: async function* () { yield* pages; },
   });
   assert.deepEqual(visual.attachmentIds, [`${pending.id}-page-2`]);
   assert.ok(visual.content.indexOf("first page text") < visual.content.indexOf("page 2"));
   assert.ok(visual.content.indexOf("page 2") < visual.content.indexOf("last page text"));
 
-  const text = await processAttachmentFiles([pending], false, noSignal(), {
+  const text = await processAttachments([pending], false, noSignal(), {
     streamPdfContentPages: async function* () { yield* pages; },
     recognizeImages: async (inputs) => {
       ocrCalls += 1;
@@ -676,17 +714,14 @@ test("mixed PDF pages preserve order and process only image pages", async () => 
 
 test("text-only PDFs do not render or OCR pages", async () => {
   const pending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "text.pdf", { type: "application/pdf" }));
-  let rendered = false;
   let ocr = false;
-  const result = await processAttachmentFiles([pending], false, noSignal(), {
+  const result = await processAttachments([pending], false, noSignal(), {
     streamPdfContentPages: async function* () {
       yield { kind: "text", pageNumber: 1, text: "PDF text" };
     },
     recognizeImages: async () => { ocr = true; return []; },
-    renderPdfPages: async () => { rendered = true; return []; },
   });
   assert.match(result.content, /PDF text/);
-  assert.equal(rendered, false);
   assert.equal(ocr, false);
 });
 
@@ -694,7 +729,7 @@ test("a PDF with no OCR text fails, while blank pages beside text remain usable"
   const emptyPending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "empty.pdf", { type: "application/pdf" }));
   const emptyPages = [{ kind: "image", pageNumber: 1, image: { name: "empty.pdf · page 1", mediaType: "image/png", data: new Uint8Array([1]) } }];
   await assert.rejects(
-    processAttachmentFiles([emptyPending], false, noSignal(), {
+    processAttachments([emptyPending], false, noSignal(), {
       streamPdfContentPages: async function* () { yield* emptyPages; },
       recognizeImages: async () => [""],
     }),
@@ -702,7 +737,7 @@ test("a PDF with no OCR text fails, while blank pages beside text remain usable"
   );
 
   const usablePending = createPendingAttachment(new File([new Uint8Array([37, 80, 68, 70])], "usable.pdf", { type: "application/pdf" }));
-  const usable = await processAttachmentFiles([usablePending], false, noSignal(), {
+  const usable = await processAttachments([usablePending], false, noSignal(), {
     streamPdfContentPages: async function* () {
       yield { kind: "image", pageNumber: 1, image: { name: "usable.pdf · page 1", mediaType: "image/png", data: new Uint8Array([1]) } };
       yield { kind: "image", pageNumber: 2, image: { name: "usable.pdf · page 2", mediaType: "image/png", data: new Uint8Array([2]) } };
@@ -717,10 +752,10 @@ test("ordinary documents use anydoc output without OCR or page rendering", async
   const pending = createPendingAttachment(file);
   let rendered = false;
   let ocr = false;
-  const result = await processAttachmentFiles([pending], false, noSignal(), {
+  const result = await processAttachments([pending], false, noSignal(), {
     documentToMarkdown: async () => "# Extracted notes",
-    renderPdfPages: async () => { rendered = true; return []; },
-    recognizeImage: async () => { ocr = true; return ""; },
+    streamPdfContentPages: async function* () { rendered = true; },
+    recognizeImages: async () => { ocr = true; return []; },
   });
   assert.match(result.content, /Extracted notes/);
   assert.equal(rendered, false);
