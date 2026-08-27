@@ -33,9 +33,19 @@ function runId(): string {
   return `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function clone<T>(value: T): T {
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function freeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null) return value;
+  for (const child of Object.values(value)) freeze(child);
+  return Object.freeze(value);
+}
+
 function cloneMessages(messages: readonly ModelMessage[]): ModelMessage[] {
-  if (typeof structuredClone === "function") return structuredClone(messages) as ModelMessage[];
-  return JSON.parse(JSON.stringify(messages)) as ModelMessage[];
+  return clone(messages).map(freeze);
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -297,7 +307,7 @@ export class Agent {
       const complete: AgentRunResult = {
         runId: id,
         status: result.status,
-        messages: cloneMessages(messages),
+        messages: Object.freeze([...messages]),
         turns,
         ...(result.response === undefined ? {} : { response: result.response }),
         ...(result.error === undefined ? {} : { error: result.error }),
@@ -352,7 +362,7 @@ export class Agent {
       try {
         const consume = (async () => {
           const iterable = this.model.stream({
-            messages: cloneMessages(messages),
+            messages: Object.freeze([...messages]),
             ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
             tools: descriptors,
             signal: modelController.signal,
@@ -477,11 +487,12 @@ export class Agent {
       assertAssistant(assistant);
       if (assistant.content.trim().length === 0 && calls.length === 0) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned an empty response." });
       if (assistant.content.length > limits.maxMessageChars) return fail({ code: "MODEL_OUTPUT_TOO_LARGE", message: "Model output is too large." });
-      messages.push(assistant);
-      this.emit(request.onEvent, { type: "assistant-message", message: assistant });
+      const immutableAssistant = freeze(clone(assistant));
+      messages.push(immutableAssistant);
+      this.emit(request.onEvent, { type: "assistant-message", message: immutableAssistant });
 
-      if (calls.length === 0) return finish({ status: "completed", response: assistant });
-      if (maxTurns !== undefined && turns >= maxTurns) return finish({ status: "max-turns", response: assistant });
+      if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
+      if (maxTurns !== undefined && turns >= maxTurns) return finish({ status: "max-turns", response: immutableAssistant });
 
       for (const call of calls) {
         try {
@@ -492,7 +503,7 @@ export class Agent {
           const toolMessage: ToolMessage = result.ok
             ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value) }
             : { role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true };
-          messages.push(toolMessage);
+          messages.push(Object.freeze(toolMessage));
           assertMessages(messages, limits, false);
           if (!result.ok && result.error.code === "TOOL_TIMEOUT") return fail(result.error);
         } catch (error) {
@@ -500,7 +511,7 @@ export class Agent {
           if (error instanceof KernelError && ["MESSAGE_LIMIT_EXCEEDED", "REQUEST_LIMIT_EXCEEDED"].includes(error.code)) return fail(errorInfo(error, error.code));
           const result = errorResult("TOOL_ERROR", error instanceof Error ? error.message : "Tool execution failed.");
           this.emit(request.onEvent, { type: "tool-finished", call, result });
-          messages.push({ role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true });
+          messages.push(Object.freeze({ role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true }));
           try {
             assertMessages(messages, limits, false);
           } catch (limitError) {

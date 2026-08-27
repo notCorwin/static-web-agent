@@ -213,6 +213,25 @@ test("agent forwards attachment bytes only through the model request side channe
   assert.deepEqual(received.messages[0].attachmentIds, [attachment.id]);
 });
 
+test("agent exposes immutable message history to model adapters", async () => {
+  const model = {
+    id: "immutable-history",
+    async *stream({ messages }) {
+      assert.equal(Object.isFrozen(messages), true);
+      assert.equal(Object.isFrozen(messages[0]), true);
+      assert.equal(Object.isFrozen(messages[0].toolCalls[0].arguments.nested), true);
+      assert.throws(() => { messages[0].toolCalls[0].arguments.nested.value = 2; }, TypeError);
+      yield { type: "completed", message: { role: "assistant", content: "unchanged" } };
+    },
+  };
+  const result = await new Agent(model, new AgentKernel()).run({
+    messages: [{ role: "assistant", content: "", toolCalls: [{ id: "call", name: "test", arguments: { nested: { value: 1 } } }] }],
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.messages[0].toolCalls[0].arguments.nested.value, 1);
+  assert.equal(Object.isFrozen(result.messages), true);
+});
+
 test("agent forwards streaming tool-call deltas and reconstructs their arguments", async () => {
   const kernel = new AgentKernel();
   kernel.register({
