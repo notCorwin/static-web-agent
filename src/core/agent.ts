@@ -365,27 +365,58 @@ export class Agent {
               if (next.done) break;
               throwIfAborted(signal);
               throwIfAborted(modelController.signal);
-              this.consumeModelEvent(
-                next.value,
-                request.onEvent,
-                streamedCalls,
-                streamedCallDeltas,
-                (delta) => {
-                  streamedText += delta;
+              const event = next.value;
+              if (typeof event !== "object" || event === null || typeof event.type !== "string") {
+                throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
+              }
+              switch (event.type) {
+                case "text-delta":
+                  if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
+                  streamedText += event.delta;
                   if (streamedText.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
-                },
-                (delta) => {
-                  streamedReasoning += delta;
+                  this.emit(request.onEvent, event);
+                  break;
+                case "reasoning-delta":
+                  if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid reasoning delta.");
+                  streamedReasoning += event.delta;
                   if (streamedReasoning.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model reasoning is too large.");
-                },
-                (message) => {
-                  completed = message;
+                  this.emit(request.onEvent, event);
+                  break;
+                case "tool-call-delta": {
+                  assertToolCallDelta(event.delta);
+                  const previous = streamedCallDeltas.get(event.delta.index) ?? { id: `call-${event.delta.index + 1}`, name: "", arguments: "" };
+                  streamedCallDeltas.set(event.delta.index, {
+                    id: event.delta.id ?? previous.id,
+                    name: `${previous.name}${event.delta.name ?? ""}`,
+                    arguments: `${previous.arguments}${event.delta.arguments ?? ""}`,
+                  });
+                  this.emit(request.onEvent, event);
+                  break;
+                }
+                case "tool-call":
+                  assertToolCall(event.call);
+                  streamedCalls.push(event.call);
+                  this.emit(request.onEvent, {
+                    type: "tool-call-delta",
+                    delta: { index: streamedCalls.length - 1, id: event.call.id, name: event.call.name, arguments: JSON.stringify(event.call.arguments) },
+                  });
+                  break;
+                case "usage":
+                  assertUsage(event.usage);
+                  usage = addUsage(usage, event.usage);
+                  break;
+                case "completed":
+                  assertAssistant(event.message);
+                  completed = event.message;
                   sawCompleted = true;
-                },
-                (nextUsage) => {
-                  usage = addUsage(usage, nextUsage);
-                },
-              );
+                  if (event.usage !== undefined) {
+                    assertUsage(event.usage);
+                    usage = addUsage(usage, event.usage);
+                  }
+                  break;
+                default:
+                  throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
+              }
             }
           } finally {
             if (currentIterator.return !== undefined) await currentIterator.return();
@@ -477,66 +508,6 @@ export class Agent {
           }
         }
       }
-    }
-  }
-
-  private consumeModelEvent(
-    event: ModelEvent,
-    onEvent: AgentRunRequest["onEvent"],
-    calls: ToolCall[],
-    callDeltas: Map<number, StreamedToolCallDraft>,
-    addText: (delta: string) => void,
-    addReasoning: (delta: string) => void,
-    setCompleted: (message: AssistantMessage) => void,
-    addUsageValue: (usage: ModelUsage) => void,
-  ): void {
-    if (typeof event !== "object" || event === null || typeof event.type !== "string") {
-      throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
-    }
-    switch (event.type) {
-      case "text-delta":
-        if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
-        addText(event.delta);
-        this.emit(onEvent, event);
-        break;
-      case "reasoning-delta":
-        if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid reasoning delta.");
-        addReasoning(event.delta);
-        this.emit(onEvent, event);
-        break;
-      case "tool-call-delta": {
-        assertToolCallDelta(event.delta);
-        const previous = callDeltas.get(event.delta.index) ?? { id: `call-${event.delta.index + 1}`, name: "", arguments: "" };
-        callDeltas.set(event.delta.index, {
-          id: event.delta.id ?? previous.id,
-          name: `${previous.name}${event.delta.name ?? ""}`,
-          arguments: `${previous.arguments}${event.delta.arguments ?? ""}`,
-        });
-        this.emit(onEvent, event);
-        break;
-      }
-      case "tool-call":
-        assertToolCall(event.call);
-        calls.push(event.call);
-        this.emit(onEvent, {
-          type: "tool-call-delta",
-          delta: { index: calls.length - 1, id: event.call.id, name: event.call.name, arguments: JSON.stringify(event.call.arguments) },
-        });
-        break;
-      case "usage":
-        assertUsage(event.usage);
-        addUsageValue(event.usage);
-        break;
-      case "completed":
-        assertAssistant(event.message);
-        setCompleted(event.message);
-        if (event.usage !== undefined) {
-          assertUsage(event.usage);
-          addUsageValue(event.usage);
-        }
-        break;
-      default:
-        throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
     }
   }
 
