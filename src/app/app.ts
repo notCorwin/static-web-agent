@@ -1,6 +1,6 @@
 import { createHarness, type Harness } from "../harness.js";
 import { createBrowserStateStore } from "../core/state.js";
-import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
+import { isMessageEnvelope, normalizeMessages } from "./chat.js";
 import { createAttachmentIntake, createPendingAttachment, type AttachmentIntake, type AttachmentProgress, type PendingAttachment, type PreparedAttachments } from "./attachments.js";
 import { DEFAULT_THINKING_LEVEL, loadConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
 import { createModelConnection, validateConnectionDraft, type ModelConnection } from "./model-connection.js";
@@ -43,7 +43,7 @@ export interface AgentAppOptions {
 export class AgentApp {
   private readonly root: HTMLElement;
   private readonly options: AgentAppOptions;
-  private chat: ChatState = createChatState();
+  private chat: { messages: ModelMessage[] } = { messages: [] };
   private store!: StateStore;
   private harness: Harness | undefined;
   private attachmentIntake: AttachmentIntake | undefined;
@@ -91,7 +91,7 @@ export class AgentApp {
     streamPresentation = createStreamPresentation(streamAdapter);
     this.streamPresentation = streamPresentation;
     this.bindEvents();
-    this.chat = createChatState();
+    this.chat = { messages: [] };
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
     const savedSettings = await loadConnectionSettings(this.store);
     this.applyConnectionSettings(savedSettings);

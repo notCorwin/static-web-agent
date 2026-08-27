@@ -132,7 +132,3 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
     });
   }
 }
-
-export function createRuntimeCapability(runtime: JavaScriptRuntime): JavaScriptRuntime {
-  return { execute: (code, input, options) => runtime.execute(code, input, options) };
-}

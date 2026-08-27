@@ -12,7 +12,6 @@ import {
 import { AiSdkAdapter, createRemoteModelPlugin } from "../dist/remote.js";
 import { createAttachmentIntake } from "../dist/app/attachments.js";
 import {
-  CHAT_LIMITS,
   CONNECTION_SETTINGS_KEY,
   DEFAULT_THINKING_LEVEL,
   createPendingAttachment,
@@ -808,8 +807,6 @@ test("in-memory chat normalization preserves unbounded message history", () => {
   assert.equal(normalized.length, 220);
   assert.equal(normalized[0].content, "message-0");
   assert.equal(normalized.at(-1).content, "message-219");
-  assert.equal(CHAT_LIMITS.maxMessages, Infinity);
-  assert.equal(CHAT_LIMITS.maxMessageChars, Infinity);
   assert.doesNotThrow(() => normalizeMessages([{ role: "user", content: "x".repeat(100_001) }]));
 });
 
