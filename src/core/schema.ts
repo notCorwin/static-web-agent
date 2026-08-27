@@ -31,27 +31,17 @@ function sameJson(left: unknown, right: unknown): boolean {
 
 function typeMatches(value: unknown, type: JsonSchema["type"]): boolean {
   if (type === undefined) return true;
-  const types = Array.isArray(type) ? type : [type];
-  return types.some((candidate) => {
-    switch (candidate) {
-      case "null":
-        return value === null;
-      case "boolean":
-        return typeof value === "boolean";
-      case "number":
-        return typeof value === "number" && Number.isFinite(value);
-      case "integer":
-        return typeof value === "number" && Number.isInteger(value);
-      case "string":
-        return typeof value === "string";
-      case "array":
-        return Array.isArray(value);
-      case "object":
-        return typeof value === "object" && value !== null && !Array.isArray(value);
-      default:
-        return false;
-    }
-  });
+  if (Array.isArray(type)) return type.some((candidate) => typeMatches(value, candidate));
+  switch (type) {
+    case "null": return value === null;
+    case "boolean": return typeof value === "boolean";
+    case "number": return typeof value === "number" && Number.isFinite(value);
+    case "integer": return typeof value === "number" && Number.isInteger(value);
+    case "string": return typeof value === "string";
+    case "array": return Array.isArray(value);
+    case "object": return typeof value === "object" && value !== null && !Array.isArray(value);
+    default: return false;
+  }
 }
 
 type PathSegment = string | number;

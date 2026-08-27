@@ -89,6 +89,7 @@ test("JSON schema validation rejects malformed and extra tool input", () => {
   assert.equal(validate({}, { nested: [Number.NaN] }).issues[0]?.keyword, "json");
   assert.equal(validate({ oneOf: [{ type: "string" }, { const: "other" }] }, "value").valid, true);
   assert.equal(validate({ oneOf: [{ type: "string" }, { const: "value" }] }, "value").valid, false);
+  assert.equal(validate({ type: ["null", "string"] }, "value").valid, true);
 });
 
 test("capabilities require an explicit provider and a granted permission", async () => {
