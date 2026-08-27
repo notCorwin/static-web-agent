@@ -411,7 +411,7 @@ export class AgentKernel {
     const lifecycle = new AbortController();
     let published = false;
     const publish = (): void => {
-      if (published) this.changed();
+      if (published && gate.value) this.changed();
     };
     const declared = new Set(manifest.permissions.map((permission) => permission.name));
 

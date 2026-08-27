@@ -86,7 +86,9 @@ test("harness installs trusted plugins, publishes snapshots, and rolls back fail
   await assert.rejects(harness.install(failed), /setup failed/);
   assert.equal(harness.snapshot().tools.some((tool) => tool.name === "example.leak"), false);
 
+  const beforeUninstall = snapshots.length;
   await handle.uninstall();
+  assert.equal(snapshots.length, beforeUninstall + 1, "plugin removal should publish only its final stable state");
   assert.equal(harness.snapshot().manifests.length, 0);
   unsubscribe();
   await harness.dispose();
