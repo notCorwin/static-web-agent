@@ -20,6 +20,7 @@ import type {
 } from "./types.js";
 
 const API_VERSION = "1" as const;
+const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 
 type ChangeListener = () => void;
 
@@ -248,7 +249,7 @@ export class AgentKernel {
     if (!validation.valid) {
       return failure("INVALID_TOOL_INPUT", formatIssues(validation.issues), issuesAsJson(validation.issues));
     }
-    const resolved = signal ?? new AbortController().signal;
+    const resolved = signal ?? NEVER_ABORTED_SIGNAL;
     try {
       if (resolved.aborted) return failure("ABORTED", "Tool execution was cancelled.");
       const result = await tool.execute(input as JsonValue, {
@@ -316,7 +317,7 @@ export class AgentKernel {
 
   private async capability<T>(pluginId: string, name: string, signal?: AbortSignal): Promise<T> {
     if (!(this.grants.get(pluginId)?.has(name) ?? false)) throw new PermissionDeniedError(pluginId, name);
-    const resolved = signal ?? new AbortController().signal;
+    const resolved = signal ?? NEVER_ABORTED_SIGNAL;
     throwIfAborted(resolved);
     const provider = this.providers.get(name);
     if (provider === undefined) throw new CapabilityUnavailableError(name);
@@ -336,7 +337,7 @@ export class AgentKernel {
 
   // ------------------------------------------------------- processors and ui
 
-  async process(value: JsonValue, signal: AbortSignal = new AbortController().signal): Promise<JsonValue> {
+  async process(value: JsonValue, signal: AbortSignal = NEVER_ABORTED_SIGNAL): Promise<JsonValue> {
     let result = value;
     for (const processor of [...this.processorMap.values()].sort((left, right) => left.id.localeCompare(right.id))) {
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : abortedError("Operation cancelled.");
@@ -398,7 +399,7 @@ export class AgentKernel {
     return [...this.installed.values()].map(({ manifest }) => manifest);
   }
 
-  async install(plugin: Plugin, signal = new AbortController().signal): Promise<PluginHandle> {
+  async install(plugin: Plugin, signal = NEVER_ABORTED_SIGNAL): Promise<PluginHandle> {
     validateManifest(plugin.manifest);
     const manifest: PluginManifest = Object.freeze({
       ...plugin.manifest,

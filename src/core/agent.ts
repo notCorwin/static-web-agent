@@ -28,6 +28,8 @@ export const DEFAULT_AGENT_LIMITS: AgentLimits = Object.freeze({
   maxToolCallsPerTurn: Number.POSITIVE_INFINITY,
 });
 
+const NEVER_ABORTED_SIGNAL = new AbortController().signal;
+
 function runId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -288,7 +290,7 @@ export class Agent {
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     const id = runId();
-    const signal = request.signal ?? new AbortController().signal;
+    const signal = request.signal ?? NEVER_ABORTED_SIGNAL;
     const maxTurns = request.maxTurns;
     const modelTimeoutMs = request.modelTimeoutMs;
     const toolTimeoutMs = request.toolTimeoutMs;

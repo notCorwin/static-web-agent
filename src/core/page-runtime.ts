@@ -2,6 +2,7 @@ import { KernelError } from "./errors.js";
 import type { JsonValue, JavaScriptRuntimeResult, PageRuntime } from "./types.js";
 
 type PageConsole = Record<string, (...values: readonly unknown[]) => void>;
+const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 
 function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
@@ -79,7 +80,7 @@ export class BrowserPageRuntime implements PageRuntime {
       throw new KernelError("INVALID_PAGE_RUNTIME_INPUT", error instanceof Error ? error.message : "Page JavaScript could not be compiled.");
     }
 
-    const signal = options.signal ?? new AbortController().signal;
+    const signal = options.signal ?? NEVER_ABORTED_SIGNAL;
     return new Promise<JavaScriptRuntimeResult>((resolve, reject) => {
       let settled = false;
       const cleanup = () => signal.removeEventListener("abort", onAbort);
