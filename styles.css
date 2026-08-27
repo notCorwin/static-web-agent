@@ -333,7 +333,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .composer-input-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) 36px; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 0 7px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); }
 .composer-input-row:hover, .composer-input-row:focus-within { border-color: var(--control-focus); }
 .composer-input-row > .attachment-button { position: static; grid-column: 1; place-self: center; transform: none; }
-.composer textarea { grid-column: 2; min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; border: 0; border-radius: 0; padding: 10px 0; background: transparent; line-height: 1.45; font-size: var(--control-font-size); }
+.composer textarea { grid-column: 2; min-height: 44px; max-height: 180px; field-sizing: content; resize: none; overflow-y: auto; border: 0; border-radius: 0; padding: 10px 0; background: transparent; line-height: 1.45; font-size: var(--control-font-size); }
 .send-button { position: static; grid-column: 3; place-self: center; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 999px; }
 .send-button[hidden] { display: none; }
 .stop-button { background: var(--stop-bg); color: var(--stop-ink); }

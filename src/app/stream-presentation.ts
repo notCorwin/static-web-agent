@@ -11,10 +11,27 @@ export type PendingStreamSegment =
   | { readonly key: string; readonly kind: "text" | "thinking"; readonly text: string }
   | { readonly key: string; readonly kind: "tools"; readonly toolKeys: readonly string[] };
 
+type PendingStreamDraft =
+  | { readonly key: string; readonly kind: "text" | "thinking"; readonly chunks: string[] }
+  | { readonly key: string; readonly kind: "tools"; readonly toolKeys: readonly string[] };
+
+interface PendingToolDraft {
+  readonly key: string;
+  readonly index: number;
+  id?: string;
+  readonly name: string[];
+  readonly arguments: string[];
+}
+
+type InternalLiveToolEntry =
+  | { readonly key: string; readonly status: "preparing"; readonly draft: PendingToolDraft }
+  | Extract<LiveToolEntry, { readonly status: "running" | "finished" }>;
+
 export interface StreamPresentationSnapshot {
   readonly pendingToolCalls: readonly ToolCallDelta[];
   readonly liveToolEntries: readonly LiveToolEntry[];
   readonly pendingStream: readonly PendingStreamSegment[];
+  readonly contentRevision: number;
   readonly followChat: boolean;
   readonly showScrollButton: boolean;
   readonly scrollToLatest: boolean;
@@ -28,6 +45,7 @@ export interface StreamViewport {
 
 export interface StreamPresentationAdapter {
   readonly render: (snapshot: StreamPresentationSnapshot) => void;
+  readonly renderViewport?: (followChat: boolean, viewport: StreamViewport) => void;
 }
 
 export interface StreamPresentation {
@@ -44,20 +62,36 @@ export interface StreamPresentation {
   readonly scrollToLatest: () => void;
 }
 
-function immutableSnapshot(
+interface StreamContentSnapshot {
+  readonly pendingToolCalls: readonly ToolCallDelta[];
+  readonly liveToolEntries: readonly LiveToolEntry[];
+  readonly pendingStream: readonly PendingStreamSegment[];
+}
+
+function immutableContent(
   pendingToolCalls: readonly ToolCallDelta[],
   liveToolEntries: readonly LiveToolEntry[],
   pendingStream: readonly PendingStreamSegment[],
-  followChat: boolean,
-  showScrollButton: boolean,
-  scrollToLatest: boolean,
-): StreamPresentationSnapshot {
+): StreamContentSnapshot {
   return Object.freeze({
     pendingToolCalls: Object.freeze([...pendingToolCalls]),
     liveToolEntries: Object.freeze(liveToolEntries.map((entry) => Object.freeze(entry))),
     pendingStream: Object.freeze(pendingStream.map((segment) => Object.freeze(
       segment.kind === "tools" ? { ...segment, toolKeys: Object.freeze([...segment.toolKeys]) } : { ...segment },
     ))),
+  });
+}
+
+function immutableSnapshot(
+  content: StreamContentSnapshot,
+  contentRevision: number,
+  followChat: boolean,
+  showScrollButton: boolean,
+  scrollToLatest: boolean,
+): StreamPresentationSnapshot {
+  return Object.freeze({
+    ...content,
+    contentRevision,
     followChat,
     showScrollButton,
     scrollToLatest,
@@ -65,10 +99,10 @@ function immutableSnapshot(
 }
 
 export function createStreamPresentation(adapter: StreamPresentationAdapter): StreamPresentation {
-  let pendingToolCalls: ToolCallDelta[] = [];
-  let liveToolEntries: LiveToolEntry[] = [];
+  const pendingToolDrafts = new Map<number, PendingToolDraft>();
+  let liveToolEntries: InternalLiveToolEntry[] = [];
   let liveToolSequence = 0;
-  let pendingStream: PendingStreamSegment[] = [];
+  let pendingStream: PendingStreamDraft[] = [];
   let pendingStreamSequence = 0;
   let busy = false;
   let followChat = true;
@@ -77,22 +111,59 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
   let lastScrollTop = 0;
   let viewport: StreamViewport | undefined;
   let scrollRequest = false;
+  let contentRevision = 0;
+  let materializedContent: StreamContentSnapshot | undefined;
+
+  const invalidateContent = (): void => {
+    contentRevision += 1;
+    materializedContent = undefined;
+  };
 
   const showScrollButton = (): boolean => {
     if (followChat || viewport === undefined) return false;
     return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 1;
   };
 
+  const materializeToolDelta = (draft: PendingToolDraft): ToolCallDelta => ({
+    index: draft.index,
+    ...(draft.id === undefined ? {} : { id: draft.id }),
+    ...(draft.name.length === 0 ? {} : { name: draft.name.join("") }),
+    ...(draft.arguments.length === 0 ? {} : { arguments: draft.arguments.join("") }),
+  });
+
+  const currentContent = (): StreamContentSnapshot => {
+    if (materializedContent !== undefined) return materializedContent;
+    const toolDeltas = new Map<PendingToolDraft, ToolCallDelta>();
+    const deltaFor = (draft: PendingToolDraft): ToolCallDelta => {
+      const existing = toolDeltas.get(draft);
+      if (existing !== undefined) return existing;
+      const delta = Object.freeze(materializeToolDelta(draft));
+      toolDeltas.set(draft, delta);
+      return delta;
+    };
+    materializedContent = immutableContent(
+      [...pendingToolDrafts.values()].sort((left, right) => left.index - right.index).map(deltaFor),
+      liveToolEntries.map((entry): LiveToolEntry => entry.status === "preparing"
+        ? { key: entry.key, status: entry.status, delta: deltaFor(entry.draft) }
+        : entry),
+      pendingStream.map((segment) => segment.kind === "tools" ? segment : {
+        key: segment.key,
+        kind: segment.kind,
+        text: segment.chunks.join(""),
+      }),
+    );
+    return materializedContent;
+  };
+
   const currentSnapshot = (): StreamPresentationSnapshot => immutableSnapshot(
-    pendingToolCalls,
-    liveToolEntries,
-    pendingStream,
+    currentContent(),
+    contentRevision,
     followChat,
     showScrollButton(),
     scrollRequest,
   );
 
-  const replaceLiveToolEntry = (entry: LiveToolEntry): void => {
+  const replaceLiveToolEntry = (entry: InternalLiveToolEntry): void => {
     const index = liveToolEntries.findIndex((current) => current.key === entry.key);
     if (index < 0) liveToolEntries.push(entry);
     else liveToolEntries[index] = entry;
@@ -100,23 +171,31 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
 
   const appendPendingStreamText = (kind: "text" | "thinking", delta: string): void => {
     if (delta.length === 0) return;
-    const last = pendingStream.at(-1);
+    let last = pendingStream.at(-1);
+    if (kind === "text" && last?.kind === "thinking" && last.chunks.length === 0) {
+      pendingStream.pop();
+      last = pendingStream.at(-1);
+    }
     if (last?.kind === kind) {
-      pendingStream[pendingStream.length - 1] = { ...last, text: last.text + delta };
+      last.chunks.push(delta);
       return;
     }
-    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind, text: delta });
+    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind, chunks: [delta] });
   };
 
   const ensurePendingThinking = (): void => {
     const last = pendingStream.at(-1);
-    if (last?.kind === "thinking" && last.text.length === 0) return;
-    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind: "thinking", text: "" });
+    if (last?.kind === "thinking" && last.chunks.length === 0) return;
+    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind: "thinking", chunks: [] });
   };
 
   const appendPendingTool = (key: string): void => {
     if (pendingStream.some((segment) => segment.kind === "tools" && segment.toolKeys.includes(key))) return;
-    const last = pendingStream.at(-1);
+    let last = pendingStream.at(-1);
+    if (last?.kind === "thinking" && last.chunks.length === 0) {
+      pendingStream.pop();
+      last = pendingStream.at(-1);
+    }
     if (last?.kind === "tools") {
       pendingStream[pendingStream.length - 1] = { ...last, toolKeys: [...last.toolKeys, key] };
       return;
@@ -128,46 +207,51 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
     switch (event.type) {
       case "text-delta":
         appendPendingStreamText("text", event.delta);
+        if (event.delta.length > 0) invalidateContent();
         break;
       case "reasoning-delta":
         appendPendingStreamText("thinking", event.delta);
+        if (event.delta.length > 0) invalidateContent();
         break;
       case "model-started":
-        pendingToolCalls = [];
+        pendingToolDrafts.clear();
         ensurePendingThinking();
+        invalidateContent();
         break;
       case "tool-call-delta": {
-        const previous = pendingToolCalls.find((delta) => delta.index === event.delta.index);
-        const merged: { index: number; id?: string; name?: string; arguments?: string } = { index: event.delta.index };
-        const id = event.delta.id ?? previous?.id;
-        const name = event.delta.name === undefined && previous?.name === undefined ? undefined : `${previous?.name ?? ""}${event.delta.name ?? ""}`;
-        const argumentsValue = event.delta.arguments === undefined && previous?.arguments === undefined ? undefined : `${previous?.arguments ?? ""}${event.delta.arguments ?? ""}`;
-        if (id !== undefined) merged.id = id;
-        if (name !== undefined) merged.name = name;
-        if (argumentsValue !== undefined) merged.arguments = argumentsValue;
-        pendingToolCalls = [...pendingToolCalls.filter((delta) => delta.index !== event.delta.index), merged]
-          .sort((left, right) => left.index - right.index);
-        const liveEntry = liveToolEntries.find((entry) => entry.status === "preparing" && entry.delta.index === merged.index);
-        const liveKey = liveEntry?.key ?? `live-${++liveToolSequence}`;
-        replaceLiveToolEntry({ key: liveKey, status: "preparing", delta: merged });
-        appendPendingTool(liveKey);
+        let draft = pendingToolDrafts.get(event.delta.index);
+        if (draft === undefined) {
+          draft = { key: `live-${++liveToolSequence}`, index: event.delta.index, name: [], arguments: [] };
+          pendingToolDrafts.set(draft.index, draft);
+          liveToolEntries.push({ key: draft.key, status: "preparing", draft });
+          appendPendingTool(draft.key);
+        }
+        if (event.delta.id !== undefined) draft.id = event.delta.id;
+        if (event.delta.name !== undefined) draft.name.push(event.delta.name);
+        if (event.delta.arguments !== undefined) draft.arguments.push(event.delta.arguments);
+        invalidateContent();
         break;
       }
       case "tool-started": {
-        pendingToolCalls = pendingToolCalls.filter((delta) => delta.id !== event.call.id && delta.name !== event.call.name);
-        const liveEntry = liveToolEntries.find((entry) => entry.status === "preparing" && (entry.delta.id === event.call.id || entry.delta.name === event.call.name));
+        for (const [index, draft] of pendingToolDrafts) {
+          if (draft.id === event.call.id || draft.name.join("") === event.call.name) pendingToolDrafts.delete(index);
+        }
+        const liveEntry = liveToolEntries.find((entry) => entry.status === "preparing" && (entry.draft.id === event.call.id || entry.draft.name.join("") === event.call.name));
         const liveKey = liveEntry?.key ?? `live-${++liveToolSequence}`;
         replaceLiveToolEntry({ key: liveKey, status: "running", call: event.call });
         appendPendingTool(liveKey);
+        invalidateContent();
         break;
       }
       case "tool-finished": {
         const liveEntry = liveToolEntries.find((entry) => entry.status === "running" && (entry.call.id === event.call.id || entry.call.name === event.call.name));
         replaceLiveToolEntry({ key: liveEntry?.key ?? `live-${++liveToolSequence}`, status: "finished", call: event.call, result: event.result });
+        invalidateContent();
         break;
       }
       case "run-finished":
-        pendingToolCalls = [];
+        pendingToolDrafts.clear();
+        invalidateContent();
         break;
       case "run-started":
       case "run-error":
@@ -177,11 +261,12 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
   };
 
   const resetPending = (): void => {
-    pendingToolCalls = [];
+    pendingToolDrafts.clear();
     liveToolEntries = [];
     liveToolSequence = 0;
     pendingStream = [];
     pendingStreamSequence = 0;
+    invalidateContent();
   };
 
   const reset = (): void => {
@@ -217,13 +302,19 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
       busy = nextBusy;
     },
     onScroll: (nextViewport) => {
-      viewport = nextViewport;
-      const scrollingUp = nextViewport.scrollTop < lastScrollTop - 1;
-      lastScrollTop = nextViewport.scrollTop;
+      const measuredViewport: StreamViewport = {
+        scrollTop: nextViewport.scrollTop,
+        scrollHeight: nextViewport.scrollHeight,
+        clientHeight: nextViewport.clientHeight,
+      };
+      viewport = measuredViewport;
+      const scrollingUp = measuredViewport.scrollTop < lastScrollTop - 1;
+      lastScrollTop = measuredViewport.scrollTop;
       if (scrollingUp) followChat = false;
       if (!(busy && followChat && !userScrollGesture)) {
-        followChat = nextViewport.scrollHeight - nextViewport.scrollTop - nextViewport.clientHeight < 90;
+        followChat = measuredViewport.scrollHeight - measuredViewport.scrollTop - measuredViewport.clientHeight < 90;
       }
+      adapter.renderViewport?.(followChat, measuredViewport);
     },
     recordProgrammaticScroll: (scrollTop) => {
       lastScrollTop = scrollTop;
@@ -271,7 +362,7 @@ function updateLiveToolElement(details: HTMLDetailsElement, entry: LiveToolEntry
   }
   const nextClassName = `tool-detail pending${entry.status === "finished" ? " tool-call-complete" : ""}`;
   if (details.className !== nextClassName) details.className = nextClassName;
-  details.dataset.toolKey = entry.key;
+  if (details.dataset.toolKey !== entry.key) details.dataset.toolKey = entry.key;
   const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
   const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
   if (summary === null || body === null) return;
@@ -316,14 +407,12 @@ function updatePendingAssistantElement(element: HTMLElement, segment: Extract<Pe
     body.className = "message-body";
     element.append(body);
   }
-  if (body.dataset.renderedSource === segment.text) return;
-  body.dataset.renderedSource = segment.text;
   renderRichContent(body, segment.text, { streaming: true });
 }
 
 function pendingToolGroupElement(
   segment: Extract<PendingStreamSegment, { readonly kind: "tools" }>,
-  entries: readonly LiveToolEntry[],
+  entries: ReadonlyMap<string, LiveToolEntry>,
   existing: HTMLDetailsElement | undefined,
 ): HTMLDetailsElement | undefined {
   const existingItems = new Map<string, HTMLDetailsElement>();
@@ -334,7 +423,7 @@ function pendingToolGroupElement(
   }
   const items: HTMLElement[] = [];
   for (const key of segment.toolKeys) {
-    const entry = entries.find((candidate) => candidate.key === key);
+    const entry = entries.get(key);
     if (entry === undefined) continue;
     let item = existingItems.get(entry.key);
     if (item === undefined) item = createLiveToolElement(entry);
@@ -345,21 +434,22 @@ function pendingToolGroupElement(
   }
   if (items.length === 0) return undefined;
   const group = existing ?? toolGroupElement(items, true);
-  group.dataset.streamKey = segment.key;
+  if (group.dataset.streamKey !== segment.key) group.dataset.streamKey = segment.key;
   if (existing !== undefined) updateToolGroupElement(group, items, true);
   return group;
 }
 
-function updatePendingMessages(conversation: HTMLElement, snapshot: StreamPresentationSnapshot): void {
-  const existing = new Map<string, HTMLElement>();
-  for (const element of conversation.querySelectorAll<HTMLElement>(":scope > [data-stream-key]")) {
-    if (element.dataset.streamKey !== undefined) existing.set(element.dataset.streamKey, element);
-  }
+function updatePendingMessages(
+  conversation: HTMLElement,
+  snapshot: StreamPresentationSnapshot,
+  existing: Map<string, HTMLElement>,
+): void {
   const desired: HTMLElement[] = [];
+  const liveToolEntries = new Map(snapshot.liveToolEntries.map((entry) => [entry.key, entry]));
   for (const segment of snapshot.pendingStream) {
     const current = existing.get(segment.key);
     if (segment.kind === "tools") {
-      const group = pendingToolGroupElement(segment, snapshot.liveToolEntries, current instanceof HTMLDetailsElement ? current : undefined);
+      const group = pendingToolGroupElement(segment, liveToolEntries, current instanceof HTMLDetailsElement ? current : undefined);
       if (group !== undefined) desired.push(group);
     } else {
       let element = current;
@@ -374,8 +464,20 @@ function updatePendingMessages(conversation: HTMLElement, snapshot: StreamPresen
     existing.delete(segment.key);
   }
   for (const element of existing.values()) element.remove();
-  const currentOrder = Array.from(conversation.children).filter((element): element is HTMLElement => element instanceof HTMLElement && element.dataset.streamKey !== undefined);
-  const sameOrder = currentOrder.length === desired.length && currentOrder.every((element, index) => element === desired[index]);
+  existing.clear();
+  for (const element of desired) {
+    const key = element.dataset.streamKey;
+    if (key !== undefined) existing.set(key, element);
+  }
+  let cursor = conversation.lastElementChild;
+  let sameOrder = true;
+  for (let index = desired.length - 1; index >= 0; index -= 1) {
+    if (cursor !== desired[index]) {
+      sameOrder = false;
+      break;
+    }
+    cursor = cursor?.previousElementSibling ?? null;
+  }
   if (!sameOrder) conversation.append(...desired);
 }
 
@@ -388,41 +490,33 @@ export interface DomStreamPresentationAdapterOptions {
 }
 
 export function createDomStreamPresentationAdapter(options: DomStreamPresentationAdapterOptions): StreamPresentationAdapter {
-  let scheduled = false;
-  let latest: StreamPresentationSnapshot | undefined;
-  const updateButton = (snapshot: StreamPresentationSnapshot): void => {
-    const distance = options.chat.scrollHeight - options.chat.scrollTop - options.chat.clientHeight;
-    options.scrollButton.hidden = snapshot.followChat || distance <= 1;
+  let renderedContentRevision = -1;
+  const pendingElements = new Map<string, HTMLElement>();
+  const updateButton = (followChat: boolean, viewport: StreamViewport = options.chat): void => {
+    if (followChat) {
+      if (!options.scrollButton.hidden) options.scrollButton.hidden = true;
+      return;
+    }
+    const distance = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    const hidden = distance <= 1;
+    if (options.scrollButton.hidden !== hidden) options.scrollButton.hidden = hidden;
   };
   const scrollToBottom = (): void => {
-    options.chat.scrollTop = Math.max(0, options.chat.scrollHeight - options.chat.clientHeight);
-    options.onProgrammaticScroll(options.chat.scrollTop);
-  };
-  const scroll = (): void => {
-    if (!scheduled) return;
-    scheduled = false;
-    const snapshot = latest;
-    if (snapshot !== undefined && (snapshot.followChat || !options.hasCommittedMessages() || snapshot.scrollToLatest)) {
-      scrollToBottom();
-    }
-    if (snapshot !== undefined) updateButton(snapshot);
-  };
-  const scheduleScroll = (): void => {
-    if (scheduled) return;
-    scheduled = true;
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(scroll);
-    globalThis.setTimeout(scroll, 50);
+    const scrollTop = Math.max(0, options.chat.scrollHeight - options.chat.clientHeight);
+    options.chat.scrollTop = scrollTop;
+    options.onProgrammaticScroll(scrollTop);
   };
   return {
+    renderViewport: updateButton,
     render: (snapshot) => {
-      latest = snapshot;
-      updatePendingMessages(options.conversation, snapshot);
-      updateButton(snapshot);
+      if (snapshot.contentRevision !== renderedContentRevision) {
+        updatePendingMessages(options.conversation, snapshot, pendingElements);
+        renderedContentRevision = snapshot.contentRevision;
+      }
       if (snapshot.followChat || !options.hasCommittedMessages() || snapshot.scrollToLatest) {
         scrollToBottom();
-        scheduleScroll();
-        updateButton(snapshot);
-      }
+        if (!options.scrollButton.hidden) options.scrollButton.hidden = true;
+      } else updateButton(snapshot.followChat);
     },
   };
 }

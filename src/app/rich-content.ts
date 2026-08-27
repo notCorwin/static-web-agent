@@ -26,6 +26,8 @@ interface CommentSyntax {
 }
 
 const mathPattern = /\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$\$([\s\S]+?)\$\$|(?<!\\)\$([^$\n]+?)\$/g;
+const streamingMarkdownPattern = /[`*_\[\]<>]|\\[`*_{}\[\]<>#$|~]|~~|https?:\/\/|www\.|\b[\w.+-]+@[\w.-]+\.\w+|&(?:#\d+|#x[\da-f]+|\w+);|(?:^|\n)[ \t]{0,3}#{1,6}(?:\s|$)|(?:^|\n)(?: {4}|\t)|(?:^|\n)[ \t]*(?:[-+>]\s|\d+[.)]\s|[-=]{2,}[ \t]*(?:\n|$))/i;
+const streamingSources = new WeakMap<HTMLElement, string>();
 
 function containsMath(source: string): boolean {
   mathPattern.lastIndex = 0;
@@ -259,6 +261,20 @@ function enhanceCodeBlocks(container: HTMLElement): void {
 }
 
 export function renderRichContent(container: HTMLElement, source: string, options: RichContentOptions = {}): void {
+  let previousStreamingSource: string | undefined;
+  if (options.streaming === true) {
+    previousStreamingSource = streamingSources.get(container);
+    if (previousStreamingSource === source) return;
+    streamingSources.set(container, source);
+  } else streamingSources.delete(container);
+  if (options.streaming === true && !streamingMarkdownPattern.test(source)) {
+    const text = container.firstChild;
+    if (text instanceof Text && text === container.lastChild && previousStreamingSource !== undefined && source.startsWith(previousStreamingSource)) {
+      text.appendData(source.slice(previousStreamingSource.length));
+    }
+    else container.textContent = source;
+    return;
+  }
   const rendered = marked.parse(source, { async: false, breaks: true, gfm: true });
   const html = typeof rendered === "string" ? rendered : source;
   container.innerHTML = String(DOMPurify.sanitize(html));

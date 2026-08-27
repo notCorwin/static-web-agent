@@ -191,7 +191,6 @@ export function thinkingElement(reasoning: string, pending = false): HTMLDetails
   const body = document.createElement("div");
   body.className = "thinking-body";
   if (pending) {
-    body.dataset.renderedSource = reasoning;
     renderRichContent(body, reasoning, { streaming: true });
   }
   else renderRichContent(body, reasoning);
@@ -201,22 +200,21 @@ export function thinkingElement(reasoning: string, pending = false): HTMLDetails
 }
 
 export function updateThinkingElement(details: HTMLDetailsElement, reasoning: string, pending = true): void {
-  details.className = `thinking-block${pending ? " pending" : ""}`;
-  details.dataset.thinking = "true";
+  const nextClassName = `thinking-block${pending ? " pending" : ""}`;
+  if (details.className !== nextClassName) details.className = nextClassName;
+  if (details.dataset.thinking !== "true") details.dataset.thinking = "true";
   const summary = details.querySelector<HTMLElement>(":scope > .thinking-summary");
   const body = details.querySelector<HTMLElement>(":scope > .thinking-body");
   if (summary === null || body === null) return;
-  summary.textContent = pending ? "Thinking…" : "Thinking";
+  const nextSummary = pending ? "Thinking…" : "Thinking";
+  if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
   if (pending) {
-    if (body.dataset.renderedSource !== reasoning) {
-      body.dataset.renderedSource = reasoning;
-      renderRichContent(body, reasoning, { streaming: true });
-    }
+    renderRichContent(body, reasoning, { streaming: true });
   } else {
     body.replaceChildren();
     renderRichContent(body, reasoning);
   }
-  details.open = pending;
+  if (details.open !== pending) details.open = pending;
 }
 
 export function toolGroupElement(items: readonly HTMLElement[], active = false): HTMLDetailsElement {
@@ -243,30 +241,34 @@ export function toolGroupElement(items: readonly HTMLElement[], active = false):
 }
 
 export function updateToolGroupElement(details: HTMLDetailsElement, items: readonly HTMLElement[], active = false): void {
-  details.className = `tool-group${active ? " pending" : ""}`;
-  details.dataset.toolKey = "tool-group";
+  const nextClassName = `tool-group${active ? " pending" : ""}`;
+  if (details.className !== nextClassName) details.className = nextClassName;
+  if (details.dataset.toolKey !== "tool-group") details.dataset.toolKey = "tool-group";
   const summary = details.querySelector<HTMLElement>(":scope > .tool-group-summary");
   const body = details.querySelector<HTMLElement>(":scope > .tool-group-body");
   if (summary === null || body === null) return;
-  summary.textContent = active
+  const nextSummary = active
     ? `Calling ${items.length} tool${items.length === 1 ? "" : "s"}…`
     : `Called ${items.length} tool${items.length === 1 ? "" : "s"}`;
-  const nextItems = new Set(items);
-  for (const child of Array.from(body.children)) {
-    if (!nextItems.has(child as HTMLElement)) child.remove();
-  }
+  if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
   const currentItems = Array.from(body.children);
   const sameOrder = currentItems.length === items.length && currentItems.every((child, index) => child === items[index]);
-  if (!sameOrder) body.append(...items);
-  details.open = active;
+  if (!sameOrder) {
+    const nextItems = new Set(items);
+    for (const child of currentItems) {
+      if (!nextItems.has(child as HTMLElement)) child.remove();
+    }
+    body.append(...items);
+  }
+  if (details.open !== active) details.open = active;
   if (active) {
     for (const item of items) {
-      if (item instanceof HTMLDetailsElement) item.open = true;
+      if (item instanceof HTMLDetailsElement && !item.open) item.open = true;
     }
   }
 }
 
-export function messageElements(messages: readonly ModelMessage[], attachmentNames?: ReadonlyMap<string, ModelAttachment>): HTMLElement[] {
+export function messageElements(messages: readonly ModelMessage[], attachmentNames?: ReadonlyMap<string, ModelAttachment>, startIndex = 0): HTMLElement[] {
   const result: HTMLElement[] = [];
   let toolItems: HTMLElement[] = [];
   const flushTools = (): void => {
@@ -274,7 +276,7 @@ export function messageElements(messages: readonly ModelMessage[], attachmentNam
     toolItems = [];
   };
   messages.forEach((message, index) => {
-    const element = messageElement(message, false, index, attachmentNames);
+    const element = messageElement(message, false, startIndex + index, attachmentNames);
     if (element === null) return;
     if (message.role === "tool") toolItems.push(element);
     else {
@@ -302,14 +304,16 @@ export function streamingToolElement(delta: ToolCallDelta, key = `stream-${delta
 }
 
 export function updateStreamingToolElement(details: HTMLDetailsElement, delta: ToolCallDelta, key = `stream-${delta.index}`): void {
-  details.className = "tool-detail pending tool-call-stream";
-  details.dataset.toolKey = key;
+  if (details.className !== "tool-detail pending tool-call-stream") details.className = "tool-detail pending tool-call-stream";
+  if (details.dataset.toolKey !== key) details.dataset.toolKey = key;
   const summary = details.querySelector<HTMLElement>(":scope > .tool-summary");
   const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
   if (summary === null || body === null) return;
   const nextSummary = `${delta.name?.trim() || "tool"} · preparing`;
   const nextBody = delta.arguments?.trim() || "Waiting for arguments…";
   if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
-  if (body.textContent !== nextBody) body.textContent = nextBody;
+  const text = body.firstChild;
+  if (text instanceof Text && text === body.lastChild && nextBody.startsWith(text.data)) text.appendData(nextBody.slice(text.data.length));
+  else if (body.textContent !== nextBody) body.textContent = nextBody;
   if (!details.open) details.open = true;
 }

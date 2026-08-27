@@ -15,12 +15,33 @@ interface VisionRetry {
   readonly historyLength: number;
 }
 
+const STREAM_RENDER_INTERVAL_MS = 32;
+
 function displayModelName(value: string): string {
   return value.trim().replace(/^.*\//, "").replace(/:.*$/, "").replace(/-/g, " ").trim()
     .split(/\s+/)
     .filter(Boolean)
     .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     .join(" ");
+}
+
+function sameRenderedMessage(left: ModelMessage, right: ModelMessage): boolean {
+  if (left.role !== right.role || left.content !== right.content) return false;
+  if (left.role === "assistant" && right.role === "assistant") return left.reasoning === right.reasoning;
+  if (left.role === "tool" && right.role === "tool") {
+    return left.callId === right.callId && left.name === right.name && left.isError === right.isError;
+  }
+  if (left.role !== "user" || right.role !== "user") return true;
+  const leftIds = left.attachmentIds ?? [];
+  const rightIds = right.attachmentIds ?? [];
+  return leftIds.length === rightIds.length && leftIds.every((id, index) => id === rightIds[index]);
+}
+
+function isRenderedPrefix(previous: readonly ModelMessage[], next: readonly ModelMessage[]): boolean {
+  return previous.length > 0
+    && previous.length <= next.length
+    && !(previous.at(-1)?.role === "tool" && next[previous.length]?.role === "tool")
+    && previous.every((message, index) => sameRenderedMessage(message, next[index]!));
 }
 
 export interface AgentAppOptions {
@@ -43,6 +64,7 @@ export class AgentApp {
   private busy = false;
   private runController: AbortController | undefined;
   private chatRenderScheduled = false;
+  private lastChatRenderAt = Number.NEGATIVE_INFINITY;
   private chatObserver: MutationObserver | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
   private selectedModelId: string | undefined;
@@ -143,7 +165,9 @@ export class AgentApp {
       void this.sendMessage();
     });
     const messageInput = this.elements["message-input"] as HTMLTextAreaElement | undefined;
-    messageInput?.addEventListener("input", () => this.resizeMessageInput());
+    if (typeof CSS === "undefined" || !CSS.supports("field-sizing", "content")) {
+      messageInput?.addEventListener("input", () => this.resizeMessageInput());
+    }
     messageInput?.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || event.isComposing) return;
       event.preventDefault();
@@ -181,22 +205,16 @@ export class AgentApp {
     });
     const chat = this.elements["chat-log"];
     chat?.addEventListener("scroll", () => {
-      if (this.streamPresentation !== undefined) {
-        this.streamPresentation.onScroll(chat);
-        this.streamPresentation.render();
-      }
+      this.streamPresentation?.onScroll(chat);
     }, { passive: true });
     chat?.addEventListener("wheel", (event) => {
       this.streamPresentation?.markUserScrollGesture(event.deltaY < 0);
-      this.streamPresentation?.render();
     }, { passive: true });
     chat?.addEventListener("touchmove", () => {
       this.streamPresentation?.markUserScrollGesture();
-      this.streamPresentation?.render();
     }, { passive: true });
     chat?.addEventListener("pointerdown", () => {
       this.streamPresentation?.markUserScrollGesture();
-      this.streamPresentation?.render();
     }, { passive: true });
     this.elements["scroll-bottom-button"]?.addEventListener("click", () => {
       this.streamPresentation?.scrollToLatest();
@@ -239,7 +257,7 @@ export class AgentApp {
     });
     if (chat !== undefined && typeof MutationObserver === "function") {
       this.chatObserver = new MutationObserver(() => {
-        if (this.streamPresentation?.snapshot().followChat) this.scheduleChatRender();
+        if (!this.busy && this.streamPresentation?.snapshot().followChat) this.scheduleChatRender();
       });
       this.chatObserver.observe(chat, { childList: true, subtree: true });
     }
@@ -541,7 +559,7 @@ export class AgentApp {
       this.runController = undefined;
       this.setBusy(false);
       this.renderAll();
-      this.focusComposer(true);
+      this.focusComposer();
     }
   }
 
@@ -563,18 +581,17 @@ export class AgentApp {
         this.renderChat();
         break;
       case "tool-call-delta": {
-        const merged = this.streamPresentation?.snapshot().pendingToolCalls.find((delta) => delta.index === event.delta.index);
-        this.notify(`${merged?.name?.trim() || "Tool"} · preparing…`);
+        this.notify("Preparing tool…");
         this.scheduleChatRender();
         break;
       }
       case "tool-started":
         this.notify(`Running ${event.call.name}…`);
-        this.renderChat();
+        this.scheduleChatRender();
         break;
       case "tool-finished":
         this.notify(event.result.ok ? `Finished ${event.call.name}.` : `${event.call.name} returned an error.`, event.result.ok ? "success" : "error");
-        this.renderChat();
+        this.scheduleChatRender();
         break;
       case "run-error":
         this.notify(event.error.message, "error");
@@ -623,6 +640,11 @@ export class AgentApp {
     this.chatRenderScheduled = true;
     const render = () => {
       if (!this.chatRenderScheduled) return;
+      const delay = STREAM_RENDER_INTERVAL_MS - (performance.now() - this.lastChatRenderAt);
+      if (delay > 1) {
+        window.setTimeout(render, delay);
+        return;
+      }
       this.chatRenderScheduled = false;
       if (this.ready) this.renderChat();
     };
@@ -633,29 +655,45 @@ export class AgentApp {
   }
 
   private renderChat(): void {
+    this.chatRenderScheduled = false;
+    this.lastChatRenderAt = performance.now();
     const chat = this.elements["chat-log"];
     const conversation = this.elements["conversation-content"];
     const connectionCard = this.elements["connection-card"];
     if (chat === undefined || conversation === undefined || connectionCard === undefined) return;
-    const stream = this.streamPresentation?.snapshot();
-    const hasStreaming = (stream?.pendingStream.length ?? 0) > 0 || (stream?.liveToolEntries.length ?? 0) > 0;
-    chat.setAttribute("aria-busy", String(this.busy));
+    const ariaBusy = String(this.busy);
+    if (chat.getAttribute("aria-busy") !== ariaBusy) chat.setAttribute("aria-busy", ariaBusy);
     const selectedModelId = this.selectedModelId;
-    connectionCard.hidden = selectedModelId !== undefined && !this.connectionEditing;
+    const connectionHidden = selectedModelId !== undefined && !this.connectionEditing;
+    if (connectionCard.hidden !== connectionHidden) connectionCard.hidden = connectionHidden;
     const chatMenu = this.elements["chat-menu"];
     if (chatMenu !== undefined) {
-      chatMenu.hidden = selectedModelId === undefined || this.connectionEditing || this.chat.messages.length === 0;
-      if (chatMenu.hidden) {
+      const menuHidden = selectedModelId === undefined || this.connectionEditing || this.chat.messages.length === 0;
+      if (chatMenu.hidden !== menuHidden) chatMenu.hidden = menuHidden;
+      if (menuHidden) {
         const details = chatMenu.querySelector<HTMLDetailsElement>(":scope > details");
-        if (details !== null) details.open = false;
+        if (details?.open) details.open = false;
       }
     }
     const fullRender = this.renderedMessages !== this.chat.messages
       || this.renderedModelId !== selectedModelId
       || this.renderedConnectionEditing !== this.connectionEditing;
     if (fullRender) {
-      conversation.replaceChildren();
-      if (this.chat.messages.length === 0 && !hasStreaming) {
+      const previousMessages = this.renderedMessages;
+      const appendOnly = this.renderedModelId === selectedModelId
+        && this.renderedConnectionEditing === this.connectionEditing
+        && previousMessages !== undefined
+        && isRenderedPrefix(previousMessages, this.chat.messages);
+      if (appendOnly) {
+        conversation.append(...messageElements(
+          this.chat.messages.slice(previousMessages.length),
+          this.modelAttachments,
+          previousMessages.length,
+        ));
+      } else {
+        conversation.replaceChildren();
+      }
+      if (!appendOnly && this.chat.messages.length === 0) {
         if (selectedModelId !== undefined) {
           const welcome = document.createElement("div");
           welcome.className = "empty-state";
@@ -675,7 +713,7 @@ export class AgentApp {
           welcome.append(change);
           conversation.append(welcome);
         }
-      } else {
+      } else if (!appendOnly) {
         conversation.append(...messageElements(this.chat.messages, this.modelAttachments));
       }
       this.renderedMessages = this.chat.messages;
@@ -689,7 +727,7 @@ export class AgentApp {
 
   private resizeMessageInput(): void {
     const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
-    if (input === undefined) return;
+    if (input === undefined || (typeof CSS !== "undefined" && CSS.supports("field-sizing", "content"))) return;
     input.style.height = "auto";
     input.style.overflowY = "hidden";
     const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
@@ -870,12 +908,13 @@ export class AgentApp {
 
   private notify(message: string, kind: "normal" | "success" | "error" = "normal"): void {
     const status = this.element("run-status");
-    status.textContent = message;
+    if (status.textContent !== message) status.textContent = message;
     // Progress chatter stays screen-reader-only because the live stream already shows it;
     // errors stay visible, otherwise a failed run leaves sighted users at a dead end.
-    status.className = kind === "error"
+    const className = kind === "error"
       ? "status-message error"
       : `status-message sr-only${kind === "success" ? " success" : ""}`;
+    if (status.className !== className) status.className = className;
   }
 
   private focusComposer(force = false): void {
@@ -883,7 +922,7 @@ export class AgentApp {
     queueMicrotask(() => {
       const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
       const active = document.activeElement;
-      if (input === undefined || (!force && active !== document.body && active !== this.root)) return;
+      if (input === undefined || (!force && (window.getSelection()?.isCollapsed === false || (active !== document.body && active !== this.root)))) return;
       input.focus();
     });
   }

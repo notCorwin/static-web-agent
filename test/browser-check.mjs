@@ -122,6 +122,7 @@ async function startStaticServer() {
         response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
         if (pathname === "/test-scroll") {
           const chunks = [
+            "Preparing response…\n\n",
             "# Streaming heading\n\n",
             Array.from({ length: 32 }, (_, index) => `Scroll line ${index + 1}`).join("\n") + "\n",
             ...Array.from({ length: 20 }, (_, index) => `stream chunk ${index + 1}\n`),
@@ -174,7 +175,7 @@ async function startStaticServer() {
         if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
           const firstArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 1000)); return 42" });
           const secondArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 2500)); return 42" });
-          const fragments = (value) => Array.from({ length: Math.ceil(value.length / 70) }, (_, index) => value.slice(index * 70, (index + 1) * 70));
+          const fragments = (value) => Array.from({ length: Math.ceil(value.length / 24) }, (_, index) => value.slice(index * 24, (index + 1) * 24));
           const toolChunks = [
             { index: 0, id: "browser-streamed-tool-call", function: { name: "runtime_" } },
             { index: 0, function: { name: "javascript" } },
@@ -211,7 +212,7 @@ async function startStaticServer() {
         if (pathname === "/test-reasoning") {
           const chunks = [
             { choices: [{ delta: { reasoning_content: "first reasoning step\n" } }] },
-            { choices: [{ delta: { reasoning_content: "second reasoning step\n" } }] },
+            { choices: [{ delta: { reasoning_content: "second reasoning step: $5 and {ok: true} with \\alpha\n" } }] },
             { choices: [{ delta: { content: "reasoning answer" } }] },
           ];
           let index = 0;
@@ -542,8 +543,9 @@ try {
     const manyLines = setValue(Array.from({ length: 30 }, (_, index) => 'line ' + (index + 1)).join('\\n'));
     const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
     setValue('');
-    return { singleLine, multiLine, manyLines, maxHeight };
+    return { singleLine, multiLine, manyLines, maxHeight, fieldSizing: getComputedStyle(input).fieldSizing };
   })()`);
+  assert.equal(composerGrowth.fieldSizing, "content", "the composer should use native content sizing instead of measuring every keystroke in JavaScript");
   assert.ok(composerGrowth.singleLine.height < composerGrowth.multiLine.height, "the composer should grow for multiline input");
   assert.ok(composerGrowth.manyLines.height <= composerGrowth.maxHeight + 1, "the composer should stop growing at its max height");
   assert.equal(composerGrowth.manyLines.overflowY, "auto", "long multiline input should scroll inside the capped composer");
@@ -566,9 +568,12 @@ try {
     input.setSelectionRange(input.value.length, input.value.length);
     const newlineEvent = new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true, cancelable: true });
     const newlineDispatch = input.dispatchEvent(newlineEvent);
-    return { sendDispatch, valueAfterSend, newlineDispatch, valueAfterNewline: input.value };
+    const valueAfterNewline = input.value;
+    input.value = 'composing';
+    const composingDispatch = input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
+    return { sendDispatch, valueAfterSend, newlineDispatch, valueAfterNewline, composingDispatch, valueAfterComposing: input.value };
   })()`);
-  assert.deepEqual(keyboardBehavior, { sendDispatch: false, valueAfterSend: "first", newlineDispatch: false, valueAfterNewline: "first\n" });
+  assert.deepEqual(keyboardBehavior, { sendDispatch: false, valueAfterSend: "first", newlineDispatch: false, valueAfterNewline: "first\n", composingDispatch: true, valueAfterComposing: "composing" });
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'message before connecting';
@@ -1075,8 +1080,37 @@ try {
     summary: document.querySelector('.message.assistant.pending .thinking-summary')?.textContent,
     open: document.querySelector('.message.assistant.pending .thinking-block')?.open,
     body: document.querySelector('.message.assistant.pending .thinking-body')?.textContent,
+    textNodeOnly: (() => {
+      const body = document.querySelector('.message.assistant.pending .thinking-body');
+      window.__streamingThinkingText = body?.firstChild;
+      window.__streamingThinkingSummaryText = document.querySelector('.message.assistant.pending .thinking-summary')?.firstChild;
+      return body?.childNodes.length === 1 && body.firstChild?.nodeType === Node.TEXT_NODE;
+    })(),
   }))()`);
-  assert.deepEqual(streamingThinking, { summary: "Thinking…", open: true, body: "first reasoning step\n" });
+  assert.deepEqual(streamingThinking, { summary: "Thinking…", open: true, body: "first reasoning step\n", textNodeOnly: true });
+  await page.evaluate(`(() => {
+    const text = document.querySelector('.message.assistant.pending .thinking-body')?.firstChild;
+    window.__streamingAppendCalls = [];
+    window.__originalAppendData = text.appendData;
+    text.appendData = function (value) {
+      window.__streamingAppendCalls.push(value);
+      return window.__originalAppendData.call(this, value);
+    };
+    window.__streamingShellAttributeMutations = 0;
+    window.__streamingShellObserver = new MutationObserver((records) => {
+      window.__streamingShellAttributeMutations += records.length;
+    });
+    window.__streamingShellObserver.observe(document.querySelector('.app-shell'), {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ['aria-busy', 'hidden'],
+    });
+  })()`);
+  await waitFor(page, "document.querySelector('.message.assistant.pending .thinking-body')?.textContent.includes('second reasoning step')", 20_000);
+  assert.equal(await page.evaluate("window.__streamingThinkingText === document.querySelector('.message.assistant.pending .thinking-body')?.firstChild"), true, "plain streaming text should update one text node in place");
+  assert.equal(await page.evaluate("window.__streamingThinkingSummaryText === document.querySelector('.message.assistant.pending .thinking-summary')?.firstChild"), true, "streaming reasoning should not rewrite its unchanged summary");
+  assert.deepEqual(await page.evaluate("window.__streamingAppendCalls"), ["second reasoning step: $5 and {ok: true} with \\alpha\n"], "plain technical text should append only the new suffix");
+  assert.equal(await page.evaluate("window.__streamingShellObserver.disconnect(); window.__streamingShellAttributeMutations"), 0, "streaming frames should not rewrite unchanged shell attributes");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'reasoning answer' && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
   const finishedThinking = await page.evaluate(`(() => {
     const block = document.querySelector('.message.assistant .thinking-block');
@@ -1124,6 +1158,14 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('#connection-status')?.textContent.includes('Remote model selected')");
   await page.evaluate(`(() => {
+    window.__stableHistoryMessage = document.querySelector('.message');
+    const conversation = document.querySelector('#conversation-content');
+    window.__conversationStreamScans = 0;
+    window.__conversationQuerySelectorAll = conversation.querySelectorAll;
+    conversation.querySelectorAll = function (selector) {
+      if (selector === ':scope > [data-stream-key]') window.__conversationStreamScans += 1;
+      return window.__conversationQuerySelectorAll.call(this, selector);
+    };
     const input = document.querySelector('#message-input');
     input.value = 'scroll request';
     document.querySelector('#composer-form').requestSubmit();
@@ -1133,14 +1175,57 @@ try {
     const pendingBody = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((body) => body.textContent.includes('Scroll line 32') && body.querySelector('h1')?.textContent === 'Streaming heading');
     const distance = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
     if (document.querySelector('#send-button .button-label')?.textContent !== 'Stop' || pendingBody === undefined || pendingBody.children.length === 0 || distance > 2) return false;
-    return { overflow: chat.scrollHeight > chat.clientHeight, distance, pendingChildren: pendingBody.children.length, pendingHeading: pendingBody.querySelector('h1')?.textContent ?? null };
+    return { overflow: chat.scrollHeight > chat.clientHeight, distance, pendingChildren: pendingBody.children.length, pendingHeading: pendingBody.querySelector('h1')?.textContent ?? null, noEmptyThinking: document.querySelector('.message.assistant.pending .thinking-block') === null, noSourceAttributes: document.querySelector('[data-rendered-source]') === null, fullHistoryScans: window.__conversationStreamScans };
   })()`, 20_000);
   assert.equal(midStreamScroll.overflow, true);
   assert.ok(midStreamScroll.distance <= 2, "the conversation should follow the bottom while the model streams");
   assert.ok(midStreamScroll.pendingChildren > 0, "streaming text should render Markdown before completion");
   assert.equal(midStreamScroll.pendingHeading, "Streaming heading");
-  await page.evaluate("(() => { const chat = document.querySelector('#chat-log'); chat.scrollTop = 0; chat.dispatchEvent(new Event('scroll')); })()");
-  await waitFor(page, "document.querySelector('#scroll-bottom-button')?.hidden === false");
+  assert.equal(midStreamScroll.noEmptyThinking, true, "the first answer token should replace the empty thinking placeholder");
+  assert.equal(midStreamScroll.noSourceAttributes, true, "streaming source caches should stay out of the DOM");
+  assert.equal(midStreamScroll.fullHistoryScans, 0, "streaming updates should scan only the pending tail, not the full conversation");
+  await page.evaluate(`(() => {
+    const conversation = document.querySelector('#conversation-content');
+    conversation.querySelectorAll = window.__conversationQuerySelectorAll;
+    delete window.__conversationQuerySelectorAll;
+  })()`);
+  assert.equal(await page.evaluate("window.__stableHistoryMessage === document.querySelector('.message')"), true, "starting a stream should append without rebuilding history");
+  const streamingDraft = await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = ['draft line 1', 'draft line 2'].join(String.fromCharCode(10));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return { value: input.value, height: input.getBoundingClientRect().height, stillRunning: document.querySelector('#send-button .button-label')?.textContent === 'Stop' };
+  })()`);
+  assert.equal(streamingDraft.value, "draft line 1\ndraft line 2");
+  assert.ok(streamingDraft.height > composerGrowth.singleLine.height, "a draft should grow natively while the response streams");
+  assert.equal(streamingDraft.stillRunning, true, "typing a draft must not stop the active response");
+  const streamingSelection = await page.evaluate(`(() => {
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    const body = document.querySelector('.message.user .message-body');
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    window.__streamingSelection = selection.toString();
+    return { text: window.__streamingSelection, activeTag: document.activeElement?.tagName };
+  })()`);
+  assert.ok(streamingSelection.text.length > 0, "history text should be selectable while streaming");
+  assert.equal(streamingSelection.activeTag, "BODY");
+  const scrollRender = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const body = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((item) => item.querySelector('h1')?.textContent === 'Streaming heading');
+    let mutations = 0;
+    const observer = new MutationObserver((records) => { mutations += records.length; });
+    observer.observe(body, { childList: true, characterData: true, subtree: true });
+    chat.scrollTop = 0;
+    chat.dispatchEvent(new Event('scroll'));
+    mutations += observer.takeRecords().length;
+    observer.disconnect();
+    const currentBody = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((item) => item.querySelector('h1')?.textContent === 'Streaming heading');
+    return { mutations, buttonVisible: document.querySelector('#scroll-bottom-button')?.hidden === false, bodyStable: body === currentBody };
+  })()`);
+  assert.deepEqual(scrollRender, { mutations: 0, buttonVisible: true, bodyStable: true }, "scrolling should update viewport controls without touching streamed content");
   const detachedStreamScroll = await page.evaluate(`(() => {
     const chat = document.querySelector('#chat-log');
     const firstMessage = document.querySelector('.message.user .message-body');
@@ -1149,6 +1234,9 @@ try {
   assert.ok(detachedStreamScroll.distance > 2, "scrolling upward should detach the stream from the bottom");
   assert.ok(detachedStreamScroll.firstMessageHeight > 0, "history should remain laid out while the model streams");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.includes('The stream finished') && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
+  assert.equal(await page.evaluate("window.__stableHistoryMessage === document.querySelector('.message')"), true, "stream completion should not rebuild unchanged history");
+  assert.equal(await page.evaluate("document.querySelector('#message-input').value"), "draft line 1\ndraft line 2", "stream completion should preserve the next-message draft");
+  assert.deepEqual(await page.evaluate(`({ selected: window.getSelection().toString(), focusStayedAway: document.activeElement !== document.querySelector('#message-input') })`), { selected: await page.evaluate("window.__streamingSelection"), focusStayedAway: true }, "stream completion should preserve the user's selection and focus ownership");
   const finishedStreamScroll = await page.evaluate(`(() => {
     const chat = document.querySelector('#chat-log');
     return chat.scrollHeight - chat.scrollTop - chat.clientHeight;
@@ -1189,14 +1277,16 @@ try {
   assert.equal(streamingTool.groupOpen, true, "the active tool group should be open while streaming");
   assert.ok(streamingTool.childOpen?.some(Boolean), "an active tool detail should be open while streaming");
   assert.equal(streamingTool.bodyVisible, true, "streaming tool arguments should be visible");
-  await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); })()");
+  await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('await')", 5_000);
+  await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); window.__firstStreamingToolText = document.querySelector('.tool-call-stream .tool-detail-body')?.firstChild; })()");
   await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return')", 5_000);
   const streamingStability = await page.evaluate(`({
     groupStable: window.__firstStreamingToolGroup === document.querySelector('.tool-group.pending'),
     detailStable: window.__firstStreamingToolDetail === document.querySelector('.tool-call-stream'),
+    textStable: window.__firstStreamingToolText === document.querySelector('.tool-call-stream .tool-detail-body')?.firstChild,
     argumentVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return'),
   })`);
-  assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, argumentVisible: true }, "streaming tool DOM should update in place without flickering");
+  assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, textStable: true, argumentVisible: true }, "streaming tool DOM should append arguments in place without flickering");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).some((body) => body.textContent.includes('After tool'))", 5_000);
   const interleavedStream = await page.evaluate(`(() => Array.from(document.querySelector('#conversation-content').children)
     .filter((element) => element.dataset.streamKey !== undefined)
@@ -1204,8 +1294,8 @@ try {
       kind: element.classList.contains('message') ? 'assistant' : 'tools',
       text: element.textContent,
     })))()`);
-  assert.deepEqual(interleavedStream.map((item) => item.kind), ["assistant", "assistant", "tools", "assistant"], "thinking, streamed text, and tool calls should keep provider event order");
-  assert.ok(interleavedStream[0]?.text.includes("Thinking") && interleavedStream[1]?.text.includes("Before tool") && interleavedStream[3]?.text.includes("After tool"), "interleaved streamed text should stay on its original side of the tool group");
+  assert.deepEqual(interleavedStream.map((item) => item.kind), ["assistant", "tools", "assistant"], "streamed text and tool calls should keep provider event order without an empty thinking segment");
+  assert.ok(interleavedStream[0]?.text.includes("Before tool") && interleavedStream[2]?.text.includes("After tool"), "interleaved streamed text should stay on its original side of the tool group");
   await waitFor(page, "document.querySelector('.tool-group.pending .tool-detail.tool-call-complete') !== null && document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail').length === 2 && Array.from(document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail')).some((detail) => detail.querySelector('.tool-summary')?.textContent.includes('running'))", 20_000);
   const continuousTool = await page.evaluate(`(() => ({
     groupOpen: document.querySelector('.tool-group.pending')?.open,
