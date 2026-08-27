@@ -746,7 +746,7 @@ export class AgentApp {
     const values = this.connectionValues(form);
     if (values === undefined) return;
     this.element("connection-status").className = "connection-status sr-only";
-    if (automatic) this.element("connection-status").textContent = "Restoring your saved cloud model…";
+    this.element("connection-status").textContent = automatic ? "Restoring your saved cloud model…" : "";
     if (submit !== null && submit !== undefined) submit.disabled = true;
     if (spinner !== null && spinner !== undefined) spinner.hidden = false;
     try {

@@ -172,8 +172,8 @@ async function startStaticServer() {
             ? "tool complete"
             : "sse";
         if (pathname === "/test-tool-stream" && streamedToolRequests++ === 0) {
-          const firstArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 260)); return 42" });
-          const secondArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 1200)); return 42" });
+          const firstArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 1000)); return 42" });
+          const secondArguments = JSON.stringify({ code: "await new Promise(resolve => setTimeout(resolve, 2500)); return 42" });
           const fragments = (value) => Array.from({ length: Math.ceil(value.length / 70) }, (_, index) => value.slice(index * 70, (index + 1) * 70));
           const toolChunks = [
             { index: 0, id: "browser-streamed-tool-call", function: { name: "runtime_" } },
@@ -196,7 +196,7 @@ async function startStaticServer() {
               const delta = chunk.type === "text" ? { content: chunk.value } : { tool_calls: [chunk.value] };
               response.write(`data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`);
               index += 1;
-              setTimeout(sendToolChunk, 65);
+              setTimeout(sendToolChunk, 250);
               return;
             }
             response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
@@ -1184,6 +1184,14 @@ try {
   assert.equal(streamingTool.groupOpen, true, "the active tool group should be open while streaming");
   assert.ok(streamingTool.childOpen?.some(Boolean), "an active tool detail should be open while streaming");
   assert.equal(streamingTool.bodyVisible, true, "streaming tool arguments should be visible");
+  await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); })()");
+  await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return')", 5_000);
+  const streamingStability = await page.evaluate(`({
+    groupStable: window.__firstStreamingToolGroup === document.querySelector('.tool-group.pending'),
+    detailStable: window.__firstStreamingToolDetail === document.querySelector('.tool-call-stream'),
+    argumentVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return'),
+  })`);
+  assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, argumentVisible: true }, "streaming tool DOM should update in place without flickering");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).some((body) => body.textContent.includes('After tool'))", 5_000);
   const interleavedStream = await page.evaluate(`(() => Array.from(document.querySelector('#conversation-content').children)
     .filter((element) => element.dataset.streamKey !== undefined)
@@ -1193,14 +1201,6 @@ try {
     })))()`);
   assert.deepEqual(interleavedStream.map((item) => item.kind), ["assistant", "assistant", "tools", "assistant"], "thinking, streamed text, and tool calls should keep provider event order");
   assert.ok(interleavedStream[0]?.text.includes("Thinking") && interleavedStream[1]?.text.includes("Before tool") && interleavedStream[3]?.text.includes("After tool"), "interleaved streamed text should stay on its original side of the tool group");
-  await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); })()");
-  await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return')", 5_000);
-  const streamingStability = await page.evaluate(`({
-    groupStable: window.__firstStreamingToolGroup === document.querySelector('.tool-group.pending'),
-    detailStable: window.__firstStreamingToolDetail === document.querySelector('.tool-call-stream'),
-    argumentVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return'),
-  })`);
-  assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, argumentVisible: true }, "streaming tool DOM should update in place without flickering");
   await waitFor(page, "document.querySelector('.tool-group.pending .tool-detail.tool-call-complete') !== null && document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail').length === 2 && Array.from(document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail')).some((detail) => detail.querySelector('.tool-summary')?.textContent.includes('running'))", 20_000);
   const continuousTool = await page.evaluate(`(() => ({
     groupOpen: document.querySelector('.tool-group.pending')?.open,
