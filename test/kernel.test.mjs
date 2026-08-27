@@ -580,6 +580,17 @@ test("state store persists cloned values and isolates prefixes", async () => {
   assert.deepEqual(await state.keys(), ["b"]);
 });
 
+test("memory state batches remain atomic when cloning fails", async () => {
+  const state = new MemoryStateStore();
+  await state.set("kept", 1);
+  const uncloneable = new Proxy({ value: 2 }, {});
+  await assert.rejects(state.apply([
+    { type: "set", key: "added", value: 2 },
+    { type: "set", key: "broken", value: uncloneable },
+  ]));
+  assert.deepEqual(await state.keys(), ["kept"]);
+});
+
 test("browser state falls back to memory when IndexedDB opening fails", async () => {
   const failingIndexedDb = {
     open() {

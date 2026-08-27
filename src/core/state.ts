@@ -37,13 +37,11 @@ export class MemoryStateStore implements StateStore {
 
   async apply(changes: readonly StateChange[]): Promise<void> {
     validateChanges(changes);
-    const next = new Map(this.values);
-    for (const change of changes) {
-      if (change.type === "set") next.set(change.key, clone(change.value));
-      else next.delete(change.key);
+    const prepared = changes.map((change): StateChange => change.type === "set" ? { ...change, value: clone(change.value) } : change);
+    for (const change of prepared) {
+      if (change.type === "set") this.values.set(change.key, change.value);
+      else this.values.delete(change.key);
     }
-    this.values.clear();
-    for (const [key, value] of next) this.values.set(key, value);
   }
 
   async keys(): Promise<readonly string[]> {
