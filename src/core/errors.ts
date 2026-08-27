@@ -64,12 +64,6 @@ export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): Tool
   return { code: fallbackCode, message: "Operation failed." };
 }
 
-export function toError(value: unknown, fallbackMessage = "Operation failed."): Error {
-  if (value instanceof Error) return value;
-  if (typeof value === "string") return new Error(value);
-  return new Error(fallbackMessage);
-}
-
 export function jsonError(error: ToolError): JsonValue {
   const result: Record<string, JsonValue> = {
     code: error.code,

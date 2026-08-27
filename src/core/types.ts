@@ -86,7 +86,6 @@ export interface ToolDefinition {
   readonly inputSchema: JsonSchema;
   readonly outputSchema?: JsonSchema;
   readonly requiredCapabilities?: readonly CapabilityName[];
-  readonly pluginId?: string;
   readonly execute: (input: JsonValue, context: ToolExecutionContext) => JsonValue | Promise<JsonValue>;
 }
 
@@ -99,10 +98,6 @@ export interface ToolError {
 export type ToolExecutionResult =
   | { readonly ok: true; readonly value: JsonValue }
   | { readonly ok: false; readonly error: ToolError };
-
-export interface ToolExecutionRequest {
-  readonly signal?: AbortSignal;
-}
 
 export interface PluginManifest {
   readonly apiVersion: "1";

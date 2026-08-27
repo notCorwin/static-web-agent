@@ -20,7 +20,7 @@ import type {
   ToolMessage,
 } from "./types.js";
 
-export const DEFAULT_AGENT_LIMITS: AgentLimits = Object.freeze({
+const DEFAULT_AGENT_LIMITS: AgentLimits = Object.freeze({
   maxMessages: Number.POSITIVE_INFINITY,
   maxMessageChars: Number.POSITIVE_INFINITY,
   maxRequestChars: Number.POSITIVE_INFINITY,

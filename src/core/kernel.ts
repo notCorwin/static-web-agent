@@ -211,7 +211,7 @@ export class AgentKernel {
       name,
       inputSchema: cloneSchema(tool.inputSchema),
       ...(tool.outputSchema === undefined ? {} : { outputSchema: cloneSchema(tool.outputSchema) }),
-      pluginId: owner ?? tool.pluginId ?? "core",
+      pluginId: owner ?? "core",
       requiredCapabilities,
     };
     this.tools.set(name, registered);
@@ -232,10 +232,6 @@ export class AgentKernel {
       requiredCapabilities: tool.requiredCapabilities,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
     })));
-  }
-
-  get descriptorCount(): number {
-    return this.tools.size;
   }
 
   hasTool(name: string): boolean {
