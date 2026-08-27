@@ -136,6 +136,7 @@ export class AgentKernel {
   private readonly grants = new Map<string, Set<string>>();
   private readonly models = new Map<string, ModelAdapter>();
   private readonly processorMap = new Map<string, DataProcessor>();
+  private processorList: readonly DataProcessor[] | undefined;
   private readonly uiMap = new Map<string, UiContribution>();
   private readonly installed = new Map<string, Installed>();
   private readonly installing = new Set<string>();
@@ -335,7 +336,7 @@ export class AgentKernel {
 
   async process(value: JsonValue, signal: AbortSignal = NEVER_ABORTED_SIGNAL): Promise<JsonValue> {
     let result = value;
-    for (const processor of [...this.processorMap.values()].sort((left, right) => left.id.localeCompare(right.id))) {
+    for (const processor of this.processors()) {
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : abortedError("Operation cancelled.");
       result = await processor.process(result, signal);
       if (!isJsonValue(result)) throw new KernelError("INVALID_PROCESSOR_OUTPUT", `Processor “${processor.id}” returned a non-JSON value.`);
@@ -369,7 +370,7 @@ export class AgentKernel {
   }
 
   processors(): readonly DataProcessor[] {
-    return [...this.processorMap.values()].sort((left, right) => left.id.localeCompare(right.id));
+    return this.processorList ??= Object.freeze([...this.processorMap.values()].sort((left, right) => left.id.localeCompare(right.id)));
   }
 
   private releaseMountedUi(item: MountedUi): void {
@@ -472,8 +473,12 @@ export class AgentKernel {
           }
           if (this.processorMap.has(processor.id)) throw new PluginError("DUPLICATE_PROCESSOR", `Processor “${processor.id}” is already registered.`);
           this.processorMap.set(processor.id, processor);
+          this.processorList = undefined;
           const unregister = ownContribution(ownership, () => {
-            if (this.processorMap.get(processor.id) === processor) this.processorMap.delete(processor.id);
+            if (this.processorMap.get(processor.id) === processor) {
+              this.processorMap.delete(processor.id);
+              this.processorList = undefined;
+            }
             publish();
           });
           publish();
