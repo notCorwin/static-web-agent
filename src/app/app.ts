@@ -1,6 +1,6 @@
 import { createHarness, type Harness } from "../harness.js";
 import { createBrowserStateStore } from "../core/state.js";
-import { isMessageEnvelope, normalizeMessages } from "./chat.js";
+import { CONVERSATION_KEY, decodeTranscript, encodeTranscript, isMessageEnvelope, normalizeMessages } from "./chat.js";
 import { createAttachmentIntake, createPendingAttachment, type AttachmentIntake, type AttachmentProgress, type PendingAttachment, type PreparedAttachments } from "./attachments.js";
 import { DEFAULT_THINKING_LEVEL, loadConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
 import { createModelConnection, validateConnectionDraft, type ModelConnection } from "./model-connection.js";
@@ -85,6 +85,7 @@ export class AgentApp {
     const savedSettings = await loadConnectionSettings(this.store);
     this.applyConnectionSettings(savedSettings);
     this.attachmentIntake = createAttachmentIntake();
+    await this.restoreTranscript();
     this.harness = await createHarness({
       stateStore: this.store,
       ...(this.options.plugins === undefined ? {} : { plugins: this.options.plugins }),
@@ -151,7 +152,11 @@ export class AgentApp {
         const end = messageInput.selectionEnd;
         messageInput.setRangeText("\n", start, end, "end");
         messageInput.dispatchEvent(new Event("input", { bubbles: true }));
-      } else if (this.busy) this.runController?.abort();
+      } else if (this.busy) {
+        // The composer stays editable during a run; Enter may only abort an empty
+        // input so a drafted next message cannot trigger an accidental abort.
+        if (!messageInput.value.trim()) this.runController?.abort();
+      }
       else void this.sendMessage();
     });
     this.elements["attachment-button"]?.addEventListener("click", () => {
@@ -196,6 +201,26 @@ export class AgentApp {
     this.elements["scroll-bottom-button"]?.addEventListener("click", () => {
       this.streamPresentation?.scrollToLatest();
       this.streamPresentation?.render();
+    });
+    const chatMenu = this.element("chat-menu");
+    const menuDetails = this.element("chat-menu-details") as HTMLDetailsElement;
+    this.element("menu-open-settings").addEventListener("click", () => {
+      menuDetails.open = false;
+      this.openConnectionSettings();
+    });
+    this.element("menu-clear-chat").addEventListener("click", () => {
+      menuDetails.open = false;
+      void this.clearConversation();
+    });
+    document.addEventListener("click", (event) => {
+      if (!(event.target instanceof Node) || !chatMenu.contains(event.target)) menuDetails.open = false;
+    });
+    menuDetails.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        menuDetails.open = false;
+        this.focusComposer(true);
+      }
     });
     this.elements["conversation-content"]?.addEventListener("click", (event) => {
       const target = event.target;
@@ -367,7 +392,7 @@ export class AgentApp {
       retry.type = "button";
       retry.className = "secondary-button attachment-fallback-button";
       retry.dataset.action = "vision-fallback";
-      retry.textContent = "改用本地 OCR 并重发";
+      retry.textContent = "Use local OCR and resend";
       list.append(retry);
     }
   }
@@ -401,6 +426,7 @@ export class AgentApp {
     this.visionRetry = undefined;
     this.chat.messages = normalizeMessages(this.chat.messages.slice(0, retry.historyLength));
     this.pruneModelAttachments();
+    this.persistTranscript();
     this.renderedMessages = undefined;
     this.pendingAttachments = [...retry.files];
     const input = this.elements["message-input"] as HTMLTextAreaElement;
@@ -473,6 +499,7 @@ export class AgentApp {
         ...(attachmentIds.length === 0 ? {} : { attachmentIds }),
       };
       this.chat.messages = normalizeMessages([...this.chat.messages, userMessage]);
+      this.persistTranscript();
       input.value = "";
       this.pendingAttachments = [];
       this.visionRetry = undefined;
@@ -487,6 +514,7 @@ export class AgentApp {
       });
       this.chat.messages = normalizeMessages(result.messages);
       this.pruneModelAttachments();
+      this.persistTranscript();
       if (result.status === "completed") this.notify("Response complete.", "success");
       else if (result.status === "cancelled") this.notify("Run cancelled.", "error");
       else if (result.status === "max-turns") this.notify("Run stopped at the turn limit.", "error");
@@ -564,7 +592,6 @@ export class AgentApp {
     this.busy = value;
     this.streamPresentation?.setBusy(value);
     const send = this.elements["send-button"] as HTMLButtonElement;
-    const input = this.elements["message-input"] as HTMLTextAreaElement;
     send.disabled = false;
     send.hidden = !value;
     send.setAttribute("aria-busy", String(value));
@@ -572,7 +599,6 @@ export class AgentApp {
     send.classList.toggle("stop-button", value);
     const label = send.querySelector<HTMLElement>(".button-label");
     if (label !== null) label.textContent = value ? "Stop" : "Send";
-    input.disabled = value;
     const attachmentButton = this.elements["attachment-button"] as HTMLButtonElement | undefined;
     if (attachmentButton !== undefined) attachmentButton.disabled = value;
     const spinner = send.querySelector<HTMLElement>(".spinner");
@@ -616,6 +642,14 @@ export class AgentApp {
     chat.setAttribute("aria-busy", String(this.busy));
     const selectedModelId = this.selectedModelId;
     connectionCard.hidden = selectedModelId !== undefined && !this.connectionEditing;
+    const chatMenu = this.elements["chat-menu"];
+    if (chatMenu !== undefined) {
+      chatMenu.hidden = selectedModelId === undefined || this.connectionEditing || this.chat.messages.length === 0;
+      if (chatMenu.hidden) {
+        const details = chatMenu.querySelector<HTMLDetailsElement>(":scope > details");
+        if (details !== null) details.open = false;
+      }
+    }
     const fullRender = this.renderedMessages !== this.chat.messages
       || this.renderedModelId !== selectedModelId
       || this.renderedConnectionEditing !== this.connectionEditing;
@@ -722,6 +756,7 @@ export class AgentApp {
     }
     this.chat.messages = normalizeMessages(this.chat.messages.slice(0, index));
     this.pruneModelAttachments();
+    this.persistTranscript();
     this.renderedMessages = undefined;
     this.renderChat();
     const input = this.elements["message-input"] as HTMLTextAreaElement;
@@ -793,10 +828,54 @@ export class AgentApp {
     await this.connectRemote(form, true);
   }
 
+  private async restoreTranscript(): Promise<void> {
+    try {
+      const transcript = decodeTranscript(await this.store.get(CONVERSATION_KEY));
+      if (transcript === undefined) return;
+      this.chat = { messages: normalizeMessages(transcript.messages) };
+      for (const attachment of transcript.attachments) this.modelAttachments.set(attachment.id, attachment);
+    } catch {
+      // A corrupt transcript must never block startup.
+    }
+  }
+
+  private persistTranscript(): void {
+    const value = encodeTranscript(this.chat.messages, [...this.modelAttachments.values()]);
+    if (value === undefined) void this.store.remove(CONVERSATION_KEY);
+    else void this.store.set(CONVERSATION_KEY, value);
+  }
+
+  private clearConversation(): void {
+    if (this.chat.messages.length === 0 && this.modelAttachments.size === 0) return;
+    if (this.busy) {
+      this.notify("Stop generation before clearing the conversation.", "error");
+      return;
+    }
+    if (!window.confirm("Clear this entire conversation? This cannot be undone.")) return;
+    this.chat = { messages: [] };
+    this.modelAttachments.clear();
+    this.visionRetry = undefined;
+    this.renderedMessages = undefined;
+    this.persistTranscript();
+    this.renderAll();
+    this.notify("Conversation cleared.");
+    this.focusComposer(true);
+  }
+
+  private openConnectionSettings(): void {
+    this.connectionEditing = true;
+    this.renderChat();
+    queueMicrotask(() => this.element<HTMLInputElement>("model-endpoint").focus());
+  }
+
   private notify(message: string, kind: "normal" | "success" | "error" = "normal"): void {
     const status = this.element("run-status");
     status.textContent = message;
-    status.className = `status-message sr-only ${kind === "normal" ? "" : kind}`;
+    // Progress chatter stays screen-reader-only because the live stream already shows it;
+    // errors stay visible, otherwise a failed run leaves sighted users at a dead end.
+    status.className = kind === "error"
+      ? "status-message error"
+      : `status-message sr-only${kind === "success" ? " success" : ""}`;
   }
 
   private focusComposer(force = false): void {

@@ -7,6 +7,7 @@
   --border: #d0d0d0;
   --border-strong: #a8a8a8;
   --control-focus: #777777;
+  --focus-ring: rgb(17 17 17 / 22%);
   --control-height: 36px;
   --control-font-size: 16px;
   --control-line-height: 20px;
@@ -46,6 +47,7 @@
     --border: #3d3d3d;
     --border-strong: #676767;
     --control-focus: #bdbdbd;
+    --focus-ring: rgb(244 244 244 / 26%);
     --text: #f4f4f4;
     --muted: #b5b5b5;
     --faint: #929292;
@@ -84,10 +86,20 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 :focus-visible:not(input):not(textarea):not(select) { outline: 3px solid var(--accent); outline-offset: 3px; }
 :where(input, textarea, select):focus,
 :where(input, textarea, select):focus-visible {
-  outline: none !important;
-  outline-width: 0 !important;
-  outline-offset: 0 !important;
-  box-shadow: none !important;
+  outline: none;
+  outline-width: 0;
+  box-shadow: none;
+}
+/* Visible keyboard/mouse focus for text controls: the bare border-color change is too subtle to rely on. */
+.field input:focus,
+.field select:focus,
+.message-edit textarea:focus {
+  border-color: var(--control-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.composer-input-row:focus-within {
+  border-color: var(--control-focus);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .field:focus-within label { color: var(--accent-strong); }
 
@@ -138,16 +150,26 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .icon-button { min-width: 36px; padding: 7px; border-color: var(--border); background: transparent; color: var(--muted); }
 .icon-button:hover { border-color: var(--accent); color: var(--text); }
 
-.workspace { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; overflow: hidden; }
+.workspace { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
+.chat-menu { position: absolute; z-index: 6; top: 14px; right: clamp(16px, 4vw, 40px); }
+.chat-menu[hidden] { display: none; }
+.chat-menu > details { position: relative; }
+.chat-menu-button { display: grid; place-items: center; list-style: none; border-radius: 999px; background: var(--surface); box-shadow: var(--scroll-shadow); font-size: 18px; line-height: 1; }
+.chat-menu-button::-webkit-details-marker { display: none; }
+.chat-menu-panel { position: absolute; top: calc(100% + 6px); right: 0; display: grid; min-width: 200px; padding: 5px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: var(--scroll-shadow); }
+.chat-menu-item { border: 0; border-radius: 8px; padding: 9px 10px; background: transparent; color: var(--text); font-size: 13px; font-weight: 600; text-align: left; white-space: nowrap; }
+.chat-menu-item:hover { background: var(--surface-soft); }
+.chat-menu-danger { color: var(--danger); }
 .capability-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 27px;
+  justify-self: start;
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 4px 9px;
-  color: var(--muted);
-  font-size: 12px;
+  min-height: 24px;
+  padding: 3px 7px;
+  color: var(--accent);
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -304,13 +326,14 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .attachment-list { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; }
 .attachment-chip { display: inline-flex; align-items: center; max-width: min(100%, 300px); gap: 4px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 7px; background: var(--surface-raised); }
 .attachment-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attachment-chip-remove { display: grid; width: 18px; height: 18px; place-items: center; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; }
+.attachment-chip-remove { display: grid; position: relative; width: 18px; height: 18px; place-items: center; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; }
+.attachment-chip-remove::before { content: ""; position: absolute; inset: -6px; border-radius: inherit; }
 .attachment-chip-remove:hover { background: var(--surface-soft); color: var(--text); }
 .attachment-status { color: var(--muted); }
 .composer-input-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) 36px; align-items: center; min-width: 0; min-height: 44px; gap: 7px; padding: 0 7px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); }
 .composer-input-row:hover, .composer-input-row:focus-within { border-color: var(--control-focus); }
 .composer-input-row > .attachment-button { position: static; grid-column: 1; place-self: center; transform: none; }
-.composer textarea { grid-column: 2; min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; border: 0; border-radius: 0; padding: 10px 0; background: transparent; line-height: 1.45; font-size: 15px; }
+.composer textarea { grid-column: 2; min-height: 44px; max-height: 180px; resize: none; overflow-y: hidden; border: 0; border-radius: 0; padding: 10px 0; background: transparent; line-height: 1.45; font-size: var(--control-font-size); }
 .send-button { position: static; grid-column: 3; place-self: center; width: 36px; min-width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 999px; }
 .send-button[hidden] { display: none; }
 .stop-button { background: var(--stop-bg); color: var(--stop-ink); }
@@ -326,7 +349,6 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .scroll-bottom-button { position: absolute; z-index: 3; left: 50%; bottom: 16px; display: grid; width: 34px; height: 34px; place-items: center; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface); box-shadow: var(--scroll-shadow); color: var(--muted); font-size: 20px; line-height: 1; transform: translateX(-50%); }
 .scroll-bottom-button:hover { border-color: var(--accent); background: var(--surface-soft); color: var(--text); }
 .scroll-bottom-button[hidden] { display: none; }
-.capability-chip { justify-self: start; min-height: 24px; padding: 3px 7px; color: var(--accent); font-size: 10px; }
 
 [aria-live] { min-height: 18px; }
 .status-message { margin: 0; color: var(--muted); font-size: 12px; }

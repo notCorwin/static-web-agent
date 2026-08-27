@@ -16,6 +16,16 @@ export function renderShell(root: HTMLElement): AppElements {
       <main class="workspace" id="main-content" tabindex="-1" aria-label="Chat workspace">
         <div class="extension-host" id="extension-host" aria-label="Plugin extensions"></div>
 
+        <div class="chat-menu" id="chat-menu" hidden>
+          <details id="chat-menu-details">
+            <summary class="icon-button chat-menu-button" aria-label="Conversation options" title="Conversation options">⋯</summary>
+            <div class="chat-menu-panel" role="group" aria-label="Conversation options">
+              <button type="button" class="chat-menu-item" id="menu-open-settings">Connection settings…</button>
+              <button type="button" class="chat-menu-item chat-menu-danger" id="menu-clear-chat">Clear conversation…</button>
+            </div>
+          </details>
+        </div>
+
         <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
           <section class="connection-card" id="connection-card" aria-labelledby="connection-title">
             <div class="connection-intro">

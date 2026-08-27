@@ -514,20 +514,21 @@ try {
     const style = getComputedStyle(input);
     return { selector, outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, boxShadow: style.boxShadow };
   }))()`);
-  assert.deepEqual(connectionFocus, [
-    { selector: "#model-endpoint", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
-    { selector: "#model-name", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
-    { selector: "#model-key", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
-    { selector: "#thinking-level", outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" },
-  ]);
+  for (const item of connectionFocus) {
+    // Outline stays suppressed on inputs, but a visible focus ring must replace it.
+    assert.equal(item.outlineStyle, "none");
+    assert.equal(item.outlineWidth, "0px");
+    assert.ok(item.boxShadow !== "none" && item.boxShadow.includes("0px 0px 0px 3px"), `${item.selector} should show a visible focus ring`);
+  }
   const composerFocus = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.focus();
     const inputStyle = getComputedStyle(input);
-    const composerStyle = getComputedStyle(document.querySelector('.composer'));
-    return { outlineWidth: inputStyle.outlineWidth, composerShadow: composerStyle.boxShadow };
+    const rowStyle = getComputedStyle(document.querySelector('.composer-input-row'));
+    return { outlineWidth: inputStyle.outlineWidth, composerShadow: rowStyle.boxShadow };
   })()`);
-  assert.deepEqual(composerFocus, { outlineWidth: "0px", composerShadow: "none" });
+  assert.equal(composerFocus.outlineWidth, "0px");
+  assert.ok(composerFocus.composerShadow !== "none" && composerFocus.composerShadow.includes("0px 0px 0px 3px"), "the composer row should show a visible focus ring");
 
   const composerGrowth = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
@@ -1041,7 +1042,11 @@ try {
     const style = getComputedStyle(editor);
     return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset, boxShadow: style.boxShadow };
   })()`);
-  assert.deepEqual(editorFocus, { outlineStyle: "none", outlineWidth: "0px", outlineOffset: "0px", boxShadow: "none" });
+  for (const item of [editorFocus]) {
+    assert.equal(item.outlineStyle, "none");
+    assert.equal(item.outlineWidth, "0px");
+    assert.ok(item.boxShadow !== "none" && item.boxShadow.includes("0px 0px 0px 3px"), "the edit textarea should show a visible focus ring");
+  }
   await page.evaluate(`(() => {
     const editor = document.querySelector('.message-edit textarea');
     editor.value = '# Edited user rich\\n\\nUser math: $b^2$';
@@ -1236,7 +1241,9 @@ try {
 
   const secondPageTime = await page.evaluate("performance.timeOrigin");
   await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, `performance.timeOrigin > ${secondPageTime} && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') !== null && document.querySelector('#connection-card')?.hidden === true && !document.querySelector('.loading-state')`);
+  // Transcript persistence: after a reload the conversation is restored instead of returning to an empty state.
+  await waitFor(page, `performance.timeOrigin > ${secondPageTime} && document.querySelector('#runtime-action') === null && document.querySelector('.empty-state') === null && document.querySelector('#connection-card')?.hidden === true && !document.querySelector('.loading-state') && document.querySelectorAll('.message.user').length > 0`);
+  assert.ok(await page.evaluate("Array.from(document.querySelectorAll('.message.assistant .message-body')).some((body) => body.textContent.includes('tool complete'))"), "the reloaded page should restore the previous conversation");
   const savedConnection = await page.evaluate(`({
     endpoint: document.querySelector('#model-endpoint')?.value,
     model: document.querySelector('#model-name')?.value,
