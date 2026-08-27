@@ -176,7 +176,6 @@ async function renderPdfPage(page: PdfPageProxy, fileName: string, pageNumber: n
 
 async function* streamPdf<T>(
   bytes: Uint8Array,
-  fileName: string,
   signal: AbortSignal,
   assets: PdfAssets,
   transform: (page: PdfPageProxy, pageNumber: number) => Promise<T>,
@@ -221,7 +220,7 @@ export async function* streamPdfContentPages(
   signal: AbortSignal,
   assets: PdfAssets,
 ): AsyncGenerator<PdfPageContent> {
-  yield* streamPdf(bytes, fileName, signal, assets, async (page, pageNumber): Promise<PdfPageContent> => {
+  yield* streamPdf(bytes, signal, assets, async (page, pageNumber): Promise<PdfPageContent> => {
     const text = extractPdfText((await page.getTextContent()).items);
     if (text.length > 0) return { kind: "text", pageNumber, text };
     return { kind: "image", pageNumber, image: await renderPdfPage(page, fileName, pageNumber, signal) };

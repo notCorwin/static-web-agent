@@ -15,17 +15,6 @@ interface VisionRetry {
   readonly historyLength: number;
 }
 
-function browserEndpoint(value: unknown): string {
-  if (typeof value !== "string") return "";
-  const endpoint = value.trim();
-  try {
-    const url = new URL(endpoint);
-    return url.protocol === "http:" || url.protocol === "https:" ? endpoint : "";
-  } catch {
-    return "";
-  }
-}
-
 function displayModelName(value: string): string {
   return value.trim().replace(/^.*\//, "").replace(/:.*$/, "").replace(/-/g, " ").trim()
     .split(/\s+/)
@@ -311,12 +300,6 @@ export class AgentApp {
       return undefined;
     }
     return validation.settings;
-  }
-
-  private confirmDraft(): boolean {
-    const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
-    if (input === undefined || input.value.trim().length === 0 || typeof window.confirm !== "function") return true;
-    return window.confirm("Discard this unsent draft?");
   }
 
   private visionEnabled(): boolean {
