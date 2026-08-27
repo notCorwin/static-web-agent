@@ -276,6 +276,7 @@ test("agent forwards attachment bytes only through the model request side channe
 });
 
 test("agent exposes immutable message history to model adapters", async () => {
+  const providerMessage = { role: "assistant", content: "", extra: "private", toolCalls: [{ id: "next", name: "test", arguments: { nested: { value: 1 } } }] };
   const model = {
     id: "immutable-history",
     async *stream({ messages }) {
@@ -283,14 +284,19 @@ test("agent exposes immutable message history to model adapters", async () => {
       assert.equal(Object.isFrozen(messages[0]), true);
       assert.equal(Object.isFrozen(messages[0].toolCalls[0].arguments.nested), true);
       assert.throws(() => { messages[0].toolCalls[0].arguments.nested.value = 2; }, TypeError);
-      yield { type: "completed", message: { role: "assistant", content: "unchanged" } };
+      yield { type: "completed", message: providerMessage };
     },
   };
   const result = await new Agent(model, new AgentKernel()).run({
     messages: [{ role: "assistant", content: "", toolCalls: [{ id: "call", name: "test", arguments: { nested: { value: 1 } } }] }],
+    maxTurns: 1,
   });
-  assert.equal(result.status, "completed");
+  assert.equal(result.status, "max-turns");
   assert.equal(result.messages[0].toolCalls[0].arguments.nested.value, 1);
+  providerMessage.toolCalls[0].arguments.nested.value = 2;
+  assert.equal(result.response.toolCalls[0].arguments.nested.value, 1);
+  assert.equal("extra" in result.response, false);
+  assert.equal(Object.isFrozen(result.response.toolCalls[0].arguments.nested), true);
   assert.equal(Object.isFrozen(result.messages), true);
 });
 

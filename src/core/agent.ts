@@ -487,14 +487,15 @@ export class Agent {
       const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedText.join("") };
       const content = baseAssistant.content.length === 0 && streamedTextLength > 0 ? streamedText.join("") : baseAssistant.content;
       const reasoning = baseAssistant.reasoning === undefined && streamedReasoningLength > 0 ? streamedReasoning.join("") : baseAssistant.reasoning;
-      const assistantBase: AssistantMessage = reasoning === undefined ? { ...baseAssistant, content } : { ...baseAssistant, content, reasoning };
-      const assistant: AssistantMessage = calls.length === 0
-        ? assistantBase
-        : { ...assistantBase, toolCalls: calls };
-      assertAssistant(assistant);
+      const assistant: AssistantMessage = {
+        role: "assistant",
+        content,
+        ...(reasoning === undefined ? {} : { reasoning }),
+        ...(calls.length === 0 ? {} : { toolCalls: calls.map((call) => ({ ...call, arguments: clone(call.arguments) })) }),
+      };
       if (assistant.content.trim().length === 0 && calls.length === 0) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned an empty response." });
       if (assistant.content.length > limits.maxMessageChars) return fail({ code: "MODEL_OUTPUT_TOO_LARGE", message: "Model output is too large." });
-      const immutableAssistant = freeze(clone(assistant));
+      const immutableAssistant = freeze(assistant);
       messages.push(immutableAssistant);
       this.emit(request.onEvent, { type: "assistant-message", message: immutableAssistant });
 
