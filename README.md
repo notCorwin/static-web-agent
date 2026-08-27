@@ -23,79 +23,67 @@ The build writes `dist/version.json`, versions browser module and stylesheet req
 
 ## Smallest useful Harness
 
-The following is a complete provider-free tool loop. It can be saved as a browser module in a fork after `npm run build` and uses only the light entry point.
+The following is a complete provider-free tool loop. It can be saved as a browser module in a fork after `npm run build` and uses only the light entry point. The contract is four concepts: a model adapter, tools, an optional permission gate, and the run loop.
 
 ```js
 import {
   MemoryStateStore,
-  createBrowserAgentHarness,
+  createHarness,
 } from "./dist/index.js";
 
-const demo = {
-  manifest: {
-    apiVersion: "1",
-    id: "demo-plugin",
-    name: "Demo",
-    version: "1.0.0",
-    permissions: [],
-  },
-  setup(context) {
-    context.registerTool({
-      name: "demo.echo",
-      description: "Return the supplied value.",
-      inputSchema: {
-        type: "object",
-        properties: { value: {} },
-        required: ["value"],
-        additionalProperties: false,
+const model = {
+  id: "demo-model",
+  async *stream({ messages }) {
+    if (messages.some((message) => message.role === "tool")) {
+      yield { type: "completed", message: { role: "assistant", content: "tool completed" } };
+      return;
+    }
+    yield {
+      type: "completed",
+      message: {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call-1", name: "demo.echo", arguments: { value: "hello" } }],
       },
-      execute: (input) => input,
-    });
-    context.registerModelAdapter({
-      id: "demo-model",
-      async *stream({ messages }) {
-        if (messages.some((message) => message.role === "tool")) {
-          yield { type: "completed", message: { role: "assistant", content: "tool completed" } };
-          return;
-        }
-        yield {
-          type: "completed",
-          message: {
-            role: "assistant",
-            content: "",
-            toolCalls: [{ id: "call-1", name: "demo.echo", arguments: { value: "hello" } }],
-          },
-        };
-      },
-    });
+    };
   },
 };
 
-const harness = await createBrowserAgentHarness({
+const agent = await createHarness({
   defaultPlugins: false,
-  plugins: [demo],
   stateStore: new MemoryStateStore(),
-  initialModelId: "demo-model",
+  model, // a single host model is selected automatically
+  tools: [{
+    name: "demo.echo",
+    description: "Return the supplied value.",
+    inputSchema: {
+      type: "object",
+      properties: { value: {} },
+      required: ["value"],
+      additionalProperties: false,
+    },
+    execute: (input) => input,
+  }],
 });
-const result = await harness.run({ messages: [{ role: "user", content: "run the demo" }] });
+const result = await agent.run({ messages: [{ role: "user", content: "run the demo" }] });
 console.log(result.response?.content); // tool completed
-await harness.dispose();
+await agent.dispose();
 ```
 
-`createBrowserAgentHarness(options?)` installs the standard browser capabilities and, by default, the `javascript-runtime`, `local-storage`, and `browser-api` plugins. It intentionally installs no model. Set `defaultPlugins: false` when a host wants a completely empty registry.
+`createHarness(options?)` installs the standard browser capabilities and, by default, the `javascript-runtime`, `local-storage`, and `browser-api` plugins. Set `defaultPlugins: false` when a host wants a completely empty registry. Host-owned `model`/`tools` options bypass the plugin ceremony entirely; third-party contributions still go through `plugins: [...]` with manifests and permissions.
 
 ## Harness surface
 
 The facade owns lifecycle and is the recommended composition boundary:
 
 - `install(plugin)` and `uninstall(pluginId)` register trusted ESM plugins. The returned handle delegates its uninstall through the Harness so model selection and snapshots stay consistent.
-- `selectModel(id)` and `clearModel()` control the selected provider-neutral adapter. Unknown IDs raise `KernelError` with `MODEL_NOT_FOUND`.
+- `selectModel(id)` and `clearModel()` control the selected provider-neutral adapter. Unknown IDs raise `KernelError` with `MODEL_NOT_FOUND`; installing exactly one model selects it automatically.
 - `run(request)` fixes the selected adapter for that run, while the live tool registry remains available to each turn. Runs can execute in parallel and accept the existing cancellation, timeout, limits, attachment side-channel, and event options.
-- `process(value, signal)` runs registered data processors; `mountUi(container)` mounts registered UI contributions and returns their cleanup function.
 - `snapshot()` returns lifecycle status, selected model, sorted plugin manifests, model descriptors, and tool descriptors. `subscribe(listener)` immediately sends the current snapshot and sends later plugin, model, tool, and disposal changes.
-- `dispose()` is idempotent, aborts active runs, and unloads plugins in reverse installation order. Same-realm JavaScript that ignores `AbortSignal` cannot be forcibly terminated by a browser page.
+- `dispose()` is idempotent, aborts active runs, unloads host model registrations, and unloads plugins in reverse installation order. Same-realm JavaScript that ignores `AbortSignal` cannot be forcibly terminated by a browser page.
+- `kernel` exposes the underlying registry for advanced hosts only: `kernel.process(value)` runs data processors and `kernel.mountUi(container)` mounts extension UI slots. Casual embedders never touch it.
 
-After disposal, operations fail with a structured `KernelError` using `HARNESS_DISPOSED`. Starting a run without a selected model uses `MODEL_NOT_SELECTED`. These errors are part of the facade boundary; lower-level registries remain public for advanced hosts that need direct composition.
+After disposal, operations fail with a structured `KernelError` using `HARNESS_DISPOSED`. Starting a run without a selected model uses `MODEL_NOT_SELECTED`. These errors are part of the facade boundary; the underlying kernel remains public through `harness.kernel` for advanced hosts that need direct composition.
 
 ## Plugins and capabilities
 
@@ -128,7 +116,7 @@ const plugin: Plugin = {
 A capability is a named, injected boundary such as `network`, `storage`, `runtime`, or `page`. A plugin declares the permissions it needs; the Capability Manager authorizes those requests and supplies the provider. The default Harness policy automatically approves plugins the host explicitly imports. Hosts that need review or denial can inject `permissionPolicy`:
 
 ```ts
-const harness = await createBrowserAgentHarness({
+const agent = await createHarness({
   permissionPolicy: { decide: ({ pluginId, name, reason }) => askUser(pluginId, name, reason) },
 });
 ```
@@ -152,12 +140,12 @@ For a remote model, import it explicitly and install it like any other plugin:
 ```ts
 import { createRemoteModelPlugin } from "./dist/remote.js";
 
-const handle = await harness.install(createRemoteModelPlugin({
+const handle = await agent.install(createRemoteModelPlugin({
   endpoint: "https://example.com/v1",
   model: "example-model",
   apiKey: "provided-by-the-host",
 }));
-harness.selectModel("remote-model");
+agent.selectModel("remote-model");
 // await handle.uninstall();
 ```
 
@@ -192,7 +180,7 @@ No remote persistence, plugin marketplace, background daemon, extension, Builder
 Consumers that previously imported everything from `src/index.ts` should choose an explicit boundary:
 
 ```ts
-import { createBrowserAgentHarness } from "./dist/index.js";
+import { createHarness } from "./dist/index.js";
 import { createRemoteModelPlugin } from "./dist/remote.js";
 import { AgentApp, startApp } from "./dist/app-entry.js";
 ```

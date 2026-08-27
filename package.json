@@ -1,6 +1,6 @@
 {
   "name": "static-web-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A browser-native Agent Runtime Harness and reference workspace.",
   "license": "MIT",

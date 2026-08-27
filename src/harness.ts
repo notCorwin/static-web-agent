@@ -1,11 +1,9 @@
 import { Agent } from "./core/agent.js";
-import { BrowserPageRuntime } from "./core/page-runtime.js";
-import { CapabilityManager } from "./core/capabilities.js";
+import { AgentKernel } from "./core/kernel.js";
 import { KernelError } from "./core/errors.js";
-import { PluginManager } from "./core/plugin-manager.js";
+import { BrowserPageRuntime } from "./core/page-runtime.js";
 import { BrowserWorkerRuntime } from "./core/runtime.js";
 import { createBrowserStateStore, PrefixedStateStore } from "./core/state.js";
-import { ToolRegistry } from "./core/tool-registry.js";
 import { createBrowserApiPlugin } from "./plugins/browser-api.js";
 import { createJavaScriptRuntimePlugin } from "./plugins/javascript-runtime.js";
 import { createStoragePlugin } from "./plugins/storage.js";
@@ -13,50 +11,62 @@ import type {
   AgentRunRequest,
   AgentRunResult,
   JavaScriptRuntime,
+  JsonValue,
+  ModelAdapter,
   PageRuntime,
   PermissionPolicy,
   Plugin,
-  PluginHandle,
   PluginManifest,
-  JsonValue,
   StateStore,
+  ToolDefinition,
   ToolDescriptor,
 } from "./core/types.js";
 
 export type BrowserFetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-export interface BrowserAgentHarnessOptions {
+/**
+ * The minimal public contract: a model adapter, tools, an optional permission
+ * gate, and the run loop. Advanced embedding (processor pipelines, extension
+ * UI mounting, direct capability wiring) goes through `Harness#kernel`.
+ */
+export interface HarnessOptions {
+  /** Host-owned models. Registered under the "host" owner and never policy-gated. */
+  readonly model?: ModelAdapter | readonly ModelAdapter[];
+  /** Host-owned tools. Their declared capabilities are granted to the host automatically. */
+  readonly tools?: readonly ToolDefinition[];
   readonly plugins?: readonly Plugin[];
+  readonly defaultPlugins?: boolean;
   readonly initialModelId?: string;
   readonly permissionPolicy?: PermissionPolicy;
   readonly stateStore?: StateStore;
   readonly fetcher?: BrowserFetcher;
   readonly workerRuntime?: JavaScriptRuntime;
   readonly pageRuntime?: PageRuntime;
-  readonly defaultPlugins?: boolean;
 }
 
-export type BrowserAgentHarnessStatus = "active" | "disposed";
+export type HarnessStatus = "active" | "disposed";
 
-export interface BrowserModelDescriptor {
+export interface HarnessModelDescriptor {
   readonly id: string;
   readonly supportsVision?: boolean;
 }
 
-export interface BrowserAgentHarnessSnapshot {
-  readonly status: BrowserAgentHarnessStatus;
-  readonly selectedModelId?: string;
+export interface HarnessSnapshot {
+  readonly status: HarnessStatus;
+  readonly selectedModelId?: string | undefined;
   readonly manifests: readonly PluginManifest[];
-  readonly models: readonly BrowserModelDescriptor[];
+  readonly models: readonly HarnessModelDescriptor[];
   readonly tools: readonly ToolDescriptor[];
 }
 
-export type BrowserAgentHarnessListener = (snapshot: BrowserAgentHarnessSnapshot) => void;
+export type HarnessListener = (snapshot: HarnessSnapshot) => void;
 
-export interface BrowserAgentHarnessPluginHandle {
+export interface HarnessPluginHandle {
   readonly manifest: PluginManifest;
   readonly uninstall: () => Promise<void>;
 }
+
+const HOST_PLUGIN_ID = "host";
 
 interface ActiveRun {
   readonly controller: AbortController;
@@ -73,10 +83,6 @@ function abortError(): Error {
   return error;
 }
 
-function defaultPermissionPolicy(): PermissionPolicy {
-  return { decide: () => true };
-}
-
 function browserFetcher(): BrowserFetcher | undefined {
   if (typeof globalThis.fetch !== "function") return undefined;
   return globalThis.fetch.bind(globalThis) as BrowserFetcher;
@@ -88,50 +94,37 @@ function unavailableFetcher(): BrowserFetcher {
   };
 }
 
-/**
- * The browser-native composition surface for the Agent kernel.
- *
- * The harness owns plugin lifecycle and run cancellation, while the lower-level
- * registries remain available for applications that need finer control.
- */
-export class BrowserAgentHarness {
-  private readonly capabilities: CapabilityManager;
-  private readonly tools: ToolRegistry;
-  private readonly plugins: PluginManager;
-  private readonly handles: PluginHandle[] = [];
-  private readonly listeners = new Set<BrowserAgentHarnessListener>();
+export class Harness {
+  /**
+   * The underlying registry. Escaped on purpose for advanced hosts that need
+   * processor pipelines or extension UI slots; casual embedders can ignore it.
+   */
+  readonly kernel: AgentKernel;
+
+  private readonly handles = new Map<string, HarnessPluginHandle>();
+  private readonly listeners = new Set<HarnessListener>();
   private readonly activeRuns = new Set<ActiveRun>();
-  private readonly capabilityCleanup: (() => void)[] = [];
+  private readonly cleanup: (() => void)[] = [];
+  private readonly modelCleanups: (() => void)[] = [];
   private selectedModelId: string | undefined;
   private disposed = false;
 
-  private constructor(
-    capabilities: CapabilityManager,
-    tools: ToolRegistry,
-    plugins: PluginManager,
-    capabilityCleanup: readonly (() => void)[],
-  ) {
-    this.capabilities = capabilities;
-    this.tools = tools;
-    this.plugins = plugins;
-    this.capabilityCleanup.push(...capabilityCleanup);
-    this.plugins.subscribe(() => this.changed());
+  private constructor(kernel: AgentKernel) {
+    this.kernel = kernel;
+    kernel.subscribe(() => this.changed());
   }
 
-  private static construct(options: BrowserAgentHarnessOptions): BrowserAgentHarness {
-    const capabilities = new CapabilityManager(options.permissionPolicy ?? defaultPermissionPolicy());
-    const tools = new ToolRegistry(capabilities);
-    const plugins = new PluginManager(tools, capabilities);
-    const capabilityCleanup: (() => void)[] = [];
-
+  private static construct(options: HarnessOptions): Harness {
+    const kernel = new AgentKernel(options.permissionPolicy);
+    const harness = new Harness(kernel);
     const stateStore = options.stateStore ?? createBrowserStateStore();
     const runtime = options.workerRuntime ?? new BrowserWorkerRuntime();
     const pageRuntime = options.pageRuntime ?? new BrowserPageRuntime();
     const fetcher = options.fetcher ?? browserFetcher() ?? unavailableFetcher();
 
-    capabilityCleanup.push(capabilities.register("runtime", { provide: () => runtime }));
-    capabilityCleanup.push(capabilities.register("page", { provide: () => pageRuntime }));
-    capabilityCleanup.push(capabilities.register("storage", {
+    harness.cleanup.push(kernel.provide("runtime", { provide: () => runtime }));
+    harness.cleanup.push(kernel.provide("page", { provide: () => pageRuntime }));
+    harness.cleanup.push(kernel.provide("storage", {
       provide: ({ pluginId }) => {
         const scoped = new PrefixedStateStore(stateStore, `plugin:${pluginId}`);
         return {
@@ -142,16 +135,26 @@ export class BrowserAgentHarness {
         };
       },
     }));
-    capabilityCleanup.push(capabilities.register("network", { provide: (): NetworkCapability => ({ fetch: fetcher }) }));
-    return new BrowserAgentHarness(capabilities, tools, plugins, capabilityCleanup);
+    harness.cleanup.push(kernel.provide("network", { provide: (): NetworkCapability => ({ fetch: fetcher }) }));
+
+    // ponytail: host tools/models bypass permission prompting entirely — first-party code;
+    // move them behind plugins with manifests if third parties ever ship them.
+    for (const tool of options.tools ?? []) {
+      harness.kernel.register(tool, HOST_PLUGIN_ID);
+      for (const capability of tool.requiredCapabilities ?? []) harness.kernel.grant(HOST_PLUGIN_ID, capability);
+    }
+    for (const adapter of options.model === undefined ? [] : Array.isArray(options.model) ? [...options.model] : [options.model]) {
+      harness.modelCleanups.push(harness.kernel.addModel(adapter));
+    }
+    return harness;
   }
 
   private ensureActive(): void {
-    if (this.disposed) throw new KernelError("HARNESS_DISPOSED", "The Browser Agent Harness has been disposed.");
+    if (this.disposed) throw new KernelError("HARNESS_DISPOSED", "The Harness has been disposed.");
   }
 
   private changed(): void {
-    if (this.selectedModelId !== undefined && this.plugins.modelAdapter(this.selectedModelId) === undefined) {
+    if (this.selectedModelId !== undefined && this.kernel.modelAdapter(this.selectedModelId) === undefined) {
       this.selectedModelId = undefined;
     }
     const snapshot = this.snapshot();
@@ -164,37 +167,31 @@ export class BrowserAgentHarness {
     }
   }
 
-  private remember(handle: PluginHandle): BrowserAgentHarnessPluginHandle {
-    this.handles.push(handle);
-    return {
+  async install(plugin: Plugin, signal?: AbortSignal): Promise<HarnessPluginHandle> {
+    this.ensureActive();
+    const handle = await this.kernel.install(plugin, signal);
+    const wrapped: HarnessPluginHandle = {
       manifest: handle.manifest,
       uninstall: async () => {
         await this.uninstall(handle.manifest.id);
       },
     };
-  }
-
-  async install(plugin: Plugin, signal?: AbortSignal): Promise<BrowserAgentHarnessPluginHandle> {
-    this.ensureActive();
-    const handle = await this.plugins.install(plugin, signal);
-    return this.remember(handle);
+    this.handles.set(handle.manifest.id, wrapped);
+    return wrapped;
   }
 
   async uninstall(pluginId: string): Promise<boolean> {
     this.ensureActive();
-    let removed = false;
     try {
-      removed = await this.plugins.uninstall(pluginId);
+      return await this.kernel.uninstall(pluginId);
     } finally {
-      const index = this.handles.findIndex((handle) => handle.manifest.id === pluginId);
-      if (index >= 0 && !this.plugins.isInstalled(pluginId)) this.handles.splice(index, 1);
+      if (!this.kernel.isInstalled(pluginId)) this.handles.delete(pluginId);
     }
-    return removed;
   }
 
   selectModel(id: string): void {
     this.ensureActive();
-    if (this.plugins.modelAdapter(id) === undefined) {
+    if (this.kernel.modelAdapter(id) === undefined) {
       throw new KernelError("MODEL_NOT_FOUND", `Model adapter “${id}” is not registered.`);
     }
     if (this.selectedModelId === id) return;
@@ -214,7 +211,7 @@ export class BrowserAgentHarness {
     if (this.selectedModelId === undefined) {
       throw new KernelError("MODEL_NOT_SELECTED", "Select a model adapter before starting a run.");
     }
-    const model = this.plugins.modelAdapter(this.selectedModelId);
+    const model = this.kernel.modelAdapter(this.selectedModelId);
     if (model === undefined) {
       this.selectedModelId = undefined;
       throw new KernelError("MODEL_NOT_FOUND", "The selected model adapter is no longer registered.");
@@ -224,45 +221,32 @@ export class BrowserAgentHarness {
     const relayAbort = () => controller.abort(request.signal?.reason);
     request.signal?.addEventListener("abort", relayAbort, { once: true });
     if (request.signal?.aborted) relayAbort();
-    const active: ActiveRun = {
-      controller,
-      cleanup: () => request.signal?.removeEventListener("abort", relayAbort),
-    };
+    const active: ActiveRun = { controller, cleanup: () => request.signal?.removeEventListener("abort", relayAbort) };
     this.activeRuns.add(active);
 
     try {
-      return await new Agent(model, this.tools).run({ ...request, signal: controller.signal });
+      return await new Agent(model, this.kernel).run({ ...request, signal: controller.signal });
     } finally {
       active.cleanup();
       this.activeRuns.delete(active);
     }
   }
 
-  process(value: JsonValue, signal?: AbortSignal): Promise<JsonValue> {
-    this.ensureActive();
-    return this.plugins.process(value, signal);
-  }
-
-  mountUi(container: HTMLElement): () => void {
-    this.ensureActive();
-    return this.plugins.mountUi(container);
-  }
-
-  snapshot(): BrowserAgentHarnessSnapshot {
-    const models = this.plugins.modelAdapters().map((adapter): BrowserModelDescriptor => ({
+  snapshot(): HarnessSnapshot {
+    const models = this.kernel.modelAdapters().map((adapter): HarnessModelDescriptor => ({
       id: adapter.id,
       ...(adapter.supportsVision === undefined ? {} : { supportsVision: adapter.supportsVision }),
     }));
     return Object.freeze({
       status: this.disposed ? "disposed" : "active",
       ...(this.selectedModelId === undefined ? {} : { selectedModelId: this.selectedModelId }),
-      manifests: Object.freeze([...this.plugins.manifests()].sort((left, right) => left.id.localeCompare(right.id))),
+      manifests: Object.freeze([...this.kernel.manifests()].sort((left, right) => left.id.localeCompare(right.id))),
       models: Object.freeze(models),
-      tools: Object.freeze([...this.tools.descriptors()]),
+      tools: Object.freeze(this.kernel.descriptors()),
     });
   }
 
-  subscribe(listener: BrowserAgentHarnessListener): () => void {
+  subscribe(listener: HarnessListener): () => void {
     this.listeners.add(listener);
     try {
       listener(this.snapshot());
@@ -276,23 +260,27 @@ export class BrowserAgentHarness {
     if (this.disposed) return;
     this.disposed = true;
     for (const active of this.activeRuns) active.controller.abort(abortError());
-    for (const handle of [...this.handles].reverse()) {
+    for (const handle of [...this.handles.values()].reverse()) {
       try {
-        await this.plugins.uninstall(handle.manifest.id);
+        await this.kernel.uninstall(handle.manifest.id);
       } catch {
         // One broken teardown must not prevent the remaining plugins from closing.
       }
     }
-    this.handles.length = 0;
-    for (const cleanup of this.capabilityCleanup.reverse()) {
+    this.handles.clear();
+    for (const unregister of this.modelCleanups.reverse()) {
+      try { unregister(); } catch { /* Best-effort host model cleanup. */ }
+    }
+    this.modelCleanups.length = 0;
+    for (const cleanup of this.cleanup.reverse()) {
       try { cleanup(); } catch { /* Capability cleanup is best effort. */ }
     }
-    this.capabilityCleanup.length = 0;
+    this.cleanup.length = 0;
     this.changed();
   }
 
-  static async create(options: BrowserAgentHarnessOptions = {}): Promise<BrowserAgentHarness> {
-    const harness = BrowserAgentHarness.construct(options);
+  static async create(options: HarnessOptions = {}): Promise<Harness> {
+    const harness = Harness.construct(options);
     try {
       if (options.defaultPlugins !== false) {
         await harness.install(createJavaScriptRuntimePlugin());
@@ -301,6 +289,10 @@ export class BrowserAgentHarness {
       }
       for (const plugin of options.plugins ?? []) await harness.install(plugin);
       if (options.initialModelId !== undefined) harness.selectModel(options.initialModelId);
+      else {
+        const only = singleModelId(harness);
+        if (only !== undefined) harness.selectModel(only);
+      }
       return harness;
     } catch (error) {
       await harness.dispose();
@@ -309,6 +301,11 @@ export class BrowserAgentHarness {
   }
 }
 
-export async function createBrowserAgentHarness(options: BrowserAgentHarnessOptions = {}): Promise<BrowserAgentHarness> {
-  return BrowserAgentHarness.create(options);
+export function createHarness(options: HarnessOptions = {}): Promise<Harness> {
+  return Harness.create(options);
+}
+
+function singleModelId(harness: Harness): string | undefined {
+  const models = harness.kernel.modelAdapters();
+  return models.length === 1 ? models[0]?.id : undefined;
 }

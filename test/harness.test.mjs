@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   KernelError,
   MemoryStateStore,
-  createBrowserAgentHarness,
+  createHarness,
 } from "../dist/index.js";
 
 function modelPlugin(id, response = id) {
@@ -38,8 +38,8 @@ function fakeContainer() {
   };
 }
 
-test("browser harness preinstalls browser tools and exposes a light snapshot", async () => {
-  const harness = await createBrowserAgentHarness({ stateStore: new MemoryStateStore() });
+test("the harness preinstalls default tools and exposes a light snapshot", async () => {
+  const harness = await createHarness({ stateStore: new MemoryStateStore() });
   const snapshot = harness.snapshot();
 
   assert.equal(snapshot.status, "active");
@@ -56,7 +56,7 @@ test("browser harness preinstalls browser tools and exposes a light snapshot", a
 });
 
 test("harness installs trusted plugins, publishes snapshots, and rolls back failed installs", async () => {
-  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const harness = await createHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
   const snapshots = [];
   const unsubscribe = harness.subscribe((snapshot) => snapshots.push(snapshot));
   const plugin = {
@@ -73,7 +73,7 @@ test("harness installs trusted plugins, publishes snapshots, and rolls back fail
   };
   const handle = await harness.install(plugin);
   assert.equal(harness.snapshot().tools[0]?.name, "example.echo");
-  assert.equal(await harness.process("hello"), "HELLO");
+  assert.equal(await harness.kernel.process("hello"), "HELLO");
   assert.ok(snapshots.some((snapshot) => snapshot.manifests.some((manifest) => manifest.id === "echo-plugin")));
 
   const failed = {
@@ -93,7 +93,7 @@ test("harness installs trusted plugins, publishes snapshots, and rolls back fail
 });
 
 test("plugin installation rollback owns and removes every contribution", async () => {
-  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const harness = await createHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
   const failed = {
     manifest: {
       apiVersion: "1",
@@ -115,9 +115,9 @@ test("plugin installation rollback owns and removes every contribution", async (
   await assert.rejects(harness.install(failed), /rollback setup failed/);
   assert.equal(harness.snapshot().tools.some((tool) => tool.name === "rollback.tool"), false);
   assert.equal(harness.snapshot().models.some((model) => model.id === "rollback-model"), false);
-  assert.equal(await harness.process("kept"), "kept");
+  assert.equal(await harness.kernel.process("kept"), "kept");
   const container = fakeContainer();
-  const unmount = harness.mountUi(container);
+  const unmount = harness.kernel.mountUi(container);
   assert.equal(container.children.length, 0);
   unmount();
   await harness.dispose();
@@ -125,7 +125,7 @@ test("plugin installation rollback owns and removes every contribution", async (
 
 test("plugin teardown failure still aborts lifecycle and cleans contributions", async () => {
   const events = [];
-  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const harness = await createHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
   const plugin = {
     manifest: { apiVersion: "1", id: "teardown-plugin", name: "Teardown", version: "1.0.0", permissions: [] },
     setup(context) {
@@ -140,7 +140,7 @@ test("plugin teardown failure still aborts lifecycle and cleans contributions", 
   };
   const handle = await harness.install(plugin);
   const container = fakeContainer();
-  const unmount = harness.mountUi(container);
+  const unmount = harness.kernel.mountUi(container);
   await assert.rejects(handle.uninstall(), /teardown failed/);
   assert.deepEqual(events, ["teardown", "abort", "ui-cleanup"]);
   assert.equal(container.children[0].removed, true);
@@ -152,7 +152,7 @@ test("plugin teardown failure still aborts lifecycle and cleans contributions", 
 
 test("UI mount failures leave an error slot and cleanup continues after a broken unmount", async () => {
   const events = [];
-  const harness = await createBrowserAgentHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
+  const harness = await createHarness({ defaultPlugins: false, stateStore: new MemoryStateStore() });
   const plugin = {
     manifest: { apiVersion: "1", id: "ui-failure-plugin", name: "UI failure", version: "1.0.0", permissions: [] },
     setup(context) {
@@ -163,7 +163,7 @@ test("UI mount failures leave an error slot and cleanup continues after a broken
   };
   const handle = await harness.install(plugin);
   const container = fakeContainer();
-  const unmount = harness.mountUi(container);
+  const unmount = harness.kernel.mountUi(container);
   assert.equal(container.children.length, 3);
   assert.equal(container.children[0].textContent, "Extension failed: mount failed");
   unmount();
@@ -190,13 +190,13 @@ test("initial plugin installation is atomic and tears down earlier plugins on fa
   };
 
   await assert.rejects(
-    createBrowserAgentHarness({ defaultPlugins: false, plugins: [good, bad], stateStore: new MemoryStateStore() }),
+    createHarness({ defaultPlugins: false, plugins: [good, bad], stateStore: new MemoryStateStore() }),
     /initial setup failed/,
   );
   assert.equal(teardownCount, 1);
 });
 
-test("harness auto-grants declared permissions by default and allows policy overrides", async () => {
+test("permissions are granted by default and a deny policy blocks installation", async () => {
   const capabilityPlugin = {
     manifest: { apiVersion: "1", id: "capability-plugin", name: "Capability", version: "1.0.0", permissions: [{ name: "secret", reason: "test" }] },
     setup(context) {
@@ -210,19 +210,39 @@ test("harness auto-grants declared permissions by default and allows policy over
       });
     },
   };
-  const allowed = await createBrowserAgentHarness({ defaultPlugins: false, plugins: [capabilityPlugin], stateStore: new MemoryStateStore() });
+  const allowed = await createHarness({ defaultPlugins: false, plugins: [capabilityPlugin], stateStore: new MemoryStateStore() });
   const tool = allowed.snapshot().tools.find((descriptor) => descriptor.name === "example.secret");
   assert.ok(tool);
   await allowed.dispose();
 
   await assert.rejects(
-    createBrowserAgentHarness({ defaultPlugins: false, permissionPolicy: { decide: () => false }, plugins: [capabilityPlugin], stateStore: new MemoryStateStore() }),
+    createHarness({ defaultPlugins: false, permissionPolicy: { decide: () => false }, plugins: [capabilityPlugin], stateStore: new MemoryStateStore() }),
     (error) => error instanceof Error && error.code === "CAPABILITY_DENIED",
   );
 });
 
+test("host-owned tools bypass manifests but honor capability grants at execution", async () => {
+  const agent = await createHarness({
+    defaultPlugins: false,
+    stateStore: new MemoryStateStore(),
+    tools: [{
+      name: "host.clock",
+      description: "Return the host clock.",
+      inputSchema: { type: "object", additionalProperties: false },
+      requiredCapabilities: ["clock"],
+      execute: async (_, context) => (await context.getCapability("clock")).now,
+    }],
+  });
+  agent.kernel.provide("clock", { provide: () => ({ now: 7 }) });
+
+  // Host registrations are first-party: granted without prompting.
+  const result = await agent.kernel.executeTool("host.clock", {});
+  assert.deepEqual(result, { ok: true, value: 7 });
+  await agent.dispose();
+});
+
 test("harness selects and snapshots a model, supports parallel runs, and clears selection on uninstall", async () => {
-  const harness = await createBrowserAgentHarness({ defaultPlugins: false, plugins: [modelPlugin("first")], initialModelId: "first", stateStore: new MemoryStateStore() });
+  const harness = await createHarness({ defaultPlugins: false, plugins: [modelPlugin("first")], initialModelId: "first", stateStore: new MemoryStateStore() });
   const [first, second] = await Promise.all([
     harness.run({ messages: [{ role: "user", content: "one" }] }),
     harness.run({ messages: [{ role: "user", content: "two" }] }),
@@ -250,7 +270,7 @@ test("disposing a harness cancels an active run and keeps the operation structur
       });
     },
   };
-  const harness = await createBrowserAgentHarness({ defaultPlugins: false, plugins: [plugin], initialModelId: "waiting", stateStore: new MemoryStateStore() });
+  const harness = await createHarness({ defaultPlugins: false, plugins: [plugin], initialModelId: "waiting", stateStore: new MemoryStateStore() });
   const run = harness.run({ messages: [{ role: "user", content: "wait" }] });
   await harness.dispose();
   const result = await run;
@@ -293,7 +313,7 @@ test("an injected state store keeps harness plugin namespaces isolated", async (
       });
     },
   };
-  const harness = await createBrowserAgentHarness({
+  const harness = await createHarness({
     defaultPlugins: false,
     plugins: [storagePlugin("storage-a"), storagePlugin("storage-b"), modelPlugin],
     initialModelId: "storage-model",

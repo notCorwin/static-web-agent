@@ -1,4 +1,4 @@
-import { createBrowserAgentHarness, type BrowserAgentHarness } from "../harness.js";
+import { createHarness, type Harness } from "../harness.js";
 import { createBrowserStateStore } from "../core/state.js";
 import { createChatState, isMessageEnvelope, normalizeMessages, type ChatState } from "./chat.js";
 import { createAttachmentIntake, createPendingAttachment, type AttachmentIntake, type AttachmentProgress, type PendingAttachment, type PreparedAttachments } from "./attachments.js";
@@ -45,7 +45,7 @@ export class AgentApp {
   private readonly options: AgentAppOptions;
   private chat: ChatState = createChatState();
   private store!: StateStore;
-  private harness: BrowserAgentHarness | undefined;
+  private harness: Harness | undefined;
   private attachmentIntake: AttachmentIntake | undefined;
   private streamPresentation: StreamPresentation | undefined;
   private modelConnection: ModelConnection | undefined;
@@ -72,7 +72,7 @@ export class AgentApp {
     this.elements = {};
   }
 
-  get runtime(): BrowserAgentHarness | undefined {
+  get runtime(): Harness | undefined {
     return this.harness;
   }
 
@@ -95,7 +95,7 @@ export class AgentApp {
     const savedSettings = await loadConnectionSettings(this.store);
     this.applyConnectionSettings(savedSettings);
     this.attachmentIntake = createAttachmentIntake();
-    this.harness = await createBrowserAgentHarness({
+    this.harness = await createHarness({
       stateStore: this.store,
       ...(this.options.plugins === undefined ? {} : { plugins: this.options.plugins }),
       ...(this.options.initialModelId === undefined ? {} : { initialModelId: this.options.initialModelId }),
@@ -468,7 +468,7 @@ export class AgentApp {
         rawContent,
         prepared?.content,
       ].filter((value): value is string => value !== undefined && value.trim().length > 0).join("\n\n");
-      const processed = await harness.process({
+      const processed = await harness.kernel.process({
         role: "user",
         content: prompt || "Please analyze the attached files.",
       }, controller.signal);
@@ -750,7 +750,7 @@ export class AgentApp {
     this.uiCleanup?.();
     this.uiCleanup = undefined;
     extensionHost.replaceChildren();
-    this.uiCleanup = this.harness.mountUi(extensionHost);
+    this.uiCleanup = this.harness.kernel.mountUi(extensionHost);
   }
 
   private async connectRemote(form: HTMLFormElement, automatic = false): Promise<void> {

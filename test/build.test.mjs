@@ -24,8 +24,8 @@ test("the production build emits a cache-busted release manifest and module grap
   assert.doesNotMatch(lightEntry, /"\.\/app(?:-entry|\/)|"\.\/adapters\/ai-sdk|"\.\/plugins\/remote-model/);
   assert.match(lightEntry, new RegExp(`from "\\./harness\\.js\\?v=${version}"`));
   const harnessTypes = await readFile(join(dist, "harness.d.ts"), "utf8");
-  assert.match(harnessTypes, /createBrowserAgentHarness/);
-  for (const method of ["install", "uninstall", "selectModel", "clearModel", "run", "process", "mountUi", "snapshot", "subscribe", "dispose"]) {
+  assert.match(harnessTypes, /createHarness/);
+  for (const method of ["install", "uninstall", "selectModel", "clearModel", "run", "snapshot", "subscribe", "dispose"]) {
     assert.match(harnessTypes, new RegExp(`\\b${method}\\(`));
   }
   const license = await readFile(join(dist, "LICENSE"), "utf8");

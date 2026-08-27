@@ -1247,7 +1247,7 @@ try {
   await page.evaluate("window.confirm = () => true");
 
   const browserBoundaries = await page.evaluate(`(async () => {
-    const { Agent, BrowserPageRuntime, BrowserWorkerRuntime, CapabilityManager, IndexedDbStateStore, PluginManager, ToolRegistry, createBrowserApiPlugin } = await import('/dist/index.js');
+    const { Agent, BrowserPageRuntime, BrowserWorkerRuntime, AgentKernel, IndexedDbStateStore, createBrowserApiPlugin } = await import('/dist/index.js');
     const { AiSdkAdapter } = await import('/dist/remote.js');
     const { AgentApp } = await import('/dist/app-entry.js');
     const runtime = new BrowserWorkerRuntime();
@@ -1260,13 +1260,11 @@ try {
     const pageRuntime = new BrowserPageRuntime();
     const pageValue = await pageRuntime.execute("console.log('page-runtime'); return { value: input.value + 1, title: document.title, hasFetch: typeof fetch === 'function' }", { value: 2 });
     const largePageValue = await pageRuntime.execute('return "x".repeat(70_000)', null);
-    const pageCapabilities = new CapabilityManager({ decide: () => true });
-    pageCapabilities.register('page', { provide: () => pageRuntime });
-    const pageTools = new ToolRegistry(pageCapabilities);
-    const pagePlugins = new PluginManager(pageTools, pageCapabilities);
-    const pagePluginHandle = await pagePlugins.install(createBrowserApiPlugin());
-    const inspected = await pageTools.execute('browser.inspect', {});
-    const evaluated = await pageTools.execute('browser.evaluate', { code: "console.log('browser-tool'); return { value: input.value + 1, title: document.title }", input: { value: 41 } });
+    const pageCapabilities = new AgentKernel();
+    pageCapabilities.provide('page', { provide: () => pageRuntime });
+    const pagePluginHandle = await pageCapabilities.install(createBrowserApiPlugin());
+    const inspected = await pageCapabilities.executeTool('browser.inspect', {});
+    const evaluated = await pageCapabilities.executeTool('browser.evaluate', { code: "console.log('browser-tool'); return { value: input.value + 1, title: document.title }", input: { value: 41 } });
     let webTurn = 0;
     const webModel = { id: 'page-tool-agent', async *stream({ messages }) {
       if (webTurn++ === 0) {
@@ -1275,7 +1273,7 @@ try {
         yield { type: 'completed', message: { role: 'assistant', content: messages.at(-1)?.content.includes('42') ? 'page tool result: 42' : 'page tool failed' } };
       }
     }};
-    const webAgentResult = await new Agent(webModel, pageTools).run({ messages: [{ role: 'user', content: 'Use the page tool.' }] });
+    const webAgentResult = await new Agent(webModel, pageCapabilities).run({ messages: [{ role: 'user', content: 'Use the page tool.' }] });
     const inspectedValue = inspected.ok ? inspected.value : undefined;
     const evaluatedValue = evaluated.ok ? evaluated.value : undefined;
     await pagePluginHandle.uninstall();
@@ -1293,20 +1291,17 @@ try {
     const events = [];
     for await (const event of adapter.stream({ messages: [], tools: [], signal: new AbortController().signal })) events.push(event);
 
-    const capabilities = new CapabilityManager();
-    const tools = new ToolRegistry(capabilities);
+    const cancelKernel = new AgentKernel();
     let cancelled = false;
     const model = { id: 'cancel-test', async *stream({ signal }) {
       await new Promise((resolve) => signal.addEventListener('abort', () => { cancelled = true; resolve(); }, { once: true }));
     }};
     const controller = new AbortController();
-    const run = new Agent(model, tools).run({ messages: [], signal: controller.signal });
+    const run = new Agent(model, cancelKernel).run({ messages: [], signal: controller.signal });
     setTimeout(() => controller.abort(), 10);
     const cancellation = await run;
 
-    const pluginCapabilities = new CapabilityManager();
-    const pluginTools = new ToolRegistry(pluginCapabilities);
-    const pluginManager = new PluginManager(pluginTools, pluginCapabilities);
+    const pluginManager = new AgentKernel();
     const plugin = {
       manifest: { apiVersion: '1', id: 'browser-plugin', name: 'Browser plugin', version: '1', permissions: [] },
       setup(context) {
@@ -1359,7 +1354,7 @@ try {
       sse: events.at(-1)?.type === 'completed' && events.at(-1)?.message.content === 'sse',
       cancelled: cancellation.status === 'cancelled' && cancelled,
       defaultPlugins: defaultPlugins && defaultTools.includes('runtime.javascript') && defaultTools.includes('storage.local'),
-      pluginUi: mounted && processed === 'ok!' && removedOnUninstall && pluginTools.get('browser.tool') === undefined && extensionRoot.textContent === '' && appExtension,
+      pluginUi: mounted && processed === 'ok!' && removedOnUninstall && !pluginManager.hasTool('browser.tool') && extensionRoot.textContent === '' && appExtension,
     };
   })()`);
   assert.deepEqual(browserBoundaries, { worker: true, workerUnboundedOutput: true, workerAmbientApis: true, workerTimeout: true, pageRuntime: true, pageUnboundedOutput: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });

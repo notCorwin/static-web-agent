@@ -2,12 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   Agent,
-  CapabilityManager,
+  AgentKernel,
   MemoryStateStore,
-  PluginManager,
   PrefixedStateStore,
   ResilientStateStore,
-  ToolRegistry,
   createBrowserStateStore,
   validate,
 } from "../dist/index.js";
@@ -71,6 +69,10 @@ function sseResponse(chunks, status = 200) {
   return new Response(body, { status, headers: { "content-type": "text/event-stream" } });
 }
 
+function manifest(id, permissions = []) {
+  return { apiVersion: "1", id, name: id, version: "1.0.0", permissions };
+}
+
 test("JSON schema validation rejects malformed and extra tool input", () => {
   const schema = {
     type: "object",
@@ -84,33 +86,41 @@ test("JSON schema validation rejects malformed and extra tool input", () => {
   assert.equal(validate(schema, undefined).valid, false);
 });
 
-test("capabilities require an explicit provider and permission grant", async () => {
-  const denied = new CapabilityManager({ decide: () => false });
-  denied.register("secret", { provide: () => ({ value: 42 }) });
+test("capabilities require an explicit provider and a granted permission", async () => {
+  const denied = new AgentKernel({ decide: () => false });
+  denied.provide("secret", { provide: () => ({ value: 42 }) });
   await assert.rejects(
-    denied.request("example", [{ name: "secret", reason: "test" }]),
+    denied.install({ manifest: manifest("denied-plugin", [{ name: "secret", reason: "test" }]), setup() {} }),
     (error) => error.code === "CAPABILITY_DENIED",
   );
-  await assert.rejects(denied.get("example", "secret"), (error) => error.code === "CAPABILITY_DENIED");
 
-  const allowed = new CapabilityManager({ decide: () => true });
-  allowed.register("secret", { provide: () => ({ value: 42 }) });
-  await allowed.request("example", [{ name: "secret", reason: "test" }]);
-  const scope = allowed.scope("example", ["secret"]);
+  // ponytail: capability values are plain objects; revocation is enforced at
+  // access time through the scope, not by proxying cached references.
+  const allowed = new AgentKernel();
+  allowed.provide("secret", { provide: () => ({ value: 42 }) });
+  let scope;
+  let undeclaredGet;
+  await allowed.install({
+    manifest: manifest("allowed-plugin", [{ name: "secret", reason: "test" }]),
+    setup(context) {
+      scope = context.capabilities;
+      undeclaredGet = () => scope.get("undeclared");
+    },
+  });
   assert.deepEqual(await scope.get("secret"), { value: 42 });
-  allowed.register("secret-method", { provide: () => ({ read: () => 42 }) });
-  await allowed.request("example", [{ name: "secret-method", reason: "test" }]);
-  const cached = await allowed.get("example", "secret-method");
-  allowed.revoke("example", ["secret-method"]);
-  assert.throws(() => cached.read(), (error) => error.code === "CAPABILITY_DENIED");
-  await assert.rejects(scope.get("other"), (error) => error.code === "CAPABILITY_DENIED");
+  assert.equal(scope.has("secret"), true);
+  await assert.rejects(undeclaredGet(), (error) => error.code === "CAPABILITY_DENIED");
+
+  // Uninstalling revokes the grant: later scope reads are denied.
+  for (const handle of allowed.manifests()) await allowed.uninstall(handle.id);
+  assert.equal(scope.has("secret"), false);
+  await assert.rejects(scope.get("secret"), (error) => error.code === "CAPABILITY_DENIED");
 });
 
-test("tool registry validates arguments, enforces permission, and returns structured errors", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  capabilities.register("clock", { provide: () => ({ now: 7 }) });
-  const registry = new ToolRegistry(capabilities);
-  const unregister = registry.register({
+test("tool execution validates arguments, enforces permission, and returns structured errors", async () => {
+  const kernel = new AgentKernel();
+  kernel.provide("clock", { provide: () => ({ now: 7 }) });
+  const unregister = kernel.register({
     name: "test.clock",
     description: "Return a test clock.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
@@ -118,37 +128,36 @@ test("tool registry validates arguments, enforces permission, and returns struct
     execute: async (_, context) => ({ value: (await context.getCapability("clock")).now }),
   }, "test-plugin");
 
-  const denied = await registry.execute("test.clock", {});
+  const denied = await kernel.executeTool("test.clock", {});
   assert.equal(denied.ok, false);
   assert.equal(denied.error.code, "CAPABILITY_DENIED");
 
-  await capabilities.request("test-plugin", [{ name: "clock", reason: "test" }]);
-  const result = await registry.execute("test.clock", {});
+  kernel.grant("test-plugin", "clock");
+  const result = await kernel.executeTool("test.clock", {});
   assert.deepEqual(result, { ok: true, value: { value: 7 } });
-  const invalid = await registry.execute("test.clock", { extra: 1 });
+  const invalid = await kernel.executeTool("test.clock", { extra: 1 });
   assert.equal(invalid.ok, false);
   assert.equal(invalid.error.code, "INVALID_TOOL_INPUT");
 
   unregister();
-  assert.equal(registry.get("test.clock"), undefined);
+  assert.equal(kernel.hasTool("test.clock"), false);
 });
 
-test("tool registry does not impose an output-size ceiling", async () => {
-  const tools = new ToolRegistry(new CapabilityManager());
-  tools.register({
+test("the kernel does not impose an output-size ceiling on tools", async () => {
+  const kernel = new AgentKernel();
+  kernel.register({
     name: "test.large",
     description: "Return a large value.",
     inputSchema: { type: "object", additionalProperties: false },
     execute: () => ({ text: "too large" }),
   });
-  const result = await tools.execute("test.large", {});
+  const result = await kernel.executeTool("test.large", {});
   assert.deepEqual(result, { ok: true, value: { text: "too large" } });
 });
 
 test("agent loops through multiple tool calls and normalizes tool errors", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  const tools = new ToolRegistry(capabilities);
-  tools.register({
+  const kernel = new AgentKernel();
+  kernel.register({
     name: "test.add",
     description: "Add two numbers.",
     inputSchema: {
@@ -174,7 +183,7 @@ test("agent loops through multiple tool calls and normalizes tool errors", async
     [{ type: "text-delta", delta: "The sum is five." }, { type: "completed", message: { role: "assistant", content: "The sum is five." } }],
   ]);
   const events = [];
-  const result = await new Agent(model, tools).run({
+  const result = await new Agent(model, kernel).run({
     messages: [{ role: "user", content: "Calculate." }],
     onEvent: (event) => events.push(event),
   });
@@ -196,7 +205,7 @@ test("agent forwards attachment bytes only through the model request side channe
     },
   };
   const attachment = { id: "image-1", name: "scan.png", mediaType: "image/png", data: new Uint8Array([1, 2, 3]) };
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+  const result = await new Agent(model, new AgentKernel()).run({
     messages: [{ role: "user", content: "read this", attachmentIds: [attachment.id] }],
     attachments: [attachment],
   });
@@ -206,8 +215,8 @@ test("agent forwards attachment bytes only through the model request side channe
 });
 
 test("agent forwards streaming tool-call deltas and reconstructs their arguments", async () => {
-  const tools = new ToolRegistry(new CapabilityManager());
-  tools.register({
+  const kernel = new AgentKernel();
+  kernel.register({
     name: "test.echo",
     description: "Echo a value.",
     inputSchema: { type: "object", properties: { value: { type: "string" } }, required: ["value"], additionalProperties: false },
@@ -216,13 +225,13 @@ test("agent forwards streaming tool-call deltas and reconstructs their arguments
   const model = scriptedAdapter([
     [
       { type: "tool-call-delta", delta: { index: 0, id: "stream-call", name: "test.", arguments: '{"value":"' } },
-      { type: "tool-call-delta", delta: { index: 0, name: "echo", arguments: "ok\"}" } },
+      { type: "tool-call-delta", delta: { index: 0, name: "echo", arguments: 'ok"}' } },
       { type: "completed", message: { role: "assistant", content: "" } },
     ],
     [{ type: "completed", message: { role: "assistant", content: "done" } }],
   ]);
   const events = [];
-  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "echo" }], onEvent: (event) => events.push(event) });
+  const result = await new Agent(model, kernel).run({ messages: [{ role: "user", content: "echo" }], onEvent: (event) => events.push(event) });
   assert.equal(result.status, "completed");
   assert.deepEqual(result.messages.find((message) => message.role === "assistant" && message.toolCalls !== undefined)?.toolCalls, [{ id: "stream-call", name: "test.echo", arguments: { value: "ok" } }]);
   assert.equal(events.filter((event) => event.type === "tool-call-delta").length, 2);
@@ -237,7 +246,7 @@ test("agent forwards and preserves streaming reasoning text", async () => {
     { type: "completed", message: { role: "assistant", content: "answer" } },
   ]]);
   const events = [];
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+  const result = await new Agent(model, new AgentKernel()).run({
     messages: [{ role: "user", content: "think" }],
     onEvent: (event) => events.push(event),
   });
@@ -247,23 +256,22 @@ test("agent forwards and preserves streaming reasoning text", async () => {
 });
 
 test("agent termination is deterministic at max turns", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  const tools = new ToolRegistry(capabilities);
-  tools.register({
+  const kernel = new AgentKernel();
+  kernel.register({
     name: "test.loop",
     description: "Keep looping.",
     inputSchema: { type: "object", additionalProperties: false },
     execute: () => ({ ok: true }),
   });
   const model = scriptedAdapter([[{ type: "completed", message: { role: "assistant", content: "loop", toolCalls: [{ id: "x", name: "test.loop", arguments: {} }] } }]]);
-  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "loop" }], maxTurns: 2 });
+  const result = await new Agent(model, kernel).run({ messages: [{ role: "user", content: "loop" }], maxTurns: 2 });
   assert.equal(result.status, "max-turns");
   assert.equal(result.turns, 2);
 });
 
 test("agent has no default turn or per-turn tool-call ceiling", async () => {
-  const tools = new ToolRegistry(new CapabilityManager());
-  tools.register({
+  const kernel = new AgentKernel();
+  kernel.register({
     name: "test.step",
     description: "Advance the scripted run.",
     inputSchema: { type: "object", additionalProperties: false },
@@ -290,7 +298,7 @@ test("agent has no default turn or per-turn tool-call ceiling", async () => {
       }
     },
   };
-  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "continue" }] });
+  const result = await new Agent(model, kernel).run({ messages: [{ role: "user", content: "continue" }] });
   assert.equal(result.status, "completed");
   assert.equal(result.turns, 40);
   assert.equal(result.response.content, "done");
@@ -298,7 +306,7 @@ test("agent has no default turn or per-turn tool-call ceiling", async () => {
 
 test("agent accepts large messages by default", async () => {
   const model = { id: "large-message", async *stream() { yield { type: "completed", message: { role: "assistant", content: "ok" } }; } };
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+  const result = await new Agent(model, new AgentKernel()).run({
     messages: [{ role: "user", content: "x".repeat(120_000) }],
   });
   assert.equal(result.status, "completed");
@@ -308,14 +316,14 @@ test("agent cancellation returns a cancellable result", async () => {
   const controller = new AbortController();
   controller.abort();
   const model = scriptedAdapter([[{ type: "completed", message: { role: "assistant", content: "never" } }]]);
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({ messages: [], signal: controller.signal });
+  const result = await new Agent(model, new AgentKernel()).run({ messages: [], signal: controller.signal });
   assert.equal(result.status, "cancelled");
   assert.equal(result.error.code, "ABORTED");
 });
 
 test("agent rejects an empty model stream", async () => {
   const model = { id: "empty", async *stream() {} };
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({ messages: [] });
+  const result = await new Agent(model, new AgentKernel()).run({ messages: [] });
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "EMPTY_MODEL_RESPONSE");
 });
@@ -331,17 +339,16 @@ test("agent reports model timeouts and aborts the adapter signal", async () => {
       }, { once: true }));
     },
   };
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({ messages: [], modelTimeoutMs: 5 });
+  const result = await new Agent(model, new AgentKernel()).run({ messages: [], modelTimeoutMs: 5 });
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "MODEL_TIMEOUT");
   assert.equal(aborted, true);
 });
 
 test("tool timeout ends the run instead of starting another model turn", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  const tools = new ToolRegistry(capabilities);
+  const kernel = new AgentKernel();
   let aborted = false;
-  tools.register({
+  kernel.register({
     name: "test.slow",
     description: "A slow tool.",
     inputSchema: { type: "object", additionalProperties: false },
@@ -358,7 +365,7 @@ test("tool timeout ends the run instead of starting another model turn", async (
       yield { type: "completed", message: { role: "assistant", content: "", toolCalls: [{ id: "slow", name: "test.slow", arguments: {} }] } };
     },
   };
-  const result = await new Agent(model, tools).run({ messages: [{ role: "user", content: "run" }], toolTimeoutMs: 5 });
+  const result = await new Agent(model, kernel).run({ messages: [{ role: "user", content: "run" }], toolTimeoutMs: 5 });
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "TOOL_TIMEOUT");
   assert.equal(turns, 1);
@@ -367,7 +374,7 @@ test("tool timeout ends the run instead of starting another model turn", async (
 
 test("agent still accepts explicit caller limits", async () => {
   const model = { id: "limit", async *stream() { yield { type: "completed", message: { role: "assistant", content: "ok" } }; } };
-  const result = await new Agent(model, new ToolRegistry(new CapabilityManager())).run({
+  const result = await new Agent(model, new AgentKernel()).run({
     messages: [{ role: "user", content: "too long" }],
     limits: { maxMessageChars: 2 },
   });
@@ -376,13 +383,11 @@ test("agent still accepts explicit caller limits", async () => {
 });
 
 test("plugin lifecycle is scoped and unregisters all contribution types", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  const tools = new ToolRegistry(capabilities);
-  const plugins = new PluginManager(tools, capabilities);
+  const kernel = new AgentKernel();
   let teardown = false;
   let lateRegister;
-  const handle = await plugins.install({
-    manifest: { apiVersion: "1", id: "test-plugin", name: "Test", version: "1.0.0", permissions: [] },
+  const handle = await kernel.install({
+    manifest: manifest("test-plugin"),
     setup(context) {
       context.registerTool({
         name: "test.owned",
@@ -404,47 +409,63 @@ test("plugin lifecycle is scoped and unregisters all contribution types", async 
       teardown = true;
     },
   });
-  assert.equal(tools.descriptors().length, 1);
-  assert.equal(plugins.modelAdapter("test.model").id, "test.model");
-  assert.equal(plugins.processors().length, 1);
-  assert.equal(plugins.uiContributions().length, 1);
-  assert.equal(await plugins.process("hello"), "HELLO");
-  assert.equal(plugins.isInstalled("test-plugin"), true);
+  assert.equal(kernel.descriptors().length, 1);
+  assert.equal(kernel.modelAdapter("test.model").id, "test.model");
+  assert.equal(kernel.processors().length, 1);
+  assert.equal(kernel.uiContributions().length, 1);
+  assert.equal(await kernel.process("hello"), "HELLO");
+  assert.equal(kernel.isInstalled("test-plugin"), true);
   await handle.uninstall();
   await handle.uninstall();
   assert.equal(teardown, true);
-  assert.equal(plugins.isInstalled("test-plugin"), false);
-  assert.equal(tools.descriptors().length, 0);
-  assert.equal(plugins.modelAdapter("test.model"), undefined);
-  assert.equal(plugins.processors().length, 0);
-  assert.equal(plugins.uiContributions().length, 0);
+  assert.equal(kernel.isInstalled("test-plugin"), false);
+  assert.equal(kernel.descriptors().length, 0);
+  assert.equal(kernel.modelAdapter("test.model"), undefined);
+  assert.equal(kernel.processors().length, 0);
+  assert.equal(kernel.uiContributions().length, 0);
   assert.throws(() => lateRegister(), (error) => error.code === "PLUGIN_INACTIVE");
 });
 
-test("a model adapter plugin is registered, selected, and removed through the registry", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  capabilities.register("network", { provide: () => ({ fetch: async () => sseResponse([
+test("a plugin cannot register a tool with an undeclared capability", async () => {
+  const kernel = new AgentKernel();
+  await assert.rejects(
+    kernel.install({
+      manifest: manifest("sneaky-plugin"),
+      setup(context) {
+        context.registerTool({
+          name: "sneaky.tool",
+          description: "Uses a capability it never declared.",
+          inputSchema: { type: "object", additionalProperties: false },
+          requiredCapabilities: ["network"],
+          execute: () => null,
+        });
+      },
+    }),
+    (error) => error.code === "PLUGIN_PERMISSION_MISSING",
+  );
+  assert.equal(kernel.hasTool("sneaky.tool"), false);
+});
+
+test("a remote model plugin is registered and removed through the registry", async () => {
+  const kernel = new AgentKernel();
+  kernel.provide("network", { provide: () => ({ fetch: async () => sseResponse([
     { choices: [{ delta: { content: "remote" } }] },
     { choices: [{ delta: {}, finish_reason: "stop" }] },
   ]) }) });
-  const tools = new ToolRegistry(capabilities);
-  const plugins = new PluginManager(tools, capabilities);
-  const handle = await plugins.install(createRemoteModelPlugin({ endpoint: "https://example.test/chat", model: "demo" }));
-  const adapter = plugins.modelAdapter("remote-model");
+  const handle = await kernel.install(createRemoteModelPlugin({ endpoint: "https://example.test/chat", model: "demo" }));
+  const adapter = kernel.modelAdapter("remote-model");
   assert.ok(adapter);
   const events = [];
   for await (const event of adapter.stream({ messages: [{ role: "user", content: "hi" }], tools: [], signal: noSignal() })) events.push(event);
   assert.equal(events.at(-1).message.content, "remote");
   await handle.uninstall();
-  assert.equal(plugins.modelAdapter("remote-model"), undefined);
+  assert.equal(kernel.modelAdapter("remote-model"), undefined);
 });
 
 test("a plugin can provide a capability before requesting its grant", async () => {
-  const capabilities = new CapabilityManager({ decide: () => true });
-  const tools = new ToolRegistry(capabilities);
-  const plugins = new PluginManager(tools, capabilities);
-  const handle = await plugins.install({
-    manifest: { apiVersion: "1", id: "provider-plugin", name: "Provider", version: "1", permissions: [{ name: "provided", reason: "test" }] },
+  const kernel = new AgentKernel();
+  const handle = await kernel.install({
+    manifest: manifest("provider-plugin", [{ name: "provided", reason: "test" }]),
     setup(context) {
       context.registerCapability({ name: "provided", provider: { provide: () => ({ value: 7 }) } });
       context.registerTool({
@@ -456,7 +477,7 @@ test("a plugin can provide a capability before requesting its grant", async () =
       });
     },
   });
-  assert.deepEqual(await tools.execute("provided.value", {}), { ok: true, value: { value: 7 } });
+  assert.deepEqual(await kernel.executeTool("provided.value", {}), { ok: true, value: { value: 7 } });
   await handle.uninstall();
 });
 
@@ -1030,7 +1051,7 @@ test("AI SDK adapter preserves streaming text and tool input deltas", async () =
     fetcher: async () => sseResponse([
       { choices: [{ delta: { content: "hello" } }] },
       { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "runtime_javascript", arguments: '{"code":"' } }] } }] },
-      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "return 42\"}" } } ] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'return 42"}' } } ] } }] },
       { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
     ]),
   });

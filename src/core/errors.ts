@@ -12,6 +12,15 @@ export class KernelError extends Error {
   }
 }
 
+export class CapabilityUnavailableError extends KernelError {
+  constructor(capability: string) {
+    super("CAPABILITY_UNAVAILABLE", `No implementation is registered for the “${capability}” capability.`, {
+      capability,
+    });
+    this.name = "CapabilityUnavailableError";
+  }
+}
+
 export class PermissionDeniedError extends KernelError {
   constructor(pluginId: string, capability: string, reason?: string) {
     super(

@@ -1,6 +1,6 @@
 import { errorInfo, isAbortError, jsonError, KernelError } from "./errors.js";
 import { isJsonValue } from "./schema.js";
-import { ToolRegistry } from "./tool-registry.js";
+import { AgentKernel } from "./kernel.js";
 import type {
   AgentEvent,
   AgentLimits,
@@ -219,7 +219,7 @@ function validateLimits(input: AgentLimits): void {
 }
 
 async function executeWithTimeout(
-  registry: ToolRegistry,
+  kernel: AgentKernel,
   call: ToolCall,
   parentSignal: AbortSignal,
   timeoutMs: number | undefined,
@@ -230,7 +230,7 @@ async function executeWithTimeout(
   parentSignal.addEventListener("abort", relayAbort, { once: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onParentAbort: (() => void) | undefined;
-  const execution = registry.execute(call.name, call.arguments, { signal: controller.signal }).catch((error) => {
+  const execution = kernel.executeTool(call.name, call.arguments, controller.signal).catch((error) => {
     const info = errorInfo(error, "TOOL_ERROR");
     return { ok: false, error: info } as ToolExecutionResult;
   });
@@ -264,11 +264,11 @@ async function executeWithTimeout(
 
 export class Agent {
   private model: ModelAdapter;
-  private readonly tools: ToolRegistry;
+  private readonly kernel: AgentKernel;
 
-  constructor(model: ModelAdapter, tools: ToolRegistry) {
+  constructor(model: ModelAdapter, kernel: AgentKernel) {
     this.model = model;
-    this.tools = tools;
+    this.kernel = kernel;
   }
 
   setModel(model: ModelAdapter): void {
@@ -340,7 +340,7 @@ export class Agent {
       const streamedCallDeltas = new Map<number, StreamedToolCallDraft>();
       let sawCompleted = false;
 
-      const descriptors = this.tools.descriptors();
+      const descriptors = this.kernel.descriptors();
       const modelController = new AbortController();
       const relayModelAbort = () => modelController.abort(signal.reason);
       signal.addEventListener("abort", relayModelAbort, { once: true });
@@ -455,7 +455,7 @@ export class Agent {
         try {
           throwIfAborted(signal);
           this.emit(request.onEvent, { type: "tool-started", call });
-          const result = await executeWithTimeout(this.tools, call, signal, toolTimeoutMs);
+          const result = await executeWithTimeout(this.kernel, call, signal, toolTimeoutMs);
           this.emit(request.onEvent, { type: "tool-finished", call, result });
           const toolMessage: ToolMessage = result.ok
             ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value) }

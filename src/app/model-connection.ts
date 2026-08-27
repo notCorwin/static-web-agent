@@ -1,4 +1,4 @@
-import type { BrowserAgentHarnessPluginHandle } from "../harness.js";
+import type { HarnessPluginHandle } from "../harness.js";
 import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import type { Plugin, StateStore } from "../core/types.js";
 import { DEFAULT_THINKING_LEVEL, isConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
@@ -150,7 +150,7 @@ export function createBrowserCredentialAdapter(): CredentialAdapter {
 }
 
 interface ModelConnectionHarness {
-  readonly install: (plugin: Plugin) => Promise<BrowserAgentHarnessPluginHandle>;
+  readonly install: (plugin: Plugin) => Promise<HarnessPluginHandle>;
   readonly selectModel: (id: string) => void;
   readonly clearModel: () => void;
 }
@@ -163,7 +163,7 @@ export interface ModelConnectionOptions {
 
 export function createModelConnection(options: ModelConnectionOptions): ModelConnection {
   const credentials = options.credentials ?? createBrowserCredentialAdapter();
-  let remoteHandle: BrowserAgentHarnessPluginHandle | undefined;
+  let remoteHandle: HarnessPluginHandle | undefined;
 
   const restore = async (savedSettings?: ConnectionSettings): Promise<RestoredConnection> => {
     let credential: StoredConnectionCredential | undefined;
@@ -191,7 +191,7 @@ export function createModelConnection(options: ModelConnectionOptions): ModelCon
     if (current !== undefined) await current.uninstall();
   };
 
-  const rollback = async (handle: BrowserAgentHarnessPluginHandle | undefined): Promise<void> => {
+  const rollback = async (handle: HarnessPluginHandle | undefined): Promise<void> => {
     if (handle !== undefined) {
       try { await handle.uninstall(); } catch { /* Rollback continues through a broken plugin teardown. */ }
     }
@@ -203,7 +203,7 @@ export function createModelConnection(options: ModelConnectionOptions): ModelCon
     restore,
     connect: async (settings) => {
       await uninstallCurrent();
-      let handle: BrowserAgentHarnessPluginHandle | undefined;
+      let handle: HarnessPluginHandle | undefined;
       try {
         handle = await options.harness.install(createRemoteModelPlugin({
           endpoint: settings.endpoint,
