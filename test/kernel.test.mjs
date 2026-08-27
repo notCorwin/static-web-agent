@@ -532,6 +532,36 @@ test("plugin lifecycle is scoped and unregisters all contribution types", async 
   assert.throws(() => lateRegister(), (error) => error.code === "PLUGIN_INACTIVE");
 });
 
+test("unregistering UI removes it once from every active mount", async () => {
+  const kernel = new AgentKernel();
+  let unregister;
+  let cleanups = 0;
+  await kernel.install({
+    manifest: manifest("ui-plugin"),
+    setup(context) {
+      unregister = context.registerUi({ id: "test.ui", mount: () => () => { cleanups += 1; } });
+    },
+  });
+  const container = () => {
+    const children = [];
+    return {
+      children,
+      ownerDocument: { createElement: () => ({ dataset: {}, remove() { children.splice(children.indexOf(this), 1); } }) },
+      append(element) { children.push(element); },
+    };
+  };
+  const first = container();
+  const second = container();
+  const unmountFirst = kernel.mountUi(first);
+  const unmountSecond = kernel.mountUi(second);
+
+  unregister();
+  assert.deepEqual([first.children.length, second.children.length, cleanups], [0, 0, 2]);
+  unmountFirst();
+  unmountSecond();
+  assert.equal(cleanups, 2);
+});
+
 test("a plugin cannot register a tool with an undeclared capability", async () => {
   const kernel = new AgentKernel();
   await assert.rejects(

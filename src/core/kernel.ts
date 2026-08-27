@@ -25,7 +25,6 @@ const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 type ChangeListener = () => void;
 
 type MountedUi = {
-  readonly contribution: UiContribution;
   readonly slot: HTMLElement;
   readonly cleanup?: () => void;
   removed: boolean;
@@ -140,7 +139,7 @@ export class AgentKernel {
   private readonly uiMap = new Map<string, UiContribution>();
   private readonly installed = new Map<string, Installed>();
   private readonly installing = new Set<string>();
-  private readonly uiMounts = new Set<MountedUi[]>();
+  private readonly uiMounts = new Set<Map<UiContribution, MountedUi>>();
   private readonly listeners = new Set<ChangeListener>();
 
   // ponytail: allow-by-default policy keeps zero-config embeds working; plugins are trusted
@@ -345,7 +344,7 @@ export class AgentKernel {
   }
 
   mountUi(container: HTMLElement): () => void {
-    const mounted: MountedUi[] = [];
+    const mounted = new Map<UiContribution, MountedUi>();
     this.uiMounts.add(mounted);
     for (const contribution of [...this.uiMap.values()].sort((left, right) => left.id.localeCompare(right.id))) {
       const slot = container.ownerDocument.createElement("div");
@@ -353,14 +352,14 @@ export class AgentKernel {
       container.append(slot);
       try {
         const cleanup = contribution.mount(slot);
-        mounted.push({ contribution, slot, ...(typeof cleanup === "function" ? { cleanup } : {}), removed: false });
+        mounted.set(contribution, { slot, ...(typeof cleanup === "function" ? { cleanup } : {}), removed: false });
       } catch (error) {
         slot.textContent = error instanceof Error ? `Extension failed: ${error.message}` : "Extension failed.";
-        mounted.push({ contribution, slot, removed: false });
+        mounted.set(contribution, { slot, removed: false });
       }
     }
     return () => {
-      for (const item of mounted.reverse()) this.releaseMountedUi(item);
+      for (const item of [...mounted.values()].reverse()) this.releaseMountedUi(item);
       this.uiMounts.delete(mounted);
     };
   }
@@ -382,7 +381,11 @@ export class AgentKernel {
 
   private removeMountedUi(contribution: UiContribution): void {
     for (const mounted of this.uiMounts) {
-      for (const item of mounted.filter((candidate) => candidate.contribution === contribution)) this.releaseMountedUi(item);
+      const item = mounted.get(contribution);
+      if (item !== undefined) {
+        mounted.delete(contribution);
+        this.releaseMountedUi(item);
+      }
     }
   }
 
