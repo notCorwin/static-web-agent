@@ -99,10 +99,12 @@ function assertToolCallDelta(delta: ToolCallDelta): void {
   if (!Number.isInteger(record.index) || Number(record.index) < 0) {
     throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   }
-  for (const key of ["id", "name", "arguments"] as const) {
-    if (record[key] !== undefined && typeof record[key] !== "string") {
-      throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
-    }
+  if (
+    (record.id !== undefined && typeof record.id !== "string") ||
+    (record.name !== undefined && typeof record.name !== "string") ||
+    (record.arguments !== undefined && typeof record.arguments !== "string")
+  ) {
+    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
   }
 }
 
@@ -162,7 +164,7 @@ function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits, 
       throw new KernelError("INVALID_MESSAGES", "Model messages must be JSON objects.");
     }
     const record = message as Record<string, unknown>;
-    if (!['system', 'user', 'assistant', 'tool'].includes(String(record.role))) throw new KernelError("INVALID_MESSAGES", "Model messages have an invalid role.");
+    if (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool") throw new KernelError("INVALID_MESSAGES", "Model messages have an invalid role.");
     if (typeof record.content !== "string") throw new KernelError("INVALID_MESSAGES", "Every model message needs string content.");
     if (record.role === "user" && record.attachmentIds !== undefined) {
       if (!Array.isArray(record.attachmentIds) || record.attachmentIds.some((id) => typeof id !== "string" || id.length === 0)) {
@@ -277,16 +279,12 @@ async function executeWithTimeout(
 }
 
 export class Agent {
-  private model: ModelAdapter;
+  private readonly model: ModelAdapter;
   private readonly kernel: AgentKernel;
 
   constructor(model: ModelAdapter, kernel: AgentKernel) {
     this.model = model;
     this.kernel = kernel;
-  }
-
-  setModel(model: ModelAdapter): void {
-    this.model = model;
   }
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
