@@ -194,6 +194,36 @@ test("agent loops through multiple tool calls and normalizes tool errors", async
   assert.ok(result.messages.some((message) => message.role === "tool" && message.isError === true));
 });
 
+test("agent executes same-turn tools concurrently and preserves result order", async () => {
+  const kernel = new AgentKernel();
+  let started = 0;
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  for (const name of ["barrier.a", "barrier.b"]) {
+    kernel.register({
+      name,
+      description: "Wait for both tools.",
+      inputSchema: { type: "object", additionalProperties: false },
+      execute: async () => {
+        started += 1;
+        if (started === 2) release();
+        await barrier;
+        return name;
+      },
+    });
+  }
+  const model = scriptedAdapter([
+    [{ type: "completed", message: { role: "assistant", content: "", toolCalls: [
+      { id: "a", name: "barrier.a", arguments: {} },
+      { id: "b", name: "barrier.b", arguments: {} },
+    ] } }],
+    [{ type: "completed", message: { role: "assistant", content: "done" } }],
+  ]);
+  const result = await new Agent(model, kernel).run({ messages: [], toolTimeoutMs: 50 });
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.messages.filter((message) => message.role === "tool").map((message) => message.name), ["barrier.a", "barrier.b"]);
+});
+
 test("agent forwards attachment bytes only through the model request side channel", async () => {
   let received;
   const model = {

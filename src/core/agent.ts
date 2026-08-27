@@ -494,12 +494,28 @@ export class Agent {
       if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
       if (maxTurns !== undefined && turns >= maxTurns) return finish({ status: "max-turns", response: immutableAssistant });
 
-      for (const call of calls) {
-        try {
+      let executed: readonly { readonly call: ToolCall; readonly result: ToolExecutionResult }[];
+      try {
+        executed = await Promise.all(calls.map(async (call) => {
           throwIfAborted(signal);
           this.emit(request.onEvent, { type: "tool-started", call });
-          const result = await executeWithTimeout(this.kernel, call, signal, toolTimeoutMs);
+          let result: ToolExecutionResult;
+          try {
+            result = await executeWithTimeout(this.kernel, call, signal, toolTimeoutMs);
+          } catch (error) {
+            if (isAbortError(error) || signal.aborted) throw error;
+            result = errorResult("TOOL_ERROR", error instanceof Error ? error.message : "Tool execution failed.");
+          }
           this.emit(request.onEvent, { type: "tool-finished", call, result });
+          return { call, result };
+        }));
+      } catch (error) {
+        if (isAbortError(error) || signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
+        return fail(errorInfo(error, "TOOL_ERROR"));
+      }
+
+      for (const { call, result } of executed) {
+        try {
           const toolMessage: ToolMessage = result.ok
             ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value) }
             : { role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true };
@@ -509,14 +525,7 @@ export class Agent {
         } catch (error) {
           if (isAbortError(error) || signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
           if (error instanceof KernelError && ["MESSAGE_LIMIT_EXCEEDED", "REQUEST_LIMIT_EXCEEDED"].includes(error.code)) return fail(errorInfo(error, error.code));
-          const result = errorResult("TOOL_ERROR", error instanceof Error ? error.message : "Tool execution failed.");
-          this.emit(request.onEvent, { type: "tool-finished", call, result });
-          messages.push(Object.freeze({ role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true }));
-          try {
-            assertMessages(messages, limits, false);
-          } catch (limitError) {
-            return fail(errorInfo(limitError, "MESSAGE_LIMIT_EXCEEDED"));
-          }
+          return fail(errorInfo(error, "TOOL_ERROR"));
         }
       }
     }
