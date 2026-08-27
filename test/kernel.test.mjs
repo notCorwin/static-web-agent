@@ -323,7 +323,7 @@ test("agent forwards and preserves streaming reasoning text", async () => {
     { type: "reasoning-delta", delta: "first" },
     { type: "reasoning-delta", delta: " second" },
     { type: "text-delta", delta: "answer" },
-    { type: "completed", message: { role: "assistant", content: "answer" } },
+    { type: "completed", message: { role: "assistant", content: "" } },
   ]]);
   const events = [];
   const result = await new Agent(model, new AgentKernel()).run({
@@ -331,6 +331,7 @@ test("agent forwards and preserves streaming reasoning text", async () => {
     onEvent: (event) => events.push(event),
   });
   assert.equal(result.status, "completed");
+  assert.equal(result.response.content, "answer");
   assert.equal(result.response.reasoning, "first second");
   assert.deepEqual(events.filter((event) => event.type === "reasoning-delta").map((event) => event.delta), ["first", " second"]);
 });

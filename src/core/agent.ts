@@ -108,18 +108,19 @@ function assertToolCallDelta(delta: ToolCallDelta): void {
 
 interface StreamedToolCallDraft {
   id: string;
-  name: string;
-  arguments: string;
+  readonly name: string[];
+  readonly arguments: string[];
 }
 
 function completeStreamedToolCalls(drafts: ReadonlyMap<number, StreamedToolCallDraft>): ToolCall[] {
   return [...drafts.entries()].sort(([left], [right]) => left - right).map(([index, draft]) => {
-    const name = draft.name.trim();
+    const name = draft.name.join("").trim();
     if (!name) throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${index + 1} did not include a name.`);
+    const argumentsText = draft.arguments.join("");
     let argumentsValue: unknown = {};
-    if (draft.arguments.trim().length > 0) {
+    if (argumentsText.trim().length > 0) {
       try {
-        argumentsValue = JSON.parse(draft.arguments) as unknown;
+        argumentsValue = JSON.parse(argumentsText) as unknown;
       } catch {
         throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned malformed arguments.`);
       }
@@ -347,8 +348,10 @@ export class Agent {
       turns += 1;
       this.emit(request.onEvent, { type: "model-started", turn: turns });
       let completed: AssistantMessage | undefined;
-      let streamedText = "";
-      let streamedReasoning = "";
+      const streamedText: string[] = [];
+      const streamedReasoning: string[] = [];
+      let streamedTextLength = 0;
+      let streamedReasoningLength = 0;
       const streamedCalls: ToolCall[] = [];
       const streamedCallDeltas = new Map<number, StreamedToolCallDraft>();
       let sawCompleted = false;
@@ -384,24 +387,28 @@ export class Agent {
               switch (event.type) {
                 case "text-delta":
                   if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
-                  streamedText += event.delta;
-                  if (streamedText.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
+                  streamedText.push(event.delta);
+                  streamedTextLength += event.delta.length;
+                  if (streamedTextLength > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
                   this.emit(request.onEvent, event);
                   break;
                 case "reasoning-delta":
                   if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid reasoning delta.");
-                  streamedReasoning += event.delta;
-                  if (streamedReasoning.length > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model reasoning is too large.");
+                  streamedReasoning.push(event.delta);
+                  streamedReasoningLength += event.delta.length;
+                  if (streamedReasoningLength > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model reasoning is too large.");
                   this.emit(request.onEvent, event);
                   break;
                 case "tool-call-delta": {
                   assertToolCallDelta(event.delta);
-                  const previous = streamedCallDeltas.get(event.delta.index) ?? { id: `call-${event.delta.index + 1}`, name: "", arguments: "" };
-                  streamedCallDeltas.set(event.delta.index, {
-                    id: event.delta.id ?? previous.id,
-                    name: `${previous.name}${event.delta.name ?? ""}`,
-                    arguments: `${previous.arguments}${event.delta.arguments ?? ""}`,
-                  });
+                  let draft = streamedCallDeltas.get(event.delta.index);
+                  if (draft === undefined) {
+                    draft = { id: `call-${event.delta.index + 1}`, name: [], arguments: [] };
+                    streamedCallDeltas.set(event.delta.index, draft);
+                  }
+                  if (event.delta.id !== undefined) draft.id = event.delta.id;
+                  if (event.delta.name !== undefined) draft.name.push(event.delta.name);
+                  if (event.delta.arguments !== undefined) draft.arguments.push(event.delta.arguments);
                   this.emit(request.onEvent, event);
                   break;
                 }
@@ -479,9 +486,9 @@ export class Agent {
         if (callIds.has(call.id)) return fail({ code: "INVALID_MODEL_OUTPUT", message: "Model returned duplicate tool call IDs." });
         callIds.add(call.id);
       }
-      const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedText };
-      const content = baseAssistant.content.length === 0 && streamedText.length > 0 ? streamedText : baseAssistant.content;
-      const reasoning = baseAssistant.reasoning === undefined && streamedReasoning.length > 0 ? streamedReasoning : baseAssistant.reasoning;
+      const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedText.join("") };
+      const content = baseAssistant.content.length === 0 && streamedTextLength > 0 ? streamedText.join("") : baseAssistant.content;
+      const reasoning = baseAssistant.reasoning === undefined && streamedReasoningLength > 0 ? streamedReasoning.join("") : baseAssistant.reasoning;
       const assistantBase: AssistantMessage = reasoning === undefined ? { ...baseAssistant, content } : { ...baseAssistant, content, reasoning };
       const assistant: AssistantMessage = calls.length === 0
         ? assistantBase
