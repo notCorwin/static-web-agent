@@ -12,11 +12,13 @@ test("stream presentation preserves interleaved text, thinking, and continuous t
 
   presentation.handle({ type: "model-started", turn: 1 });
   presentation.handle({ type: "reasoning-delta", delta: "first thought" });
-  const textBeforeTool = presentation.handle({ type: "text-delta", delta: "answer" });
+  presentation.handle({ type: "text-delta", delta: "answer" });
+  const textBeforeTool = presentation.snapshot();
   assert.deepEqual(textBeforeTool.pendingStream.map((segment) => segment.kind), ["thinking", "text"]);
 
   presentation.handle({ type: "tool-call-delta", delta: { index: 0, id: "one", name: "search", arguments: "{" } });
-  const secondTool = presentation.handle({ type: "tool-call-delta", delta: { index: 1, id: "two", name: "open", arguments: "{}" } });
+  presentation.handle({ type: "tool-call-delta", delta: { index: 1, id: "two", name: "open", arguments: "{}" } });
+  const secondTool = presentation.snapshot();
   assert.deepEqual(secondTool.pendingStream.map((segment) => segment.kind), ["thinking", "text", "tools"]);
   assert.equal(secondTool.pendingStream.at(-1).toolKeys.length, 2);
   assert.deepEqual(secondTool.pendingToolCalls.map((delta) => delta.name), ["search", "open"]);

@@ -31,17 +31,17 @@ export interface StreamPresentationAdapter {
 }
 
 export interface StreamPresentation {
-  readonly handle: (event: AgentEvent) => StreamPresentationSnapshot;
+  readonly handle: (event: AgentEvent) => void;
   readonly snapshot: () => StreamPresentationSnapshot;
-  readonly render: () => StreamPresentationSnapshot;
-  readonly startRun: () => StreamPresentationSnapshot;
-  readonly resetPending: () => StreamPresentationSnapshot;
-  readonly reset: () => StreamPresentationSnapshot;
-  readonly setBusy: (busy: boolean) => StreamPresentationSnapshot;
-  readonly onScroll: (viewport: StreamViewport) => StreamPresentationSnapshot;
+  readonly render: () => void;
+  readonly startRun: () => void;
+  readonly resetPending: () => void;
+  readonly reset: () => void;
+  readonly setBusy: (busy: boolean) => void;
+  readonly onScroll: (viewport: StreamViewport) => void;
   readonly recordProgrammaticScroll: (scrollTop: number) => void;
-  readonly markUserScrollGesture: (scrollingUp?: boolean) => StreamPresentationSnapshot;
-  readonly scrollToLatest: () => StreamPresentationSnapshot;
+  readonly markUserScrollGesture: (scrollingUp?: boolean) => void;
+  readonly scrollToLatest: () => void;
 }
 
 function immutableSnapshot(
@@ -125,7 +125,7 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
     pendingStream = [...pendingStream, { key: `stream-${++pendingStreamSequence}`, kind: "tools", toolKeys: [key] }];
   };
 
-  const handle = (event: AgentEvent): StreamPresentationSnapshot => {
+  const handle = (event: AgentEvent): void => {
     switch (event.type) {
       case "text-delta":
         appendPendingStreamText("text", event.delta);
@@ -175,19 +175,17 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
       case "assistant-message":
         break;
     }
-    return currentSnapshot();
   };
 
-  const resetPending = (): StreamPresentationSnapshot => {
+  const resetPending = (): void => {
     pendingToolCalls = [];
     liveToolEntries = [];
     liveToolSequence = 0;
     pendingStream = [];
     pendingStreamSequence = 0;
-    return currentSnapshot();
   };
 
-  const reset = (): StreamPresentationSnapshot => {
+  const reset = (): void => {
     resetPending();
     busy = false;
     followChat = true;
@@ -197,14 +195,12 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
     scrollRequest = false;
     if (userScrollGestureTimer !== undefined) globalThis.clearTimeout(userScrollGestureTimer);
     userScrollGestureTimer = undefined;
-    return currentSnapshot();
   };
 
-  const render = (): StreamPresentationSnapshot => {
+  const render = (): void => {
     const snapshot = currentSnapshot();
     adapter.render(snapshot);
     scrollRequest = false;
-    return snapshot;
   };
 
   return {
@@ -214,13 +210,12 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
     startRun: () => {
       followChat = true;
       scrollRequest = true;
-      return resetPending();
+      resetPending();
     },
     resetPending,
     reset,
     setBusy: (nextBusy) => {
       busy = nextBusy;
-      return currentSnapshot();
     },
     onScroll: (nextViewport) => {
       viewport = nextViewport;
@@ -230,7 +225,6 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
       if (!(busy && followChat && !userScrollGesture)) {
         followChat = nextViewport.scrollHeight - nextViewport.scrollTop - nextViewport.clientHeight < 90;
       }
-      return currentSnapshot();
     },
     recordProgrammaticScroll: (scrollTop) => {
       lastScrollTop = scrollTop;
@@ -244,12 +238,10 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
         userScrollGesture = false;
         userScrollGestureTimer = undefined;
       }, 250);
-      return currentSnapshot();
     },
     scrollToLatest: () => {
       followChat = true;
       scrollRequest = true;
-      return currentSnapshot();
     },
   };
 }

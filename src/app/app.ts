@@ -56,6 +56,7 @@ export class AgentApp {
   private chatRenderScheduled = false;
   private chatObserver: MutationObserver | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
+  private selectedModelId: string | undefined;
   private renderedModelId: string | undefined;
   private renderedConnectionEditing = false;
   private connectionEditing = false;
@@ -101,7 +102,8 @@ export class AgentApp {
       ...(this.options.initialModelId === undefined ? {} : { initialModelId: this.options.initialModelId }),
     });
     this.modelConnection = createModelConnection({ harness: this.harness, store: this.store });
-    this.harness.subscribe(() => {
+    this.harness.subscribe((snapshot) => {
+      this.selectedModelId = snapshot.selectedModelId;
       if (this.ready) {
         this.renderExtensions();
         this.renderChat();
@@ -123,6 +125,7 @@ export class AgentApp {
     this.streamPresentation?.reset();
     this.streamPresentation = undefined;
     this.renderedMessages = undefined;
+    this.selectedModelId = undefined;
     this.renderedModelId = undefined;
     this.renderedConnectionEditing = false;
     this.uiCleanup?.();
@@ -430,7 +433,7 @@ export class AgentApp {
     }
     if (this.busy) return;
     const harness = this.harness;
-    if (harness === undefined || harness.snapshot().selectedModelId === undefined) {
+    if (harness === undefined || this.selectedModelId === undefined) {
       this.notify("Connect a remote model before sending.", "error");
       return;
     }
@@ -532,7 +535,7 @@ export class AgentApp {
   }
 
   private handleAgentEvent(event: AgentEvent): void {
-    const snapshot = this.streamPresentation?.handle(event);
+    this.streamPresentation?.handle(event);
     switch (event.type) {
       case "text-delta":
         this.notify("Receiving response…");
@@ -549,7 +552,7 @@ export class AgentApp {
         this.renderChat();
         break;
       case "tool-call-delta": {
-        const merged = snapshot?.pendingToolCalls.find((delta) => delta.index === event.delta.index);
+        const merged = this.streamPresentation?.snapshot().pendingToolCalls.find((delta) => delta.index === event.delta.index);
         this.notify(`${merged?.name?.trim() || "Tool"} · preparing…`);
         this.scheduleChatRender();
         break;
@@ -628,7 +631,7 @@ export class AgentApp {
     const stream = this.streamPresentation?.snapshot();
     const hasStreaming = (stream?.pendingStream.length ?? 0) > 0 || (stream?.liveToolEntries.length ?? 0) > 0;
     chat.setAttribute("aria-busy", String(this.busy));
-    const selectedModelId = this.harness?.snapshot().selectedModelId;
+    const selectedModelId = this.selectedModelId;
     connectionCard.hidden = selectedModelId !== undefined && !this.connectionEditing;
     const fullRender = this.renderedMessages !== this.chat.messages
       || this.renderedModelId !== selectedModelId
@@ -792,7 +795,7 @@ export class AgentApp {
     const connection = this.modelConnection;
     if (connection === undefined) return;
     const restored = await connection.restore(savedSettings);
-    if (!this.ready || this.harness?.snapshot().selectedModelId !== undefined) return;
+    if (!this.ready || this.selectedModelId !== undefined) return;
     const settings = restored.settings;
     if (settings === undefined) return;
     if (!settings.endpoint || !settings.model) return;
