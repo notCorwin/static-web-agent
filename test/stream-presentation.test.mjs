@@ -15,6 +15,9 @@ test("stream presentation preserves interleaved text, thinking, and continuous t
   presentation.handle({ type: "text-delta", delta: "answer" });
   const textBeforeTool = presentation.snapshot();
   assert.deepEqual(textBeforeTool.pendingStream.map((segment) => segment.kind), ["thinking", "text"]);
+  presentation.handle({ type: "text-delta", delta: " more" });
+  assert.equal(textBeforeTool.pendingStream[1].text, "answer");
+  assert.equal(presentation.snapshot().pendingStream[1].text, "answer more");
 
   presentation.handle({ type: "tool-call-delta", delta: { index: 0, id: "one", name: "search", arguments: "{" } });
   presentation.handle({ type: "tool-call-delta", delta: { index: 1, id: "two", name: "open", arguments: "{}" } });

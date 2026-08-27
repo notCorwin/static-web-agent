@@ -94,35 +94,34 @@ export function createStreamPresentation(adapter: StreamPresentationAdapter): St
 
   const replaceLiveToolEntry = (entry: LiveToolEntry): void => {
     const index = liveToolEntries.findIndex((current) => current.key === entry.key);
-    liveToolEntries = index < 0
-      ? [...liveToolEntries, entry]
-      : liveToolEntries.map((current, currentIndex) => currentIndex === index ? entry : current);
+    if (index < 0) liveToolEntries.push(entry);
+    else liveToolEntries[index] = entry;
   };
 
   const appendPendingStreamText = (kind: "text" | "thinking", delta: string): void => {
     if (delta.length === 0) return;
     const last = pendingStream.at(-1);
     if (last?.kind === kind) {
-      pendingStream = [...pendingStream.slice(0, -1), { ...last, text: last.text + delta }];
+      pendingStream[pendingStream.length - 1] = { ...last, text: last.text + delta };
       return;
     }
-    pendingStream = [...pendingStream, { key: `stream-${++pendingStreamSequence}`, kind, text: delta }];
+    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind, text: delta });
   };
 
   const ensurePendingThinking = (): void => {
     const last = pendingStream.at(-1);
     if (last?.kind === "thinking" && last.text.length === 0) return;
-    pendingStream = [...pendingStream, { key: `stream-${++pendingStreamSequence}`, kind: "thinking", text: "" }];
+    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind: "thinking", text: "" });
   };
 
   const appendPendingTool = (key: string): void => {
     if (pendingStream.some((segment) => segment.kind === "tools" && segment.toolKeys.includes(key))) return;
     const last = pendingStream.at(-1);
     if (last?.kind === "tools") {
-      pendingStream = [...pendingStream.slice(0, -1), { ...last, toolKeys: [...last.toolKeys, key] }];
+      pendingStream[pendingStream.length - 1] = { ...last, toolKeys: [...last.toolKeys, key] };
       return;
     }
-    pendingStream = [...pendingStream, { key: `stream-${++pendingStreamSequence}`, kind: "tools", toolKeys: [key] }];
+    pendingStream.push({ key: `stream-${++pendingStreamSequence}`, kind: "tools", toolKeys: [key] });
   };
 
   const handle = (event: AgentEvent): void => {
