@@ -158,7 +158,10 @@ function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], iss
     if (!matches) push(issues, path, "Value does not match any allowed schema.", "anyOf");
   }
   if (schema.oneOf !== undefined) {
-    const matches = schema.oneOf.filter((candidate) => validate(candidate, value).valid).length;
+    let matches = 0;
+    for (const candidate of schema.oneOf) {
+      if (validate(candidate, value).valid && ++matches > 1) break;
+    }
     if (matches !== 1) push(issues, path, "Value must match exactly one allowed schema.", "oneOf");
   }
   return json;
