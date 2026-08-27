@@ -1256,6 +1256,7 @@ try {
     const workerApis = await runtime.execute('return { fetch: typeof fetch, webSocket: typeof WebSocket }', null);
     let timedOut = false;
     try { await runtime.execute('await new Promise(() => {})', null, { timeoutMs: 10 }); } catch (error) { timedOut = error.code === 'RUNTIME_TIMEOUT'; }
+    const recoveredWorker = await runtime.execute('return 7', null);
 
     const pageRuntime = new BrowserPageRuntime();
     const pageValue = await pageRuntime.execute("console.log('page-runtime'); return { value: input.value + 1, title: document.title, hasFetch: typeof fetch === 'function' }", { value: 2 });
@@ -1345,6 +1346,7 @@ try {
       workerUnboundedOutput: largeWorkerValue.value.length === 70_000,
       workerAmbientApis: workerApis.value?.fetch === 'function' && workerApis.value?.webSocket === 'function',
       workerTimeout: timedOut,
+      workerRecovered: recoveredWorker.value === 7,
       pageRuntime: pageValue.value?.value === 3 && typeof pageValue.value?.title === 'string' && pageValue.value?.hasFetch === true && pageValue.logs.includes('page-runtime'),
       pageUnboundedOutput: largePageValue.value.length === 70_000,
       browserInspect: inspected.ok && inspectedValue?.apis?.fetch === true && typeof inspectedValue?.url === 'string',
@@ -1357,7 +1359,7 @@ try {
       pluginUi: mounted && processed === 'ok!' && removedOnUninstall && !pluginManager.hasTool('browser.tool') && extensionRoot.textContent === '' && appExtension,
     };
   })()`);
-  assert.deepEqual(browserBoundaries, { worker: true, workerUnboundedOutput: true, workerAmbientApis: true, workerTimeout: true, pageRuntime: true, pageUnboundedOutput: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
+  assert.deepEqual(browserBoundaries, { worker: true, workerUnboundedOutput: true, workerAmbientApis: true, workerTimeout: true, workerRecovered: true, pageRuntime: true, pageUnboundedOutput: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
   }
   console.log("Browser checks passed: compact UI, page Web APIs, remote-only chat, default plugins, IndexedDB, SSE, and cancellation.");
 } finally {

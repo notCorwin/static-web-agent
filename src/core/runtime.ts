@@ -41,6 +41,12 @@ const WORKER_SOURCE = `
   };
 `;
 
+let workerUrl: string | undefined;
+
+function getWorkerUrl(): string {
+  return workerUrl ??= URL.createObjectURL(new Blob([WORKER_SOURCE], { type: "text/javascript" }));
+}
+
 function abortError(): Error {
   const error = new Error("Operation cancelled.");
   error.name = "AbortError";
@@ -68,13 +74,10 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
     }
 
     const started = now();
-    const blob = new Blob([WORKER_SOURCE], { type: "text/javascript" });
-    const url = URL.createObjectURL(blob);
     let worker: Worker;
     try {
-      worker = new Worker(url);
+      worker = new Worker(getWorkerUrl());
     } catch (error) {
-      URL.revokeObjectURL(url);
       throw new KernelError("RUNTIME_UNAVAILABLE", error instanceof Error ? error.message : "Unable to create a runtime worker.");
     }
     const signal = options.signal;
@@ -87,7 +90,6 @@ export class BrowserWorkerRuntime implements JavaScriptRuntime {
         worker.onmessage = null;
         worker.onerror = null;
         worker.terminate();
-        URL.revokeObjectURL(url);
       };
       const onAbort = () => {
         cleanup();
