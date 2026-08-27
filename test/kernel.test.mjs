@@ -83,6 +83,10 @@ test("JSON schema validation rejects malformed and extra tool input", () => {
   assert.equal(validate(schema, { query: "" }).valid, false);
   assert.equal(validate(schema, { query: "ok", extra: true }).valid, false);
   assert.equal(validate(schema, undefined).valid, false);
+  assert.deepEqual(validate({ type: "array", items: { type: "object", properties: { count: { type: "integer" } } } }, [{ count: "no" }]).issues, [
+    { path: "$[0].count", message: "Expected integer.", keyword: "type" },
+  ]);
+  assert.equal(validate({}, { nested: [Number.NaN] }).issues[0]?.keyword, "json");
 });
 
 test("capabilities require an explicit provider and a granted permission", async () => {

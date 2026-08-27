@@ -54,17 +54,26 @@ function typeMatches(value: unknown, type: JsonSchema["type"]): boolean {
   });
 }
 
-function push(issues: ValidationIssue[], path: string, message: string, keyword?: string): void {
-  const issue: ValidationIssue = { path, message };
+type PathSegment = string | number;
+
+function push(issues: ValidationIssue[], path: readonly PathSegment[], message: string, keyword?: string): void {
+  const issue: ValidationIssue = { path: `$${path.map((segment) => typeof segment === "number" ? `[${segment}]` : `.${segment}`).join("")}`, message };
   if (keyword !== undefined) issue.keyword = keyword;
   issues.push(issue);
 }
 
-function validateAt(value: unknown, schema: JsonSchema, path: string, issues: ValidationIssue[]): void {
+function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], issues: ValidationIssue[]): boolean {
+  const kind = typeof value;
+  if (kind === "number" && !Number.isFinite(value)) return false;
+  if (value !== null && kind !== "string" && kind !== "boolean" && kind !== "number" && kind !== "object") return false;
+  if (kind === "object" && value !== null && !Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return false;
+  }
   if (!typeMatches(value, schema.type)) {
     const expected = Array.isArray(schema.type) ? schema.type.join(" or ") : schema.type;
     push(issues, path, `Expected ${expected ?? "a valid JSON value"}.`, "type");
-    return;
+    return isJsonValue(value);
   }
 
   if (schema.enum !== undefined && !schema.enum.some((candidate) => sameJson(candidate, value))) {
@@ -99,6 +108,7 @@ function validateAt(value: unknown, schema: JsonSchema, path: string, issues: Va
     }
   }
 
+  let json = true;
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems) {
       push(issues, path, `Must contain at least ${schema.minItems} items.`, "minItems");
@@ -107,7 +117,13 @@ function validateAt(value: unknown, schema: JsonSchema, path: string, issues: Va
       push(issues, path, `Must contain at most ${schema.maxItems} items.`, "maxItems");
     }
     if (schema.items !== undefined) {
-      value.forEach((item, index) => validateAt(item, schema.items as JsonSchema, `${path}[${index}]`, issues));
+      for (let index = 0; index < value.length; index += 1) {
+        path.push(index);
+        if (!validateAt(value[index], schema.items, path, issues)) json = false;
+        path.pop();
+      }
+    } else if (!value.every(isJsonValue)) {
+      json = false;
     }
   }
 
@@ -116,19 +132,24 @@ function validateAt(value: unknown, schema: JsonSchema, path: string, issues: Va
     const properties = schema.properties ?? {};
     for (const required of schema.required ?? []) {
       if (!Object.prototype.hasOwnProperty.call(record, required)) {
-        push(issues, `${path}.${required}`, "Property is required.", "required");
+        path.push(required);
+        push(issues, path, "Property is required.", "required");
+        path.pop();
       }
     }
     for (const [key, item] of Object.entries(record)) {
-      const childPath = `${path}.${key}`;
+      if (key === "__proto__") json = false;
+      path.push(key);
       const propertySchema = properties[key];
       if (propertySchema !== undefined) {
-        validateAt(item, propertySchema, childPath, issues);
+        if (!validateAt(item, propertySchema, path, issues)) json = false;
       } else if (schema.additionalProperties === false) {
-        push(issues, childPath, "Additional properties are not allowed.", "additionalProperties");
+        push(issues, path, "Additional properties are not allowed.", "additionalProperties");
+        if (!isJsonValue(item)) json = false;
       } else if (schema.additionalProperties !== undefined && schema.additionalProperties !== true) {
-        validateAt(item, schema.additionalProperties, childPath, issues);
-      }
+        if (!validateAt(item, schema.additionalProperties, path, issues)) json = false;
+      } else if (!isJsonValue(item)) json = false;
+      path.pop();
     }
   }
 
@@ -140,15 +161,16 @@ function validateAt(value: unknown, schema: JsonSchema, path: string, issues: Va
     const matches = schema.oneOf.filter((candidate) => validate(candidate, value).valid).length;
     if (matches !== 1) push(issues, path, "Value must match exactly one allowed schema.", "oneOf");
   }
+  return json;
 }
 
 export function validate(schema: JsonSchema, value: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
-  if (!isJsonValue(value)) {
-    push(issues, "$", "Value must be valid JSON (no undefined, functions, symbols, or non-finite numbers).", "json");
-    return { valid: false, issues };
+  if (!validateAt(value, schema, [], issues)) {
+    const jsonIssues: ValidationIssue[] = [];
+    push(jsonIssues, [], "Value must be valid JSON (no undefined, functions, symbols, or non-finite numbers).", "json");
+    return { valid: false, issues: jsonIssues };
   }
-  validateAt(value, schema, "$", issues);
   return { valid: issues.length === 0, issues };
 }
 
