@@ -154,6 +154,18 @@ test("the kernel does not impose an output-size ceiling on tools", async () => {
   assert.deepEqual(result, { ok: true, value: { text: "too large" } });
 });
 
+test("tool descriptors are immutable and cached until registration changes", () => {
+  const kernel = new AgentKernel();
+  const unregister = kernel.register({ name: "test.cached", description: "Cached.", inputSchema: { type: "object" }, execute: () => null });
+  const cached = kernel.descriptors();
+  assert.equal(kernel.descriptors(), cached);
+  assert.equal(Object.isFrozen(cached), true);
+  assert.equal(Object.isFrozen(cached[0].inputSchema), true);
+  unregister();
+  assert.notEqual(kernel.descriptors(), cached);
+  assert.deepEqual(kernel.descriptors(), []);
+});
+
 test("agent loops through multiple tool calls and normalizes tool errors", async () => {
   const kernel = new AgentKernel();
   kernel.register({

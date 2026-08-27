@@ -69,8 +69,14 @@ function failure(code: string, message: string, details?: JsonValue): ToolExecut
 }
 
 function cloneSchema<T extends ToolDefinition["inputSchema"] | NonNullable<ToolDefinition["outputSchema"]>>(schema: T): T {
-  if (typeof structuredClone === "function") return structuredClone(schema);
-  return JSON.parse(JSON.stringify(schema)) as T;
+  const cloned = typeof structuredClone === "function" ? structuredClone(schema) : JSON.parse(JSON.stringify(schema)) as T;
+  return freeze(cloned);
+}
+
+function freeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null) return value;
+  for (const child of Object.values(value)) freeze(child);
+  return Object.freeze(value);
 }
 
 function ownContribution(ownership: (() => void)[], release: () => void): () => void {
@@ -125,6 +131,7 @@ function validateManifest(manifest: PluginManifest): void {
 export class AgentKernel {
   private readonly policy: PermissionPolicy;
   private readonly tools = new Map<string, RegisteredTool>();
+  private toolDescriptors: readonly ToolDescriptor[] | undefined;
   private readonly providers = new Map<string, CapabilityProvider>();
   private readonly grants = new Map<string, Set<string>>();
   private readonly models = new Map<string, ModelAdapter>();
@@ -207,19 +214,23 @@ export class AgentKernel {
       requiredCapabilities,
     };
     this.tools.set(name, registered);
+    this.toolDescriptors = undefined;
     return () => {
-      if (this.tools.get(name) === registered) this.tools.delete(name);
+      if (this.tools.get(name) === registered) {
+        this.tools.delete(name);
+        this.toolDescriptors = undefined;
+      }
     };
   }
 
   descriptors(): readonly ToolDescriptor[] {
-    return [...this.tools.values()].sort((left, right) => left.name.localeCompare(right.name)).map((tool): ToolDescriptor => ({
+    return this.toolDescriptors ??= Object.freeze([...this.tools.values()].sort((left, right) => left.name.localeCompare(right.name)).map((tool): ToolDescriptor => Object.freeze({
       name: tool.name,
       description: tool.description,
-      inputSchema: cloneSchema(tool.inputSchema),
-      requiredCapabilities: [...tool.requiredCapabilities],
-      ...(tool.outputSchema === undefined ? {} : { outputSchema: cloneSchema(tool.outputSchema) }),
-    }));
+      inputSchema: tool.inputSchema,
+      requiredCapabilities: tool.requiredCapabilities,
+      ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+    })));
   }
 
   get descriptorCount(): number {
@@ -533,7 +544,10 @@ export class AgentKernel {
       releaseOwned(installed.ownership);
       const pluginId = installed.manifest.id;
       for (const [name, tool] of this.tools) {
-        if (tool.pluginId === pluginId) this.tools.delete(name);
+        if (tool.pluginId === pluginId) {
+          this.tools.delete(name);
+          this.toolDescriptors = undefined;
+        }
       }
       this.revoke(pluginId);
       if (this.installed.get(pluginId) === installed) this.installed.delete(pluginId);
