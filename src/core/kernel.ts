@@ -260,8 +260,9 @@ export class AgentKernel {
           return this.capability<T>(tool.pluginId, capability, resolved);
         },
       });
-      if (!isJsonValue(result)) return failure("INVALID_TOOL_OUTPUT", "Tool output must be valid JSON.");
-      if (tool.outputSchema !== undefined) {
+      if (tool.outputSchema === undefined) {
+        if (!isJsonValue(result)) return failure("INVALID_TOOL_OUTPUT", "Tool output must be valid JSON.");
+      } else {
         const outputValidation = validate(tool.outputSchema, result);
         if (!outputValidation.valid) {
           return failure("INVALID_TOOL_OUTPUT", formatIssues(outputValidation.issues), issuesAsJson(outputValidation.issues));

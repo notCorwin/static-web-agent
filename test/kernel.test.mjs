@@ -154,6 +154,22 @@ test("the kernel does not impose an output-size ceiling on tools", async () => {
   assert.deepEqual(result, { ok: true, value: { text: "too large" } });
 });
 
+test("tool outputs must be JSON with or without an output schema", async () => {
+  const kernel = new AgentKernel();
+  for (const name of ["untyped", "typed"]) {
+    kernel.register({
+      name,
+      description: "Return invalid JSON.",
+      inputSchema: { type: "null" },
+      ...(name === "typed" ? { outputSchema: { type: "number" } } : {}),
+      execute: () => Number.NaN,
+    });
+    const result = await kernel.executeTool(name, null);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "INVALID_TOOL_OUTPUT");
+  }
+});
+
 test("tool descriptors are immutable and cached until registration changes", () => {
   const kernel = new AgentKernel();
   const unregister = kernel.register({ name: "test.cached", description: "Cached.", inputSchema: { type: "object" }, execute: () => null });
