@@ -157,6 +157,7 @@ export class Harness {
     if (this.selectedModelId !== undefined && this.kernel.modelAdapter(this.selectedModelId) === undefined) {
       this.selectedModelId = undefined;
     }
+    if (this.listeners.size === 0) return;
     const snapshot = this.snapshot();
     for (const listener of this.listeners) {
       try {

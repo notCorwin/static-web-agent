@@ -133,10 +133,17 @@ function assertAssistant(message: AssistantMessage): void {
   }
 }
 
-function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits): void {
+function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits, validateContents = true): void {
   if (!Array.isArray(messages) || messages.length > limits.maxMessages) {
     throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `A run may contain at most ${limits.maxMessages} messages.`);
   }
+  if (Number.isFinite(limits.maxRequestChars)) {
+    const serialized = JSON.stringify(messages) ?? "";
+    if (serialized.length > limits.maxRequestChars) {
+      throw new KernelError("REQUEST_LIMIT_EXCEEDED", `The model request exceeds the ${limits.maxRequestChars}-character limit.`);
+    }
+  }
+  if (!validateContents) return;
   for (const message of messages) {
     if (!isJsonValue(message) || typeof message !== "object" || Array.isArray(message)) {
       throw new KernelError("INVALID_MESSAGES", "Model messages must be JSON objects.");
@@ -161,12 +168,6 @@ function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits):
     if (record.role === "assistant" && record.toolCalls !== undefined) {
       if (!Array.isArray(record.toolCalls)) throw new KernelError("INVALID_MESSAGES", "Assistant tool calls must be an array.");
       for (const call of record.toolCalls) assertToolCall(call as ToolCall);
-    }
-  }
-  if (Number.isFinite(limits.maxRequestChars)) {
-    const serialized = JSON.stringify(messages) ?? "";
-    if (serialized.length > limits.maxRequestChars) {
-      throw new KernelError("REQUEST_LIMIT_EXCEEDED", `The model request exceeds the ${limits.maxRequestChars}-character limit.`);
     }
   }
 }
@@ -326,7 +327,7 @@ export class Agent {
         return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
       }
       try {
-        assertMessages(messages, limits);
+        assertMessages(messages, limits, false);
       } catch (error) {
         return fail(errorInfo(error, "MESSAGE_LIMIT_EXCEEDED"));
       }
@@ -461,7 +462,7 @@ export class Agent {
             ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value) }
             : { role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true };
           messages.push(toolMessage);
-          assertMessages(messages, limits);
+          assertMessages(messages, limits, false);
           if (!result.ok && result.error.code === "TOOL_TIMEOUT") return fail(result.error);
         } catch (error) {
           if (isAbortError(error) || signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
@@ -470,7 +471,7 @@ export class Agent {
           this.emit(request.onEvent, { type: "tool-finished", call, result });
           messages.push({ role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true });
           try {
-            assertMessages(messages, limits);
+            assertMessages(messages, limits, false);
           } catch (limitError) {
             return fail(errorInfo(limitError, "MESSAGE_LIMIT_EXCEEDED"));
           }

@@ -382,6 +382,25 @@ test("agent still accepts explicit caller limits", async () => {
   assert.equal(result.error.code, "MESSAGE_LIMIT_EXCEEDED");
 });
 
+test("agent enforces message limits after tool results", async () => {
+  const kernel = new AgentKernel();
+  kernel.register({
+    name: "test.noop",
+    description: "Return nothing.",
+    inputSchema: { type: "object", additionalProperties: false },
+    execute: () => null,
+  });
+  const model = scriptedAdapter([[
+    { type: "completed", message: { role: "assistant", content: "", toolCalls: [{ id: "noop", name: "test.noop", arguments: {} }] } },
+  ]]);
+  const result = await new Agent(model, kernel).run({
+    messages: [{ role: "user", content: "run" }],
+    limits: { maxMessages: 2 },
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "MESSAGE_LIMIT_EXCEEDED");
+});
+
 test("plugin lifecycle is scoped and unregisters all contribution types", async () => {
   const kernel = new AgentKernel();
   let teardown = false;
