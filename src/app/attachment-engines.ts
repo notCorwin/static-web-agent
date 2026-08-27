@@ -1,5 +1,20 @@
-import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import { PaddleOCR } from "@paddleocr/paddleocr-js";
+// Heavy engines load per attachment type: attaching text, images (vision), or
+// documents should not download the PDF renderer or the OCR stack.
+type PdfModule = typeof import("pdfjs-dist/legacy/build/pdf.mjs");
+type PdfPageProxy = import("pdfjs-dist/legacy/build/pdf.mjs").PDFPageProxy;
+type OcrFactory = Awaited<ReturnType<(typeof import("@paddleocr/paddleocr-js"))["PaddleOCR"]["create"]>>;
+
+let pdfPromise: Promise<PdfModule> | undefined;
+let ocrPromise: Promise<typeof import("@paddleocr/paddleocr-js")> | undefined;
+
+function loadPdf(): Promise<PdfModule> {
+  return (pdfPromise ??= import("pdfjs-dist/legacy/build/pdf.mjs"));
+}
+
+function loadOcr(): Promise<typeof import("@paddleocr/paddleocr-js")> {
+  return (ocrPromise ??= import("@paddleocr/paddleocr-js"));
+}
+
 import type { PdfPageContent, RenderedPdfPage } from "./attachments.js";
 
 interface OcrAssets {
@@ -19,7 +34,7 @@ export interface OcrImageInput {
   readonly mediaType: string;
 }
 
-let paddle: Promise<Awaited<ReturnType<typeof PaddleOCR.create>>> | undefined;
+let paddle: Promise<OcrFactory> | undefined;
 let paddleWorker: Worker | undefined;
 let paddleGeneration = 0;
 
@@ -102,7 +117,7 @@ function getAnydocWorker(workerUrl: string): Worker {
   return worker;
 }
 
-function configurePdfWorker(assets: PdfAssets): void {
+function configurePdfWorker(pdfjs: PdfModule, assets: PdfAssets): void {
   if (pdfWorkerUrl === assets.workerUrl) return;
   pdfjs.GlobalWorkerOptions.workerSrc = assets.workerUrl;
   pdfWorkerUrl = assets.workerUrl;
@@ -125,7 +140,7 @@ function extractPdfText(items: readonly unknown[]): string {
   return value.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
-async function renderPdfPage(page: pdfjs.PDFPageProxy, fileName: string, pageNumber: number, signal: AbortSignal): Promise<RenderedPdfPage> {
+async function renderPdfPage(page: PdfPageProxy, fileName: string, pageNumber: number, signal: AbortSignal): Promise<RenderedPdfPage> {
   throwIfAborted(signal);
   const baseViewport = page.getViewport({ scale: 1 });
   const scale = Math.min(1.8, Math.max(1, 1440 / Math.max(baseViewport.width, baseViewport.height)));
@@ -164,10 +179,11 @@ async function* streamPdf<T>(
   fileName: string,
   signal: AbortSignal,
   assets: PdfAssets,
-  transform: (page: pdfjs.PDFPageProxy, pageNumber: number) => Promise<T>,
+  transform: (page: PdfPageProxy, pageNumber: number) => Promise<T>,
 ): AsyncGenerator<T> {
   throwIfAborted(signal);
-  configurePdfWorker(assets);
+  const pdfjs = await loadPdf();
+  configurePdfWorker(pdfjs, assets);
   const worker = pdfjs.PDFWorker.create({});
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
@@ -199,15 +215,6 @@ async function* streamPdf<T>(
   }
 }
 
-export async function* streamPdfPages(
-  bytes: Uint8Array,
-  fileName: string,
-  signal: AbortSignal,
-  assets: PdfAssets,
-): AsyncGenerator<RenderedPdfPage> {
-  yield* streamPdf(bytes, fileName, signal, assets, (page, pageNumber) => renderPdfPage(page, fileName, pageNumber, signal));
-}
-
 export async function* streamPdfContentPages(
   bytes: Uint8Array,
   fileName: string,
@@ -219,17 +226,6 @@ export async function* streamPdfContentPages(
     if (text.length > 0) return { kind: "text", pageNumber, text };
     return { kind: "image", pageNumber, image: await renderPdfPage(page, fileName, pageNumber, signal) };
   });
-}
-
-export async function renderPdfPages(
-  bytes: Uint8Array,
-  fileName: string,
-  signal: AbortSignal,
-  assets: PdfAssets,
-): Promise<readonly RenderedPdfPage[]> {
-  const pages: RenderedPdfPage[] = [];
-  for await (const page of streamPdfPages(bytes, fileName, signal, assets)) pages.push(page);
-  return pages;
 }
 
 function sortOcrItems(items: readonly { readonly text: string; readonly poly: readonly (readonly [number, number])[] }[]): readonly string[] {
@@ -250,10 +246,13 @@ async function blobFromBytes(data: Uint8Array, mediaType: string): Promise<Blob>
   return new Blob([copy.buffer], { type: mediaType });
 }
 
-async function getPaddle(assets: OcrAssets): Promise<Awaited<ReturnType<typeof PaddleOCR.create>>> {
-  if (paddle === undefined) {
+// ponytail: module-level singletons per engine; moving to an engine-lifecycle class
+// pays off only if hosts start swapping engines mid-session.
+async function getPaddle(assets: OcrAssets): Promise<OcrFactory> {
+  paddle ??= (async (): Promise<OcrFactory> => {
     const generation = ++paddleGeneration;
-    paddle = PaddleOCR.create({
+    const { PaddleOCR } = await loadOcr();
+    return PaddleOCR.create({
       lang: "ch",
       ocrVersion: "PP-OCRv5",
       worker: {
@@ -286,7 +285,7 @@ async function getPaddle(assets: OcrAssets): Promise<Awaited<ReturnType<typeof P
       if (generation === paddleGeneration) paddle = undefined;
       throw error;
     });
-  }
+  })();
   return paddle;
 }
 
@@ -326,10 +325,6 @@ export async function recognizeImages(inputs: readonly OcrImageInput[], assets: 
     signal.removeEventListener("abort", abort);
     void operation.catch(() => undefined);
   }
-}
-
-export async function recognizeImage(data: Uint8Array, mediaType: string, assets: OcrAssets, signal: AbortSignal): Promise<string> {
-  return (await recognizeImages([{ data, mediaType }], assets, signal))[0] ?? "";
 }
 
 export async function disposeAttachmentEngines(): Promise<void> {

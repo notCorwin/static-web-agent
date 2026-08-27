@@ -20,16 +20,18 @@ for (const file of ["index.html", "styles.css", "README.md", "LICENSE"]) await c
 await mkdir("dist/vendor/katex", { recursive: true });
 await copyFile("node_modules/katex/dist/katex.min.css", "dist/vendor/katex/katex.min.css");
 await cp("node_modules/katex/dist/fonts", "dist/vendor/katex/fonts", { recursive: true });
-await build({
-  entryPoints: ["dist/vendor/rendering-runtime.js"],
-  bundle: true,
-  format: "esm",
-  minify: true,
-  outfile: "dist/vendor/rendering-runtime.bundle.js",
-  platform: "browser",
-  sourcemap: false,
-});
-await rename("dist/vendor/rendering-runtime.bundle.js", "dist/vendor/rendering-runtime.js");
+for (const entry of ["markdown-runtime", "katex-runtime", "mermaid-runtime"]) {
+  await build({
+    entryPoints: [`dist/vendor/${entry}.js`],
+    bundle: true,
+    format: "esm",
+    minify: true,
+    outfile: `dist/vendor/${entry}.bundle.js`,
+    platform: "browser",
+    sourcemap: false,
+  });
+  await rename(`dist/vendor/${entry}.bundle.js`, `dist/vendor/${entry}.js`);
+}
 await build({
   entryPoints: ["dist/adapters/ai-sdk.js"],
   bundle: true,
@@ -40,17 +42,22 @@ await build({
   sourcemap: false,
 });
 await rename("dist/adapters/ai-sdk.bundle.js", "dist/adapters/ai-sdk.js");
+// ponytail: splitting emits shared chunks next to the entry; if esbuild chunk
+// hashing ever breaks the ?v= rewrite below, pin output names explicitly.
 await build({
   entryPoints: ["dist/app/attachment-engines.js"],
   bundle: true,
   format: "esm",
   minify: true,
-  outfile: "dist/app/attachment-engines.bundle.js",
+  outdir: "dist/app",
+  allowOverwrite: true,
+  entryNames: "attachment-engines",
+  chunkNames: "attachment-chunk-[hash]",
+  splitting: true,
   platform: "browser",
   external: ["fs", "path"],
   sourcemap: false,
 });
-await rename("dist/app/attachment-engines.bundle.js", "dist/app/attachment-engines.js");
 await mkdir("dist/app/assets", { recursive: true });
 await build({
   entryPoints: ["dist/app/anydoc-worker.js"],
@@ -108,6 +115,6 @@ await writeFile("dist/version.json", `${JSON.stringify({ version: buildVersion }
 
 for (const file of await javascriptFiles("dist")) {
   const source = await readFile(file, "utf8");
-  const versioned = source.replace(/((?:from\s+|import\s*\(\s*)["'])(\.\.?\/[^"]+?\.js)(["'])/g, `$1$2?v=${buildVersion}$3`);
+  const versioned = source.replace(/((?:from\s+|import\s*\(\s*|import\s*)["'])(\.\.?\/[^"]+?\.js)(["'])/g, `$1$2?v=${buildVersion}$3`);
   if (versioned !== source) await writeFile(file, versioned);
 }

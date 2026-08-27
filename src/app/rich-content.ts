@@ -1,4 +1,17 @@
-import { DOMPurify, katex, marked, mermaid } from "../vendor/rendering-runtime.js";
+import { DOMPurify, marked } from "../vendor/markdown-runtime.js";
+
+// katex and mermaid load only when content actually uses them; the markdown
+// runtime (marked + DOMPurify) is small enough to keep on the startup path.
+let katexModule: Promise<typeof import("../vendor/katex-runtime.js")> | undefined;
+let mermaidModule: Promise<typeof import("../vendor/mermaid-runtime.js")> | undefined;
+
+function loadKatex(): Promise<typeof import("../vendor/katex-runtime.js")> {
+  return (katexModule ??= import("../vendor/katex-runtime.js"));
+}
+
+function loadMermaid(): Promise<typeof import("../vendor/mermaid-runtime.js")> {
+  return (mermaidModule ??= import("../vendor/mermaid-runtime.js"));
+}
 
 let mermaidConfigured = false;
 let mermaidSequence = 0;
@@ -14,7 +27,14 @@ interface CommentSyntax {
 
 const mathPattern = /\\\[([\s\S]+?)\\\]|\\\(([\s\S]+?)\\\)|\$\$([\s\S]+?)\$\$|(?<!\\)\$([^$\n]+?)\$/g;
 
-function renderMath(container: HTMLElement): void {
+function containsMath(source: string): boolean {
+  mathPattern.lastIndex = 0;
+  const found = mathPattern.test(source);
+  mathPattern.lastIndex = 0;
+  return found;
+}
+
+async function renderMath(container: HTMLElement): Promise<void> {
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   const textNodes: Text[] = [];
   let current = walker.nextNode();
@@ -24,6 +44,10 @@ function renderMath(container: HTMLElement): void {
     }
     current = walker.nextNode();
   }
+
+  // Skip the katex download entirely when no math syntax is present.
+  if (!textNodes.some((node) => containsMath(node.nodeValue ?? ""))) return;
+  const { katex } = await loadKatex();
 
   for (const node of textNodes) {
     const source = node.nodeValue ?? "";
@@ -52,16 +76,14 @@ function renderMath(container: HTMLElement): void {
   }
 }
 
-function configureMermaid(): void {
-  if (mermaidConfigured) return;
-  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "base" });
-  mermaidConfigured = true;
-}
-
 async function renderMermaidBlocks(container: HTMLElement): Promise<void> {
   const blocks = Array.from(container.querySelectorAll<HTMLElement>("pre > code.language-mermaid, pre > code.lang-mermaid, code.language-mermaid"));
   if (blocks.length === 0) return;
-  configureMermaid();
+  const { mermaid } = await loadMermaid();
+  if (!mermaidConfigured) {
+    mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "base" });
+    mermaidConfigured = true;
+  }
 
   for (const block of blocks) {
     const host = block.parentElement?.tagName === "PRE" ? block.parentElement : block;
@@ -241,7 +263,7 @@ export function renderRichContent(container: HTMLElement, source: string, option
   const html = typeof rendered === "string" ? rendered : source;
   container.innerHTML = String(DOMPurify.sanitize(html));
   if (options.streaming === true) return;
-  renderMath(container);
   enhanceCodeBlocks(container);
+  void renderMath(container);
   void renderMermaidBlocks(container);
 }

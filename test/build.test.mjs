@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -30,9 +30,18 @@ test("the production build emits a cache-busted release manifest and module grap
   }
   const license = await readFile(join(dist, "LICENSE"), "utf8");
   assert.match(license, /Copyright \(c\) 2026 notCorwin/);
-  await access(join(dist, "vendor/rendering-runtime.js"));
+  await access(join(dist, "vendor/markdown-runtime.js"));
+  await access(join(dist, "vendor/katex-runtime.js"));
+  await access(join(dist, "vendor/mermaid-runtime.js"));
+  await assert.rejects(access(join(dist, "vendor/rendering-runtime.js")));
   await access(join(dist, "vendor/katex/katex.min.css"));
   await access(join(dist, "app/attachment-engines.js"));
+  // The engine entry stays tiny; pdf and OCR libraries load as chunks per attachment type.
+  const engines = await readFile(join(dist, "app/attachment-engines.js"), "utf8");
+  assert.ok(engines.length < 64 * 1024, "attachment engine entry must stay small");
+  assert.match(engines, /attachment-chunk-[A-Za-z0-9]+\.js\?v=/);
+  const appFiles = await readdir(join(dist, "app"));
+  assert.ok(appFiles.some((name) => name.startsWith("attachment-chunk-")), "pdf/OCR chunks are missing");
   await access(join(dist, "app/assets/anydoc-worker.js"));
   await access(join(dist, "app/assets/worker-entry-C9UNuyOJ.js"));
   await access(join(dist, "vendor/anydoc/anydoc_wasm_bg.wasm"));

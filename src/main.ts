@@ -1,13 +1,14 @@
 import { startApp } from "./app-entry.js";
 import { reloadIfOutdated } from "./app/update-check.js";
 
+// The stale-build check must not delay startup; it reloads the untouched page
+// once a new deploy is detected.
+void reloadIfOutdated();
+
 const root = document.getElementById("app");
 if (root === null) throw new Error("Application root is missing.");
 
-void reloadIfOutdated().then((reloaded) => {
-  if (reloaded) return;
-  return startApp(root);
-}).catch((error: unknown) => {
+startApp(root).catch((error: unknown) => {
   const main = document.createElement("main");
   main.className = "startup-error";
   main.setAttribute("aria-labelledby", "startup-error-title");

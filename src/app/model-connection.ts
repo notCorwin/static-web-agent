@@ -1,5 +1,4 @@
 import type { HarnessPluginHandle } from "../harness.js";
-import { createRemoteModelPlugin } from "../plugins/remote-model.js";
 import type { Plugin, StateStore } from "../core/types.js";
 import { DEFAULT_THINKING_LEVEL, isConnectionSettings, saveConnectionSettings, THINKING_LEVELS, type ConnectionSettings } from "./connection-settings.js";
 
@@ -203,6 +202,8 @@ export function createModelConnection(options: ModelConnectionOptions): ModelCon
     restore,
     connect: async (settings) => {
       await uninstallCurrent();
+      // The AI SDK (~600KB bundled) is not needed until a remote model connects.
+      const { createRemoteModelPlugin } = await import("../plugins/remote-model.js");
       let handle: HarnessPluginHandle | undefined;
       try {
         handle = await options.harness.install(createRemoteModelPlugin({
