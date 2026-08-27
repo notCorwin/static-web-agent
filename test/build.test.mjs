@@ -41,7 +41,10 @@ test("the production build emits a cache-busted release manifest and module grap
   assert.ok(engines.length < 64 * 1024, "attachment engine entry must stay small");
   assert.match(engines, /attachment-chunk-[A-Za-z0-9]+\.js\?v=/);
   const appFiles = await readdir(join(dist, "app"));
-  assert.ok(appFiles.some((name) => name.startsWith("attachment-chunk-")), "pdf/OCR chunks are missing");
+  const chunks = appFiles.filter((name) => name.startsWith("attachment-chunk-"));
+  assert.ok(chunks.length > 0, "pdf/OCR chunks are missing");
+  const chunkBytes = (await Promise.all(chunks.map((name) => readFile(join(dist, "app", name))))).reduce((total, chunk) => total + chunk.byteLength, 0);
+  assert.ok(chunkBytes < 2 * 1024 * 1024, "worker-only OCR must not bundle OpenCV on the main thread");
   await access(join(dist, "app/assets/anydoc-worker.js"));
   await access(join(dist, "app/assets/worker-entry-C9UNuyOJ.js"));
   await access(join(dist, "vendor/anydoc/anydoc_wasm_bg.wasm"));

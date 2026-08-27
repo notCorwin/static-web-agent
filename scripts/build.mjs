@@ -55,6 +55,7 @@ await build({
   chunkNames: "attachment-chunk-[hash]",
   splitting: true,
   platform: "browser",
+  alias: { "@techstark/opencv-js": "./scripts/worker-only-opencv.js" },
   external: ["fs", "path"],
   sourcemap: false,
 });
