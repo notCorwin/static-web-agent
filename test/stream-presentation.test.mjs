@@ -58,6 +58,15 @@ test("stream presentation detaches from and recovers the latest scroll position"
   assert.equal(presentation.snapshot().followChat, true);
   assert.equal(presentation.snapshot().showScrollButton, false);
 
+  presentation.markUserScrollGesture(true);
+  presentation.onScroll({ scrollTop: 580, scrollHeight: 1000, clientHeight: 400 });
+  assert.equal(presentation.snapshot().followChat, false);
+
+  presentation.scrollToLatest();
+  presentation.onScroll({ scrollTop: 0, scrollHeight: 1000, clientHeight: 400 });
+  assert.equal(presentation.snapshot().scrollToLatest, false);
+  presentation.render();
+  assert.equal(adapter.snapshots.at(-1).scrollToLatest, false);
   presentation.scrollToLatest();
   presentation.render();
   assert.equal(adapter.snapshots.at(-1).scrollToLatest, true);
@@ -88,6 +97,9 @@ test("scroll events update only viewport controls without flushing pending conte
     { followChat: true, viewport: { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 } },
     { followChat: false, viewport: { scrollTop: 0, scrollHeight: 1000, clientHeight: 400 } },
   ]);
+
+  presentation.onScroll({ scrollTop: 100, scrollHeight: 1000, clientHeight: 400 });
+  assert.equal(viewportRenders.length, 2);
 });
 
 test("stream presentation buffers text fragments until a snapshot is requested", () => {
@@ -97,6 +109,18 @@ test("stream presentation buffers text fragments until a snapshot is requested",
   for (const fragment of fragments) presentation.handle({ type: "text-delta", delta: fragment });
 
   assert.equal(presentation.snapshot().pendingStream[0].text, fragments.join(""));
+});
+
+test("stream presentation ignores empty deltas after a segment is established", () => {
+  const presentation = createStreamPresentation(createMemoryStreamPresentationAdapter());
+  presentation.handle({ type: "text-delta", delta: "answer" });
+  const revision = presentation.snapshot().contentRevision;
+  assert.equal(presentation.handle({ type: "text-delta", delta: "" }), false);
+  assert.equal(presentation.handle({ type: "reasoning-delta", delta: "" }), false);
+  assert.equal(presentation.handle({ type: "tool-call-delta", delta: { index: 0 } }), true);
+  const toolRevision = presentation.snapshot().contentRevision;
+  assert.equal(presentation.handle({ type: "tool-call-delta", delta: { index: 0, arguments: "" } }), false);
+  assert.equal(revision + 1, toolRevision);
 });
 
 test("stream presentation buffers large tool arguments until a snapshot is requested", () => {
@@ -169,7 +193,7 @@ test("viewport changes reuse the frozen stream content snapshot", () => {
   assert.notEqual(afterDelta.pendingStream, afterScroll.pendingStream);
 });
 
-test("the DOM adapter scrolls once per followed render without a trailing layout pass", async () => {
+test("the DOM adapter skips redundant followed-scroll writes", async () => {
   const access = { scrollTop: 0, scrollHeight: 0, clientHeight: 0, writes: 0 };
   let scrollTop = 0;
   const chat = {
@@ -187,8 +211,9 @@ test("the DOM adapter scrolls once per followed render without a trailing layout
   });
 
   adapter.render({ pendingToolCalls: [], liveToolEntries: [], pendingStream: [], contentRevision: 0, followChat: true, showScrollButton: false, scrollToLatest: false });
+  adapter.render({ pendingToolCalls: [], liveToolEntries: [], pendingStream: [], contentRevision: 0, followChat: true, showScrollButton: false, scrollToLatest: false });
   await new Promise((resolve) => setTimeout(resolve, 60));
 
   assert.equal(scrollTop, 600);
-  assert.deepEqual(access, { scrollTop: 0, scrollHeight: 1, clientHeight: 1, writes: 1 });
+  assert.deepEqual(access, { scrollTop: 2, scrollHeight: 2, clientHeight: 2, writes: 1 });
 });

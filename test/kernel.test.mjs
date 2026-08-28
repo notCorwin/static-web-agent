@@ -313,6 +313,7 @@ test("agent forwards streaming tool-call deltas and reconstructs their arguments
   });
   const model = scriptedAdapter([
     [
+      { type: "tool-call-delta", delta: { index: 0, arguments: "" } },
       { type: "tool-call-delta", delta: { index: 0, id: "stream-call", name: "test.", arguments: '{"value":"' } },
       { type: "tool-call-delta", delta: { index: 0, name: "echo", arguments: 'ok"}' } },
       { type: "completed", message: { role: "assistant", content: "" } },
@@ -329,10 +330,12 @@ test("agent forwards streaming tool-call deltas and reconstructs their arguments
 
 test("agent forwards and preserves streaming reasoning text", async () => {
   const model = scriptedAdapter([[
+    { type: "reasoning-delta", delta: "" },
     { type: "reasoning-delta", delta: "first" },
     { type: "reasoning-delta", delta: " second" },
+    { type: "text-delta", delta: "" },
     { type: "text-delta", delta: "answer" },
-    { type: "completed", message: { role: "assistant", content: "" } },
+    { type: "completed", message: { role: "assistant", content: "", reasoning: "" } },
   ]]);
   const events = [];
   const result = await new Agent(model, new AgentKernel()).run({
@@ -343,6 +346,23 @@ test("agent forwards and preserves streaming reasoning text", async () => {
   assert.equal(result.response.content, "answer");
   assert.equal(result.response.reasoning, "first second");
   assert.deepEqual(events.filter((event) => event.type === "reasoning-delta").map((event) => event.delta), ["first", " second"]);
+  assert.deepEqual(events.filter((event) => event.type === "text-delta").map((event) => event.delta), ["answer"]);
+});
+
+test("agent yields between bursty stream events so the host can paint", async () => {
+  let hostTaskRan = false;
+  const timer = setTimeout(() => { hostTaskRan = true; }, 0);
+  const model = {
+    id: "bursty-stream",
+    async *stream() {
+      for (let index = 0; index < 64; index += 1) yield { type: "text-delta", delta: "x" };
+      yield { type: "completed", message: { role: "assistant", content: "x".repeat(64) } };
+    },
+  };
+  const result = await new Agent(model, new AgentKernel()).run({ messages: [], onEvent: () => {} });
+  clearTimeout(timer);
+  assert.equal(result.status, "completed");
+  assert.equal(hostTaskRan, true);
 });
 
 test("agent termination is deterministic at max turns", async () => {
@@ -1063,6 +1083,23 @@ test("AI SDK adapter streams reasoning and forwards the selected thinking level"
   assert.equal(requestHeaders["user-agent"], undefined, "the browser adapter must not send User-Agent in CORS requests");
 });
 
+test("AI SDK adapter buffers many streamed text fragments without changing the final message", async () => {
+  const fragments = Array.from({ length: 4_000 }, (_, index) => String.fromCharCode(97 + (index % 26)));
+  const adapter = new AiSdkAdapter({
+    endpoint: "https://example.test/v1",
+    model: "demo",
+    fetcher: async () => sseResponse([
+      { choices: [{ delta: { content: "" } }] },
+      ...fragments.map((text) => ({ choices: [{ delta: { content: text } }] })),
+      { choices: [{ delta: {}, finish_reason: "stop" }] },
+    ]),
+  });
+  const events = [];
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "long" }], tools: [], signal: noSignal() })) events.push(event);
+  assert.equal(events.filter((event) => event.type === "text-delta").length, fragments.length);
+  assert.equal(events.at(-1).message.content, fragments.join(""));
+});
+
 test("AI SDK adapter resolves versioned API bases to chat completions", async () => {
   let requestUrl;
   const adapter = new AiSdkAdapter({
@@ -1199,6 +1236,7 @@ test("AI SDK adapter preserves streaming text and tool input deltas", async () =
     fetcher: async () => sseResponse([
       { choices: [{ delta: { content: "hello" } }] },
       { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", function: { name: "runtime_javascript", arguments: '{"code":"' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "" } }] } }] },
       { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'return 42"}' } } ] } }] },
       { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
     ]),

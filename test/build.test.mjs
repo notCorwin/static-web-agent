@@ -15,7 +15,7 @@ test("the production build emits a cache-busted release manifest and module grap
   const html = await readFile(join(dist, "index.html"), "utf8");
   assert.match(html, new RegExp(`<meta name="build-version" content="${version}"`));
   assert.match(html, new RegExp(`href="\\./styles\\.css\\?v=${version}"`));
-  assert.match(html, new RegExp(`href="\\./vendor/katex/katex\\.min\\.css\\?v=${version}"`));
+  assert.doesNotMatch(html, /href="\.\/vendor\/katex\/katex\.min\.css/);
   assert.match(html, new RegExp(`src="\\./main\\.js\\?v=${version}"`));
 
   const main = await readFile(join(dist, "main.js"), "utf8");
@@ -35,6 +35,9 @@ test("the production build emits a cache-busted release manifest and module grap
   await access(join(dist, "vendor/mermaid-runtime.js"));
   await assert.rejects(access(join(dist, "vendor/rendering-runtime.js")));
   await access(join(dist, "vendor/katex/katex.min.css"));
+  const richContent = await readFile(join(dist, "app/rich-content.js"), "utf8");
+  assert.match(richContent, /data-katex-style/);
+  assert.match(richContent, /katex\.min\.css/);
   await access(join(dist, "app/attachment-engines.js"));
   // The engine entry stays tiny; pdf and OCR libraries load as chunks per attachment type.
   const engines = await readFile(join(dist, "app/attachment-engines.js"), "utf8");

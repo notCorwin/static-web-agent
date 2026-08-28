@@ -339,8 +339,8 @@ export class AiSdkAdapter implements ModelAdapter {
       },
     });
 
-    let content = "";
-    let reasoning = "";
+    const content: string[] = [];
+    const reasoning: string[] = [];
     let finalUsage: ModelUsage | undefined;
     let sawFinish = false;
     const calls = new Map<string, ToolCallDraft>();
@@ -352,11 +352,13 @@ export class AiSdkAdapter implements ModelAdapter {
         throwIfAborted(request.signal);
         switch (part.type) {
           case "text-delta":
-            content += part.text;
+            if (part.text.length === 0) break;
+            content.push(part.text);
             yield { type: "text-delta", delta: part.text };
             break;
           case "reasoning-delta":
-            reasoning += part.text;
+            if (part.text.length === 0) break;
+            reasoning.push(part.text);
             yield { type: "reasoning-delta", delta: part.text };
             break;
           case "tool-input-start": {
@@ -369,6 +371,7 @@ export class AiSdkAdapter implements ModelAdapter {
             break;
           }
           case "tool-input-delta": {
+            if (part.delta.length === 0) break;
             const index = indexes.get(part.id) ?? nextIndex++;
             indexes.set(part.id, index);
             const delta: ToolCallDelta = { index, arguments: part.delta };
@@ -404,12 +407,14 @@ export class AiSdkAdapter implements ModelAdapter {
     const normalizedCalls: ToolCall[] = [...calls.values()]
       .sort((left, right) => left.index - right.index)
       .map(({ id, name, input }) => ({ id, name, arguments: input }));
-    if (content.trim().length === 0 && normalizedCalls.length === 0) {
+    const contentText = content.join("");
+    const reasoningText = reasoning.join("");
+    if (contentText.trim().length === 0 && normalizedCalls.length === 0) {
       throw new ModelAdapterError("Model returned an empty response.", undefined, "MODEL_EMPTY_RESPONSE");
     }
     const message: AssistantMessage = normalizedCalls.length === 0
-      ? { role: "assistant", content, ...(reasoning.length === 0 ? {} : { reasoning }) }
-      : { role: "assistant", content, ...(reasoning.length === 0 ? {} : { reasoning }), toolCalls: normalizedCalls };
+      ? { role: "assistant", content: contentText, ...(reasoningText.length === 0 ? {} : { reasoning: reasoningText }) }
+      : { role: "assistant", content: contentText, ...(reasoningText.length === 0 ? {} : { reasoning: reasoningText }), toolCalls: normalizedCalls };
     yield { type: "completed", message, ...(finalUsage === undefined ? {} : { usage: finalUsage }) };
   }
 }

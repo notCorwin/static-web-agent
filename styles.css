@@ -13,7 +13,7 @@
   --control-line-height: 20px;
   --text: #111111;
   --muted: #666666;
-  --faint: #888888;
+  --faint: #767676;
   --accent: #111111;
   --accent-strong: #333333;
   --accent-ink: #ffffff;
@@ -97,6 +97,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   border-color: var(--control-focus);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
+.checkbox-label input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
 .composer-input-row:focus-within {
   border-color: var(--control-focus);
   box-shadow: 0 0 0 3px var(--focus-ring);
@@ -229,6 +230,7 @@ button:disabled { cursor: not-allowed; opacity: .58; }
   gap: 14px;
   padding: 28px clamp(18px, 4vw, 48px);
   overflow: auto;
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
   overflow-anchor: none;
 }
@@ -250,6 +252,8 @@ button:disabled { cursor: not-allowed; opacity: .58; }
 .message.assistant { align-self: center; width: min(100%, 1100px); max-width: 1100px; }
 .message.tool { align-self: start; }
 .message-body { min-width: 0; border: 1px solid var(--border); border-radius: 14px; padding: 13px 15px; background: var(--surface-raised); line-height: 1.6; overflow-wrap: anywhere; white-space: normal; }
+.message-body.plain-text, .thinking-body.plain-text { white-space: pre-wrap; }
+.streaming-plain-prefix { white-space: pre-wrap; }
 .message.assistant .message-body { border: 0; border-radius: 0; padding: 0; background: transparent; }
 .message.user .message-body { border-color: var(--user-border); background: var(--user-surface); }
 .pending .message-body { border-style: dashed; }

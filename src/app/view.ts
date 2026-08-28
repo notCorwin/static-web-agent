@@ -26,7 +26,7 @@ export function renderShell(root: HTMLElement): AppElements {
           </details>
         </div>
 
-        <section class="chat-scroll" id="chat-log" aria-label="Conversation" aria-busy="true">
+        <section class="chat-scroll" id="chat-log" tabindex="0" aria-label="Conversation" aria-busy="true">
           <section class="connection-card" id="connection-card" aria-labelledby="connection-title">
             <div class="connection-intro">
               <h2 id="connection-title">Connect your cloud model</h2>
@@ -298,7 +298,7 @@ export function streamingToolElement(delta: ToolCallDelta, key = `stream-${delta
   summary.textContent = `${delta.name?.trim() || "tool"} · preparing`;
   const body = document.createElement("div");
   body.className = "tool-detail-body";
-  body.textContent = delta.arguments?.trim() || "Waiting for arguments…";
+  body.textContent = delta.arguments === undefined || delta.arguments.length === 0 ? "Waiting for arguments…" : delta.arguments;
   details.append(summary, body);
   return details;
 }
@@ -310,10 +310,14 @@ export function updateStreamingToolElement(details: HTMLDetailsElement, delta: T
   const body = details.querySelector<HTMLElement>(":scope > .tool-detail-body");
   if (summary === null || body === null) return;
   const nextSummary = `${delta.name?.trim() || "tool"} · preparing`;
-  const nextBody = delta.arguments?.trim() || "Waiting for arguments…";
+  // ponytail: tool arguments are append-only JSON; trim would rescan the full buffer on every frame.
+  const nextBody = delta.arguments === undefined || delta.arguments.length === 0 ? "Waiting for arguments…" : delta.arguments;
   if (summary.textContent !== nextSummary) summary.textContent = nextSummary;
   const text = body.firstChild;
-  if (text instanceof Text && text === body.lastChild && nextBody.startsWith(text.data)) text.appendData(nextBody.slice(text.data.length));
+  // ponytail: tool deltas are append-only; a bounded prefix check avoids rescanning the full argument each frame.
+  const prefixLength = Math.min(32, text instanceof Text ? text.data.length : 0);
+  if (text instanceof Text && text === body.lastChild && nextBody.length > text.data.length
+    && nextBody.slice(0, prefixLength) === text.data.slice(0, prefixLength)) text.appendData(nextBody.slice(text.data.length));
   else if (body.textContent !== nextBody) body.textContent = nextBody;
   if (!details.open) details.open = true;
 }

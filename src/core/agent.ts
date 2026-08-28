@@ -29,6 +29,7 @@ const DEFAULT_AGENT_LIMITS: AgentLimits = Object.freeze({
 });
 
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
+const STREAM_EVENT_YIELD_BATCH = 32;
 
 function runId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
@@ -56,6 +57,24 @@ function throwIfAborted(signal: AbortSignal): void {
   const error = new Error("Operation cancelled.");
   error.name = "AbortError";
   throw error;
+}
+
+function yieldToHost(signal: AbortSignal): Promise<void> {
+  // ponytail: MessageChannel yields without nested-timer clamping; setTimeout is the legacy fallback.
+  const task = typeof MessageChannel === "function"
+    ? new Promise<void>((resolve) => {
+        const channel = new MessageChannel();
+        channel.port1.onmessage = () => {
+          channel.port1.close();
+          channel.port2.close();
+          resolve();
+        };
+        channel.port2.postMessage(0);
+      })
+    : new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+  return task.then(() => {
+    throwIfAborted(signal);
+  });
 }
 
 function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined): ModelUsage | undefined {
@@ -372,6 +391,7 @@ export class Agent {
           });
           const currentIterator = iterable[Symbol.asyncIterator]();
           iterator = currentIterator;
+          let eventsSinceYield = 0;
           try {
             while (true) {
               const next = await currentIterator.next();
@@ -385,6 +405,7 @@ export class Agent {
               switch (event.type) {
                 case "text-delta":
                   if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
+                  if (event.delta.length === 0) break;
                   streamedText.push(event.delta);
                   streamedTextLength += event.delta.length;
                   if (streamedTextLength > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
@@ -392,6 +413,7 @@ export class Agent {
                   break;
                 case "reasoning-delta":
                   if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid reasoning delta.");
+                  if (event.delta.length === 0) break;
                   streamedReasoning.push(event.delta);
                   streamedReasoningLength += event.delta.length;
                   if (streamedReasoningLength > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model reasoning is too large.");
@@ -399,6 +421,9 @@ export class Agent {
                   break;
                 case "tool-call-delta": {
                   assertToolCallDelta(event.delta);
+                  if (event.delta.id === undefined
+                    && (event.delta.name === undefined || event.delta.name.length === 0)
+                    && (event.delta.arguments === undefined || event.delta.arguments.length === 0)) break;
                   let draft = streamedCallDeltas.get(event.delta.index);
                   if (draft === undefined) {
                     draft = { id: `call-${event.delta.index + 1}`, name: [], arguments: [] };
@@ -433,6 +458,11 @@ export class Agent {
                   break;
                 default:
                   throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
+              }
+              if (request.onEvent !== undefined && ++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
+                // Keep a bursty provider from starving the browser's paint and input tasks.
+                eventsSinceYield = 0;
+                await yieldToHost(signal);
               }
             }
           } finally {
@@ -484,9 +514,15 @@ export class Agent {
         if (callIds.has(call.id)) return fail({ code: "INVALID_MODEL_OUTPUT", message: "Model returned duplicate tool call IDs." });
         callIds.add(call.id);
       }
-      const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedText.join("") };
-      const content = baseAssistant.content.length === 0 && streamedTextLength > 0 ? streamedText.join("") : baseAssistant.content;
-      const reasoning = baseAssistant.reasoning === undefined && streamedReasoningLength > 0 ? streamedReasoning.join("") : baseAssistant.reasoning;
+      const needsStreamedContent = completed === undefined || (completed.content.length === 0 && streamedTextLength > 0);
+      const streamedContent = needsStreamedContent ? streamedText.join("") : "";
+      const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedContent };
+      // ponytail: join the append-only fallback only when completion omits the streamed body.
+      const content = baseAssistant.content.length === 0 && streamedTextLength > 0 ? streamedContent : baseAssistant.content;
+      const reasoning = streamedReasoningLength > 0
+        && (baseAssistant.reasoning === undefined || baseAssistant.reasoning.length === 0)
+        ? streamedReasoning.join("")
+        : baseAssistant.reasoning;
       const assistant: AssistantMessage = {
         role: "assistant",
         content,

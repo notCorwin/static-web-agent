@@ -123,18 +123,24 @@ async function startStaticServer() {
         if (pathname === "/test-scroll") {
           const chunks = [
             "Preparing response…\n\n",
-            "# Streaming heading\n\n",
+            "#",
+            " Streaming heading\n\n",
             Array.from({ length: 32 }, (_, index) => `Scroll line ${index + 1}`).join("\n") + "\n",
             ...Array.from({ length: 20 }, (_, index) => `stream chunk ${index + 1}\n`),
-            "The stream finished.\n",
+            " Visit http",
+            "s://example.com. ",
+            "The stream finished.",
+            " trailing",
+            " tail.\n",
           ];
           let index = 0;
           const sendChunk = () => {
             if (response.destroyed) return;
             if (index < chunks.length) {
-              response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[index] } }] })}\n\n`);
+              const chunk = chunks[index];
+              response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`);
               index += 1;
-              setTimeout(sendChunk, 250);
+              setTimeout(sendChunk, chunk === "The stream finished." ? 1000 : chunk === " trailing" ? 5000 : 250);
               return;
             }
             response.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n');
@@ -407,8 +413,10 @@ try {
     sendButtonDisplay: getComputedStyle(document.querySelector('#send-button')).display,
     sendButtonLabel: document.querySelector('#send-button .button-label')?.textContent,
     compactComposer: parseFloat(getComputedStyle(document.querySelector('#message-input')).minHeight) <= 64,
+    noKatexStyle: document.querySelector('link[data-katex-style]') === null,
   })`);
-  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonHidden: true, sendButtonDisplay: "none", sendButtonLabel: "Stop", compactComposer: true });
+  assert.deepEqual(initialUi, { noWorkspaceNavigation: true, noRuntimeSurface: true, noOfflineControl: true, noChatHeader: true, noConnectionBar: true, connectionCardVisible: true, noComposerRows: true, noSeparateCancelButton: true, sendButtonHidden: true, sendButtonDisplay: "none", sendButtonLabel: "Stop", compactComposer: true, noKatexStyle: true });
+  assert.equal(await page.evaluate("document.querySelector('#chat-log')?.tabIndex === 0"), true, "the conversation viewport should be keyboard-scrollable");
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
   await waitFor(page, "getComputedStyle(document.documentElement).colorScheme === 'dark'");
   const darkTheme = await page.evaluate(`(() => ({
@@ -466,6 +474,7 @@ try {
       thinkingValue: document.querySelector('#thinking-level').value,
       thinkingLabel: document.querySelector('label[for="thinking-level"]').textContent,
       thinkingHelp: document.querySelector('#thinking-level-help').textContent,
+      thinkingHelpColor: getComputedStyle(document.querySelector('#thinking-level-help')).color,
     };
   })()`);
   assert.ok(Math.abs(connectionLayout.cardCenter.x - connectionLayout.chatCenter.x) <= 1, "the connection card should be horizontally centered in the chat viewport");
@@ -483,6 +492,7 @@ try {
   assert.equal(connectionLayout.thinkingValue, "provider-default");
   assert.equal(connectionLayout.thinkingLabel, "Thinking level");
   assert.ok(connectionLayout.thinkingHelp.includes("reasoning"));
+  assert.equal(connectionLayout.thinkingHelpColor, "rgb(118, 118, 118)", "visible helper text should keep readable light-theme contrast");
   assert.ok(connectionLayout.composerHeight <= 50, "the message composer should stay compact");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
   const mobileConnectionLayout = await page.evaluate(`(() => {
@@ -521,6 +531,13 @@ try {
     assert.equal(item.outlineWidth, "0px");
     assert.ok(item.boxShadow !== "none" && item.boxShadow.includes("0px 0px 0px 3px"), `${item.selector} should show a visible focus ring`);
   }
+  const checkboxFocus = await page.evaluate(`(() => {
+    const input = document.querySelector('#model-vision');
+    input.focus();
+    const style = getComputedStyle(input);
+    return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, outlineOffset: style.outlineOffset };
+  })()`);
+  assert.deepEqual(checkboxFocus, { outlineStyle: "solid", outlineWidth: "3px", outlineOffset: "3px" }, "the vision checkbox should keep a visible keyboard focus ring");
   const composerFocus = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.focus();
@@ -988,8 +1005,8 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('.message.assistant:last-of-type .message-body h1')?.textContent === 'Rich response' && document.querySelector('.message.assistant:last-of-type .katex') !== null && document.querySelector('.message.assistant:last-of-type .mermaid-diagram svg') !== null", 20_000);
-  const richFeatures = await page.evaluate("(() => { const assistant = Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1); const user = Array.from(document.querySelectorAll('.message.user .message-body')).at(-1); return { assistantMarkdown: assistant?.querySelector('h1')?.textContent === 'Rich response', assistantLatex: assistant?.querySelector('.katex') !== null, assistantMermaid: assistant?.querySelector('.mermaid-diagram svg') !== null, userMarkdown: user?.querySelector('h1')?.textContent === 'User rich', userLatex: user?.querySelector('.katex') !== null }; })()");
-  assert.deepEqual(richFeatures, { assistantMarkdown: true, assistantLatex: true, assistantMermaid: true, userMarkdown: true, userLatex: true });
+  const richFeatures = await page.evaluate("(() => { const assistant = Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1); const user = Array.from(document.querySelectorAll('.message.user .message-body')).at(-1); return { assistantMarkdown: assistant?.querySelector('h1')?.textContent === 'Rich response', assistantLatex: assistant?.querySelector('.katex') !== null, assistantMermaid: assistant?.querySelector('.mermaid-diagram svg') !== null, userMarkdown: user?.querySelector('h1')?.textContent === 'User rich', userLatex: user?.querySelector('.katex') !== null, katexStyleLoaded: document.querySelector('link[data-katex-style]')?.getAttribute('href')?.includes('/vendor/katex/katex.min.css') === true }; })()");
+  assert.deepEqual(richFeatures, { assistantMarkdown: true, assistantLatex: true, assistantMermaid: true, userMarkdown: true, userLatex: true, katexStyleLoaded: true });
   await waitFor(page, "document.querySelector('.message.assistant:last-of-type .code-copy-button') !== null");
   const longCodeLayout = await page.evaluate(`(() => {
     const assistant = document.querySelector('.message.assistant:last-of-type .message-body');
@@ -1016,6 +1033,304 @@ try {
     chatHasNoHorizontalOverflow: true,
     sourceOnly: true,
   });
+  const streamingCode = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    const parts = ['before\\n\\n\`\`\`js\\nconst first = 1;\\n', 'const second = 2;\\n', '\`\`\`\\n\\nAfter'];
+    let source = '';
+    let textNode;
+    let appendNodeStable = false;
+    for (const part of parts) {
+      source += part;
+      renderRichContent(body, source, { streaming: true });
+      if (textNode === undefined) textNode = body.querySelector('pre > code')?.firstChild;
+      else if (!appendNodeStable) appendNodeStable = textNode === body.querySelector('pre > code')?.firstChild;
+    }
+    const streamText = body.querySelector('pre > code')?.textContent;
+    renderRichContent(body, source);
+    const finalCode = body.querySelector('.code-block pre > code')?.textContent;
+    body.remove();
+    return { streamText, appendNodeStable, finalCode };
+  })()`);
+  assert.deepEqual(streamingCode, { streamText: 'const first = 1;\nconst second = 2;\n', appendNodeStable: true, finalCode: 'const first = 1;\nconst second = 2;\n' }, "streaming fenced code should append in place and reparse once when it closes");
+  const streamingFenceSemantics = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    const fence = String.fromCharCode(96).repeat(3);
+    let source = fence + 'js\\nconst first = 1;\\n';
+    renderRichContent(body, source, { streaming: true });
+    source += fence + 'not-close\\nstill code\\n';
+    renderRichContent(body, source, { streaming: true });
+    const code = body.querySelector('pre > code')?.textContent ?? '';
+    const midStream = { codeKeepsFenceLikeLine: code.includes(fence + 'not-close\\nstill code'), noOutsideParagraph: body.querySelectorAll('p').length === 0 };
+    source += fence + '\\noutside';
+    renderRichContent(body, source, { streaming: true });
+    const finalCode = body.querySelector('pre > code')?.textContent ?? '';
+    const result = { ...midStream, finalCodeKeepsFenceLikeLine: finalCode.includes(fence + 'not-close\\nstill code'), finalOutside: body.textContent?.trimEnd().endsWith('outside') ?? false };
+    body.remove();
+    return result;
+  })()`);
+  assert.deepEqual(streamingFenceSemantics, { codeKeepsFenceLikeLine: true, noOutsideParagraph: true, finalCodeKeepsFenceLikeLine: true, finalOutside: true }, "streaming fenced code should not close on a fence-like line with trailing text");
+  const unicodeStreaming = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    const source = '😀'.repeat(10) + '\\n\\n**bold**';
+    renderRichContent(body, source, { streaming: true });
+    const result = { text: body.textContent, strong: body.querySelector('strong')?.textContent, replacement: body.textContent?.includes('�') ?? false };
+    body.remove();
+    return result;
+  })()`);
+  assert.deepEqual(unicodeStreaming, { text: '😀'.repeat(10) + '\nbold\n', strong: 'bold', replacement: false }, "streaming boundaries should remain UTF-16 safe for non-BMP text");
+  const lateMarkdownBudget = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const { marked } = await import('/dist/vendor/markdown-runtime.js?v=${release.version}');
+    const previousParse = marked.parse;
+    const parsedLengths = [];
+    marked.parse = (value, options) => {
+      parsedLengths.push(value.length);
+      return previousParse(value, options);
+    };
+    const body = document.createElement('div');
+    document.body.append(body);
+    const prefix = Array.from({ length: 1_200 }, (_, index) => 'plain line ' + index).join('\\n') + '\\n';
+    let source = prefix;
+    try {
+      renderRichContent(body, source, { streaming: true });
+      source += '# late heading\\n\\nanswer';
+      renderRichContent(body, source, { streaming: true });
+      return {
+        maxParsedLength: Math.max(...parsedLengths),
+        sourceLength: source.length,
+        heading: body.querySelector('h1')?.textContent,
+        prefixRetained: body.textContent?.includes('plain line 0'),
+        prefixWhiteSpace: getComputedStyle(body.querySelector('.streaming-plain-prefix')).whiteSpace,
+        answer: body.textContent?.trimEnd().endsWith('answer'),
+      };
+    } finally {
+      marked.parse = previousParse;
+      body.remove();
+    }
+  })()`);
+  assert.ok(lateMarkdownBudget.sourceLength > 15_000, "late Markdown should exercise a long confirmed-plain prefix");
+  assert.ok(lateMarkdownBudget.maxParsedLength <= 5_000, `late Markdown should parse only a bounded tail, got ${lateMarkdownBudget.maxParsedLength}`);
+  assert.deepEqual({ heading: lateMarkdownBudget.heading, prefixRetained: lateMarkdownBudget.prefixRetained, prefixWhiteSpace: lateMarkdownBudget.prefixWhiteSpace, answer: lateMarkdownBudget.answer }, { heading: 'late heading', prefixRetained: true, prefixWhiteSpace: 'pre-wrap', answer: true }, "late Markdown should preserve plain-prefix line breaks while rendering the rich tail");
+  const lateFenceTransition = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    const fence = String.fromCharCode(96).repeat(3);
+    let source = Array.from({ length: 1_200 }, (_, index) => 'plain line ' + index).join('\\n') + '\\n';
+    renderRichContent(body, source, { streaming: true });
+    source += fence + 'js\\nconst first = 1;\\n';
+    renderRichContent(body, source, { streaming: true });
+    const firstText = body.querySelector('pre > code')?.firstChild;
+    source += 'const second = 2;\\n';
+    renderRichContent(body, source, { streaming: true });
+    const code = body.querySelector('pre > code');
+    const result = { sourceLength: source.length, nodeStable: firstText === code?.firstChild, code: code?.textContent };
+    body.remove();
+    return result;
+  })()`);
+  assert.ok(lateFenceTransition.sourceLength > 15_000, "late code fences should exercise a long confirmed-plain prefix");
+  assert.deepEqual({ nodeStable: lateFenceTransition.nodeStable, code: lateFenceTransition.code }, { nodeStable: true, code: 'const first = 1;\nconst second = 2;\n' }, "late Markdown transitions should recover a bounded fenced-code tail and append it in place");
+  const lateFenceLargeDelta = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    const fence = String.fromCharCode(96).repeat(3);
+    const prefix = Array.from({ length: 1_200 }, (_, index) => 'plain line ' + index).join('\\n') + '\\n';
+    let source = prefix;
+    renderRichContent(body, source, { streaming: true });
+    source += fence + 'js\\nconst first = 1;\\n' + 'x'.repeat(6_000);
+    renderRichContent(body, source, { streaming: true });
+    const firstText = body.querySelector('pre > code')?.firstChild;
+    source += '\\nconst second = 2;\\n';
+    renderRichContent(body, source, { streaming: true });
+    const code = body.querySelector('pre > code');
+    const result = { sourceLength: source.length, nodeStable: firstText === code?.firstChild, code: code?.textContent };
+    body.remove();
+    return result;
+  })()`);
+  assert.ok(lateFenceLargeDelta.sourceLength > 20_000, "a large late fence chunk should exercise transition recovery beyond the bounded tail");
+  assert.deepEqual({ nodeStable: lateFenceLargeDelta.nodeStable, code: lateFenceLargeDelta.code }, { nodeStable: true, code: 'const first = 1;\n' + 'x'.repeat(6_000) + '\nconst second = 2;\n' }, "a large late Markdown chunk should retain fenced-code semantics and append without reparsing");
+  const closedFenceBudget = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const { marked } = await import('/dist/vendor/markdown-runtime.js?v=${release.version}');
+    const previousParse = marked.parse;
+    const parsedLengths = [];
+    marked.parse = (value, options) => {
+      parsedLengths.push(value.length);
+      return previousParse(value, options);
+    };
+    const body = document.createElement('div');
+    document.body.append(body);
+    const fence = String.fromCharCode(96).repeat(3);
+    let source = fence + 'js\\n' + 'x'.repeat(12_000) + '\\n' + fence + '\\n';
+    try {
+      renderRichContent(body, source, { streaming: true });
+      const initialParseCount = parsedLengths.length;
+      for (const value of ['tail one', ' tail two', ' tail three']) {
+        source += value;
+        renderRichContent(body, source, { streaming: true });
+      }
+      return {
+        initialParseCount,
+        maxAfterClose: Math.max(...parsedLengths.slice(initialParseCount)),
+        codeLength: body.querySelector('pre > code')?.textContent?.length ?? 0,
+        tail: body.textContent?.includes('tail one tail two tail three') ?? false,
+      };
+    } finally {
+      marked.parse = previousParse;
+      body.remove();
+    }
+  })()`);
+  assert.ok(closedFenceBudget.initialParseCount > 0, "a large closed fence should parse its initial block");
+  assert.ok(closedFenceBudget.maxAfterClose <= 64, `closed fenced content should not be reparsed with each tail token, got ${closedFenceBudget.maxAfterClose}`);
+  assert.equal(closedFenceBudget.codeLength, 12_001, "the closed fenced block should retain its complete source");
+  assert.equal(closedFenceBudget.tail, true, `tail text should remain visible after a large closed fenced block: ${JSON.stringify(closedFenceBudget)}`);
+  const plainTextFastPath = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const { marked } = await import('/dist/vendor/markdown-runtime.js?v=${release.version}');
+    const previousParse = marked.parse;
+    let parseCalls = 0;
+    marked.parse = (...args) => {
+      parseCalls += 1;
+      return previousParse(...args);
+    };
+    const body = document.createElement('div');
+    const tableBody = document.createElement('div');
+    const reusedBody = document.createElement('div');
+    document.body.append(body);
+    document.body.append(tableBody);
+    document.body.append(reusedBody);
+    const source = 'x'.repeat(100_000) + '\\nnext line';
+    const tableSource = '| first | second |\\r\\n| --- | --- |\\r\\n| one | two |';
+    try {
+      renderRichContent(body, source);
+      renderRichContent(tableBody, tableSource);
+      renderRichContent(reusedBody, 'plain', { streaming: true });
+      const streamedPlainClass = reusedBody.classList.contains('plain-text');
+      let streamedPlainClassMutations = 0;
+      const classObserver = new MutationObserver((records) => { streamedPlainClassMutations += records.length; });
+      classObserver.observe(reusedBody, { attributes: true, attributeFilter: ['class'] });
+      let streamedSource = 'plain';
+      for (const value of [' text', ' that', ' stays', ' plain']) {
+        streamedSource += value;
+        renderRichContent(reusedBody, streamedSource, { streaming: true });
+      }
+      streamedPlainClassMutations += classObserver.takeRecords().length;
+      classObserver.disconnect();
+      renderRichContent(reusedBody, 'plain', { streaming: true });
+      const repeatedStreamedPlainClass = reusedBody.classList.contains('plain-text');
+      renderRichContent(reusedBody, '**stream**', { streaming: true });
+      return {
+        parseCalls,
+        text: body.textContent,
+        plainClass: body.classList.contains('plain-text'),
+        table: tableBody.querySelector('table') !== null,
+        tablePlainClass: tableBody.classList.contains('plain-text'),
+        streamedPlainClass,
+        streamedPlainClassMutations,
+        repeatedStreamedPlainClass,
+        reusedStreamingClass: reusedBody.classList.contains('plain-text'),
+        reusedStrong: reusedBody.querySelector('strong')?.textContent,
+      };
+    } finally {
+      marked.parse = previousParse;
+      body.remove();
+      tableBody.remove();
+      reusedBody.remove();
+    }
+  })()`);
+  assert.deepEqual(plainTextFastPath, { parseCalls: 2, text: 'x'.repeat(100_000) + '\nnext line', plainClass: true, table: true, tablePlainClass: false, streamedPlainClass: true, streamedPlainClassMutations: 0, repeatedStreamedPlainClass: true, reusedStreamingClass: false, reusedStrong: 'stream' }, "plain completed output should bypass Markdown parsing while repeated and rich streaming containers keep their semantics");
+  const streamingMarkdownBudget = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const { marked } = await import('/dist/vendor/markdown-runtime.js?v=${release.version}');
+    const previousParse = marked.parse;
+    const parsedLengths = [];
+    marked.parse = (value, options) => {
+      parsedLengths.push(value.length);
+      return previousParse(value, options);
+    };
+    const body = document.createElement('div');
+    document.body.append(body);
+    const lines = ['# title', '', ...Array.from({ length: 400 }, (_, index) => 'line ' + index + ' with **markdown**')];
+    let source = '';
+    try {
+      for (const line of lines) {
+        source += (source.length === 0 ? '' : '\\n') + line;
+        renderRichContent(body, source, { streaming: true });
+      }
+      return { maxParsedLength: Math.max(...parsedLengths), emptyParsed: parsedLengths.includes(0), sourceLength: source.length, tail: body.textContent?.slice(-24) };
+    } finally {
+      marked.parse = previousParse;
+      body.remove();
+    }
+  })()`);
+  assert.ok(streamingMarkdownBudget.sourceLength > 8_000, "the streaming Markdown budget should exercise a long response");
+  assert.ok(streamingMarkdownBudget.maxParsedLength <= 9_000, `streaming Markdown should parse a bounded tail, got ${streamingMarkdownBudget.maxParsedLength}`);
+  assert.equal(streamingMarkdownBudget.emptyParsed, false, "streaming Markdown should not invoke the parser for an empty tail");
+  assert.ok(streamingMarkdownBudget.tail?.includes('line 399'), "the bounded Markdown stream should retain its latest content");
+  const streamingLongLineBudget = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const { marked } = await import('/dist/vendor/markdown-runtime.js?v=${release.version}');
+    const previousParse = marked.parse;
+    const parsedLengths = [];
+    marked.parse = (value, options) => {
+      parsedLengths.push(value.length);
+      return previousParse(value, options);
+    };
+    const body = document.createElement('div');
+    document.body.append(body);
+    const sourceParts = ['**bold**'];
+    for (let index = 0; index < 220; index += 1) sourceParts.push('x'.repeat(64));
+    let source = '';
+    try {
+      for (const part of sourceParts) {
+        source += part;
+        renderRichContent(body, source, { streaming: true });
+      }
+      const streamedText = body.textContent;
+      const maxParsedLength = Math.max(...parsedLengths);
+      marked.parse = previousParse;
+      renderRichContent(body, source);
+      return { maxParsedLength, sourceLength: source.length, streamedText, finalBold: body.querySelector('strong')?.textContent };
+    } finally {
+      marked.parse = previousParse;
+      body.remove();
+    }
+  })()`);
+  assert.ok(streamingLongLineBudget.sourceLength > 14_000, "the long-line stream should exercise the raw-tail budget");
+  assert.ok(streamingLongLineBudget.maxParsedLength <= 5_000, `long Markdown lines should parse a bounded tail before appending escaped text, got ${streamingLongLineBudget.maxParsedLength}`);
+  assert.ok(streamingLongLineBudget.streamedText?.startsWith('bold') && streamingLongLineBudget.streamedText.trimEnd().endsWith('x'.repeat(64)), `the raw streaming tail should keep formatted and latest characters visible: ${JSON.stringify({ ...streamingLongLineBudget, prefix: streamingLongLineBudget.streamedText?.slice(0, 24), suffix: streamingLongLineBudget.streamedText?.slice(-80) })}`);
+  assert.ok(streamingLongLineBudget.finalBold?.startsWith('bold'), "the completed render should restore inline Markdown semantics");
+  const streamingInlineMarkdown = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    let source = '**first** then ';
+    renderRichContent(body, source, { streaming: true });
+    source += '**second**';
+    renderRichContent(body, source, { streaming: true });
+    const strong = Array.from(body.querySelectorAll('strong')).map((item) => item.textContent);
+    const literalMarker = body.textContent?.includes('**second**') ?? false;
+    body.remove();
+    return { strong, literalMarker };
+  })()`);
+  assert.deepEqual(streamingInlineMarkdown, { strong: ['first', 'second'], literalMarker: false }, "rich streaming should reparse a new inline Markdown marker instead of appending it as literal text");
+  const streamingSanitization = await page.evaluate(`(async () => {
+    const { renderRichContent } = await import('/dist/app/rich-content.js');
+    const body = document.createElement('div');
+    document.body.append(body);
+    renderRichContent(body, '<img src=x onerror="window.__streamXss = true">safe<script>window.__streamXss = true</script>', { streaming: true });
+    const result = { script: body.querySelector('script') !== null, handler: body.querySelector('[onerror]') !== null, safeText: body.textContent?.includes('safe') ?? false };
+    body.remove();
+    return result;
+  })()`);
+  assert.deepEqual(streamingSanitization, { script: false, handler: false, safeText: true }, "streaming Markdown should sanitize untrusted HTML without dropping safe text");
   await page.evaluate(`(() => {
     window.__copiedCode = [];
     const writeText = async (value) => window.__copiedCode.push(value);
@@ -1114,10 +1429,12 @@ try {
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'reasoning answer' && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
   const finishedThinking = await page.evaluate(`(() => {
     const block = document.querySelector('.message.assistant .thinking-block');
-    return { summary: block?.querySelector('.thinking-summary')?.textContent, open: block?.open, body: block?.querySelector('.thinking-body')?.textContent };
+    const body = block?.querySelector('.thinking-body');
+    return { summary: block?.querySelector('.thinking-summary')?.textContent, open: block?.open, body: body?.textContent, whiteSpace: body === null || body === undefined ? undefined : getComputedStyle(body).whiteSpace };
   })()`);
   assert.equal(finishedThinking.summary, "Thinking");
   assert.equal(finishedThinking.open, false, "completed thinking should be collapsed by default");
+  assert.equal(finishedThinking.whiteSpace, "pre-wrap", "completed thinking should preserve reasoning line breaks");
   assert.ok(finishedThinking.body?.includes("first reasoning step") && finishedThinking.body.includes("second reasoning step"));
   assert.equal(reasoningRequests.at(-1)?.reasoning_effort, "high");
   await page.evaluate(`(() => {
@@ -1148,9 +1465,27 @@ try {
     };
   })()`);
   assert.deepEqual(stopButton, { width: "36px", height: "36px", borderRadius: "999px", iconWidth: "11px", iconHeight: "11px", centered: true });
+  const busyDraftEnter = await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'draft';
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    return { dispatch: input.dispatchEvent(event), value: input.value };
+  })()`);
+  assert.deepEqual(busyDraftEnter, { dispatch: false, value: "draft\n" }, "a drafted message should keep accepting plain Enter as a newline while another response streams");
   await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled')");
   await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Send' && document.querySelector('#send-button')?.hidden === true");
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').focus();
+    document.querySelector('#message-input').value = 'cancel with escape';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#send-button .button-label')?.textContent === 'Stop'");
+  const escapeDispatch = await page.evaluate(`(() => document.querySelector('#message-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })))()`);
+  assert.equal(escapeDispatch, false, "Escape should cancel an active response from the composer");
+  await waitFor(page, "document.querySelector('#run-status')?.textContent.includes('cancelled') && document.querySelector('#send-button')?.hidden === true");
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = location.origin + '/test-scroll';
@@ -1184,12 +1519,42 @@ try {
   assert.equal(midStreamScroll.noEmptyThinking, true, "the first answer token should replace the empty thinking placeholder");
   assert.equal(midStreamScroll.noSourceAttributes, true, "streaming source caches should stay out of the DOM");
   assert.equal(midStreamScroll.fullHistoryScans, 0, "streaming updates should scan only the pending tail, not the full conversation");
+  const smallScrollAway = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.dispatchEvent(new WheelEvent('wheel', { deltaY: -20, bubbles: true }));
+    chat.scrollTop = Math.max(0, chat.scrollTop - 20);
+    return chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+  })()`);
+  assert.ok(smallScrollAway > 2, "a deliberate small upward gesture should detach the stream");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(await page.evaluate(`(() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight > 2; })()`), "a detached stream should not pull the reader back on the next frame");
+  await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = chat.scrollHeight;
+    chat.dispatchEvent(new Event('scroll'));
+  })()`);
+  await waitFor(page, "(() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight <= 2; })()", 2_000);
   await page.evaluate(`(() => {
     const conversation = document.querySelector('#conversation-content');
     conversation.querySelectorAll = window.__conversationQuerySelectorAll;
     delete window.__conversationQuerySelectorAll;
   })()`);
   assert.equal(await page.evaluate("window.__stableHistoryMessage === document.querySelector('.message')"), true, "starting a stream should append without rebuilding history");
+  await waitFor(page, `(() => {
+    const body = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((item) => item.textContent?.includes('Scroll line 32') && item.querySelector('h1')?.textContent === 'Streaming heading');
+    const block = body?.querySelector('a[href="https://example.com"]')?.parentElement;
+    if (!(block instanceof HTMLElement) || !(block.lastChild instanceof Text)) return false;
+    window.__streamingMarkdownTailCapture = { body, block, text: block.lastChild, stable: undefined };
+    return true;
+  })()`, 20_000);
+  await waitFor(page, `(() => {
+    const state = window.__streamingMarkdownTailCapture;
+    const block = state?.body?.querySelector('a[href="https://example.com"]')?.parentElement;
+    if (state === undefined || !(block instanceof HTMLElement) || !block.textContent?.includes(' trailing')) return false;
+    state.stable = state.block === block && state.text === block.lastChild;
+    return true;
+  })()`, 20_000);
+  assert.equal(await page.evaluate("window.__streamingMarkdownTailCapture.stable"), true, "plain Markdown tail tokens should append without reparsing the block");
   const streamingDraft = await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = ['draft line 1', 'draft line 2'].join(String.fromCharCode(10));
@@ -1199,6 +1564,9 @@ try {
   assert.equal(streamingDraft.value, "draft line 1\ndraft line 2");
   assert.ok(streamingDraft.height > composerGrowth.singleLine.height, "a draft should grow natively while the response streams");
   assert.equal(streamingDraft.stillRunning, true, "typing a draft must not stop the active response");
+  await page.evaluate("new Promise((resolve) => setTimeout(resolve, 50))");
+  const draftFollowDistance = await page.evaluate("(() => { const chat = document.querySelector('#chat-log'); return chat.scrollHeight - chat.scrollTop - chat.clientHeight; })()");
+  assert.ok(draftFollowDistance <= 2, "composer growth should keep a followed stream pinned to the latest response");
   const streamingSelection = await page.evaluate(`(() => {
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const body = document.querySelector('.message.user .message-body');
@@ -1233,7 +1601,21 @@ try {
   })()`);
   assert.ok(detachedStreamScroll.distance > 2, "scrolling upward should detach the stream from the bottom");
   assert.ok(detachedStreamScroll.firstMessageHeight > 0, "history should remain laid out while the model streams");
+  const detachedStreamMutations = await page.evaluate(`(() => new Promise((resolve) => {
+    const body = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((item) => item.querySelector('h1')?.textContent === 'Streaming heading');
+    if (body === undefined) return resolve(-1);
+    let mutations = 0;
+    const observer = new MutationObserver((records) => { mutations += records.length; });
+    observer.observe(body, { childList: true, characterData: true, subtree: true });
+    setTimeout(() => {
+      mutations += observer.takeRecords().length;
+      observer.disconnect();
+      resolve(mutations);
+    }, 100);
+  }))()`);
+  assert.equal(detachedStreamMutations, 0, "a detached stream should defer offscreen DOM work until the reader returns");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.includes('The stream finished') && document.querySelector('#send-button .button-label')?.textContent === 'Send'", 20_000);
+  assert.equal(await page.evaluate("Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.querySelector('a[href=\"https://example.com\"]')?.textContent"), "https://example.com", "split streaming URLs should be reparsed when the marker completes");
   assert.equal(await page.evaluate("window.__stableHistoryMessage === document.querySelector('.message')"), true, "stream completion should not rebuild unchanged history");
   assert.equal(await page.evaluate("document.querySelector('#message-input').value"), "draft line 1\ndraft line 2", "stream completion should preserve the next-message draft");
   assert.deepEqual(await page.evaluate(`({ selected: window.getSelection().toString(), focusStayedAway: document.activeElement !== document.querySelector('#message-input') })`), { selected: await page.evaluate("window.__streamingSelection"), focusStayedAway: true }, "stream completion should preserve the user's selection and focus ownership");
@@ -1277,6 +1659,24 @@ try {
   assert.equal(streamingTool.groupOpen, true, "the active tool group should be open while streaming");
   assert.ok(streamingTool.childOpen?.some(Boolean), "an active tool detail should be open while streaming");
   assert.equal(streamingTool.bodyVisible, true, "streaming tool arguments should be visible");
+  await page.evaluate(`(() => {
+    const body = Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).find((item) => item.textContent?.includes('Before tool'));
+    if (body === undefined) throw new Error('The first interleaved streaming segment is missing.');
+    const state = { mutations: 0, body };
+    state.observer = new MutationObserver((records) => { state.mutations += records.length; });
+    state.observer.observe(body, { childList: true, characterData: true, subtree: true });
+    window.__interleavedStableSegment = state;
+  })()`);
+  await page.evaluate(`(() => {
+    const group = document.querySelector('.tool-group.pending');
+    if (group === null) return;
+    window.__toolGroupQueryCount = 0;
+    const query = group.querySelectorAll.bind(group);
+    group.querySelectorAll = (selector) => {
+      if (selector === ':scope > .tool-group-body > details.tool-detail') window.__toolGroupQueryCount += 1;
+      return query(selector);
+    };
+  })()`);
   await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('await')", 5_000);
   await page.evaluate("(() => { window.__firstStreamingToolGroup = document.querySelector('.tool-group.pending'); window.__firstStreamingToolDetail = document.querySelector('.tool-call-stream'); window.__firstStreamingToolText = document.querySelector('.tool-call-stream .tool-detail-body')?.firstChild; })()");
   await waitFor(page, "document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return')", 5_000);
@@ -1287,7 +1687,16 @@ try {
     argumentVisible: document.querySelector('.tool-call-stream .tool-detail-body')?.textContent.includes('return'),
   })`);
   assert.deepEqual(streamingStability, { groupStable: true, detailStable: true, textStable: true, argumentVisible: true }, "streaming tool DOM should append arguments in place without flickering");
+  assert.equal(await page.evaluate("window.__toolGroupQueryCount"), 0, "streaming tool updates should reuse the cached group index");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant.pending .message-body')).some((body) => body.textContent.includes('After tool'))", 5_000);
+  const interleavedStableSegment = await page.evaluate(`(() => {
+    const state = window.__interleavedStableSegment;
+    if (state === undefined) return { mutations: -1, sameBody: false };
+    state.mutations += state.observer.takeRecords().length;
+    state.observer.disconnect();
+    return { mutations: state.mutations, sameBody: state.body.isConnected && state.body.textContent.includes('Before tool') };
+  })()`);
+  assert.deepEqual(interleavedStableSegment, { mutations: 0, sameBody: true }, "unchanged interleaved text should keep its DOM untouched while later segments stream");
   const interleavedStream = await page.evaluate(`(() => Array.from(document.querySelector('#conversation-content').children)
     .filter((element) => element.dataset.streamKey !== undefined)
     .map((element) => ({
@@ -1307,6 +1716,24 @@ try {
   assert.ok(continuousTool.items.some((summary) => summary?.includes("complete")), "the completed call should remain visible");
   assert.ok(continuousTool.items.some((summary) => summary?.includes("running")), "the next running call should be visible in the same group");
   assert.ok(continuousTool.completedBody?.includes("42"), "the completed tool result should remain visible");
+  const collapsedFinishedTool = await page.evaluate(`(() => {
+    const detail = Array.from(document.querySelectorAll('.tool-group.pending > .tool-group-body > .tool-detail'))
+      .find((item) => item.querySelector('.tool-summary')?.textContent.includes('complete'));
+    if (detail === undefined) return false;
+    detail.open = false;
+    window.__collapsedFinishedTool = detail;
+    window.__collapsedFinishedToolMutations = 0;
+    window.__collapsedFinishedToolObserver = new MutationObserver((records) => { window.__collapsedFinishedToolMutations += records.length; });
+    window.__collapsedFinishedToolObserver.observe(detail, { attributes: true, attributeFilter: ['open'] });
+    return detail.open === false;
+  })()`);
+  assert.equal(collapsedFinishedTool, true, "a reader should be able to collapse a finished tool while a later call runs");
+  await new Promise((resolve) => setTimeout(resolve, 3_200));
+  assert.deepEqual(await page.evaluate(`(() => {
+    const detail = window.__collapsedFinishedTool;
+    window.__collapsedFinishedToolObserver?.disconnect();
+    return { open: detail?.open === false, mutations: window.__collapsedFinishedToolMutations };
+  })()`), { open: true, mutations: 0 }, "later tool updates should not reopen a finished detail the reader collapsed");
   await waitFor(page, "Array.from(document.querySelectorAll('.message.assistant .message-body')).at(-1)?.textContent.trim() === 'tool complete' && document.querySelector('.tool-detail') !== null", 20_000);
   const hiddenTool = await page.evaluate(`(() => ({
     noToolCallList: document.querySelector('.tool-call-list') === null,
@@ -1399,6 +1826,17 @@ try {
     setTimeout(() => controller.abort(), 10);
     const cancellation = await run;
 
+    let burstHostTaskRan = false;
+    setTimeout(() => { burstHostTaskRan = true; }, 0);
+    const burstModel = {
+      id: 'burst-browser-test',
+      async *stream() {
+        for (let index = 0; index < 64; index += 1) yield { type: 'text-delta', delta: 'x' };
+        yield { type: 'completed', message: { role: 'assistant', content: 'x'.repeat(64) } };
+      },
+    };
+    const burstResult = await new Agent(burstModel, new AgentKernel()).run({ messages: [], onEvent: () => {} });
+
     const pluginManager = new AgentKernel();
     const plugin = {
       manifest: { apiVersion: '1', id: 'browser-plugin', name: 'Browser plugin', version: '1', permissions: [] },
@@ -1425,6 +1863,15 @@ try {
       setup(context) {
         context.registerTool({ name: 'app.browser.tool', description: 'browser test', inputSchema: { type: 'object' }, requiredCapabilities: ['page'], execute: () => ({ ok: true }) });
         context.registerUi({ id: 'app.browser.ui', mount: (container) => { container.textContent = 'app extension'; } });
+        context.registerModelAdapter({
+          id: 'app-browser-hang',
+          async *stream({ signal }) {
+            await new Promise((resolve) => {
+              if (signal.aborted) resolve();
+              else signal.addEventListener('abort', resolve, { once: true });
+            });
+          },
+        });
       },
     };
     const app = new AgentApp(appRoot, { plugins: [appPlugin], autoConnect: false });
@@ -1435,6 +1882,31 @@ try {
     const defaultPlugins = appSnapshot?.manifests.some((manifest) => manifest.id === 'javascript-runtime')
       && appSnapshot?.manifests.some((manifest) => manifest.id === 'local-storage')
       && appSnapshot?.manifests.some((manifest) => manifest.id === 'browser-api');
+    await app.stop();
+    await app.start();
+    let popstateCalls = 0;
+    app.normalizeUrl = () => { popstateCalls += 1; };
+    window.dispatchEvent(new Event('popstate'));
+    const appLifecycle = popstateCalls === 1;
+    const lifecycleInput = appRoot.querySelector('#message-input');
+    lifecycleInput.value = 'cancel stale run';
+    lifecycleInput.dispatchEvent(new Event('input', { bubbles: true }));
+    appRoot.querySelector('#composer-form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    for (let index = 0; index < 50 && appRoot.querySelector('#send-button')?.getAttribute('aria-busy') !== 'true'; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    if (appRoot.querySelector('#send-button')?.getAttribute('aria-busy') !== 'true') throw new Error('lifecycle fixture did not enter a running state');
+    const originalRenderAll = app.renderAll;
+    let staleRenderCalls = 0;
+    app.renderAll = function(...args) {
+      staleRenderCalls += 1;
+      return originalRenderAll.apply(this, args);
+    };
+    await app.stop();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const appStopCancelsStaleWork = staleRenderCalls === 0 && app.runtime === undefined;
+    app.renderAll = originalRenderAll;
+    await app.start();
     await app.stop();
     appRoot.remove();
 
@@ -1452,11 +1924,86 @@ try {
       indexedDb: stored?.ok === true,
       sse: events.at(-1)?.type === 'completed' && events.at(-1)?.message.content === 'sse',
       cancelled: cancellation.status === 'cancelled' && cancelled,
+      burstYield: burstResult.status === 'completed' && burstHostTaskRan,
       defaultPlugins: defaultPlugins && defaultTools.includes('runtime.javascript') && defaultTools.includes('storage.local'),
       pluginUi: mounted && processed === 'ok!' && removedOnUninstall && !pluginManager.hasTool('browser.tool') && extensionRoot.textContent === '' && appExtension,
+      appLifecycle,
+      appStopCancelsStaleWork,
     };
   })()`);
-  assert.deepEqual(browserBoundaries, { worker: true, workerUnboundedOutput: true, workerAmbientApis: true, workerTimeout: true, workerRecovered: true, pageRuntime: true, pageUnboundedOutput: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, defaultPlugins: true, pluginUi: true });
+  assert.deepEqual(browserBoundaries, { worker: true, workerUnboundedOutput: true, workerAmbientApis: true, workerTimeout: true, workerRecovered: true, pageRuntime: true, pageUnboundedOutput: true, browserInspect: true, browserEvaluate: true, browserAgent: true, indexedDb: true, sse: true, cancelled: true, burstYield: true, defaultPlugins: true, pluginUi: true, appLifecycle: true, appStopCancelsStaleWork: true });
+  const burstStream = await page.evaluate(`(async () => {
+    const { AgentApp } = await import('/dist/app-entry.js');
+    const root = document.createElement('div');
+    document.body.append(root);
+    const plugin = {
+      manifest: { apiVersion: '1', id: 'stream-stress-plugin', name: 'Stream stress plugin', version: '1', permissions: [] },
+      setup(context) {
+        context.registerModelAdapter({
+          id: 'stream-stress-model',
+          async *stream({ signal }) {
+            const content = 'x'.repeat(8_192);
+            for (const character of content) {
+              if (signal.aborted) return;
+              yield { type: 'text-delta', delta: character };
+            }
+            yield { type: 'completed', message: { role: 'assistant', content } };
+          },
+        });
+      },
+    };
+    const app = new AgentApp(root, { plugins: [plugin], autoConnect: false });
+    await app.start();
+    const originalRenderChat = app.renderChat;
+    let renderCount = 0;
+    app.renderChat = function(...args) {
+      renderCount += 1;
+      return originalRenderChat.apply(this, args);
+    };
+    const input = root.querySelector('#message-input');
+    const form = root.querySelector('#composer-form');
+    let hostTaskAt;
+    const startAt = performance.now();
+    const channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      hostTaskAt = performance.now();
+      input.value = 'draft during burst';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      channel.port1.close();
+      channel.port2.close();
+    };
+    channel.port2.postMessage(0);
+    input.value = 'burst';
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    window.__stressApp = app;
+    window.__stressRoot = root;
+    window.__stressStartAt = startAt;
+    window.__stressHostTaskAt = () => hostTaskAt;
+    window.__stressRenderCount = () => renderCount;
+    window.__stressInput = input;
+    return true;
+  })()`);
+  assert.equal(burstStream, true, 'the high-frequency app stream should start');
+  await waitFor(page, "window.__stressApp?.runtime === undefined ? false : window.__stressApp?.busy === false && window.__stressApp?.chat?.messages?.at(-1)?.content?.length === 8_192", 20_000);
+  const burstMetrics = await page.evaluate(`(() => {
+    const app = window.__stressApp;
+    const input = window.__stressInput;
+    const hostTaskAt = window.__stressHostTaskAt?.();
+    const doneAt = performance.now();
+    return {
+      renderCount: window.__stressRenderCount?.() ?? 0,
+      hostTaskBeforeCompletion: hostTaskAt !== undefined && hostTaskAt <= doneAt,
+      hostTaskLatency: (hostTaskAt ?? Number.POSITIVE_INFINITY) - (window.__stressStartAt ?? doneAt),
+      draftPreserved: input?.value === 'draft during burst',
+      completed: app?.busy === false && app?.chat?.messages?.at(-1)?.content?.length === 8_192,
+    };
+  })()`);
+  await page.evaluate("(async()=>{await window.__stressApp?.stop(); window.__stressRoot?.remove(); delete window.__stressApp; delete window.__stressRoot})()");
+  assert.equal(burstMetrics.completed, true, 'the high-frequency app stream should complete');
+  assert.equal(burstMetrics.hostTaskBeforeCompletion, true, 'the high-frequency app stream should yield to host tasks');
+  assert.ok(burstMetrics.hostTaskLatency >= 0, 'the host task timestamp should be monotonic');
+  assert.equal(burstMetrics.draftPreserved, true, 'the high-frequency app stream should preserve a next-message draft');
+  assert.ok(burstMetrics.renderCount <= 32, `the high-frequency app stream should coalesce renders, got ${burstMetrics.renderCount}`);
   }
   console.log("Browser checks passed: compact UI, page Web APIs, remote-only chat, default plugins, IndexedDB, SSE, and cancellation.");
 } finally {

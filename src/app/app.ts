@@ -59,11 +59,17 @@ export class AgentApp {
   private attachmentIntake: AttachmentIntake | undefined;
   private streamPresentation: StreamPresentation | undefined;
   private modelConnection: ModelConnection | undefined;
+  private eventController: AbortController | undefined;
+  private harnessUnsubscribe: (() => void) | undefined;
   private uiCleanup: (() => void) | undefined;
   private ready = false;
   private busy = false;
+  private lifecycleGeneration = 0;
   private runController: AbortController | undefined;
   private chatRenderScheduled = false;
+  private chatRenderFrame: number | undefined;
+  private chatRenderTimer: number | undefined;
+  private messageResizeTimer: number | undefined;
   private lastChatRenderAt = Number.NEGATIVE_INFINITY;
   private chatObserver: MutationObserver | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
@@ -72,6 +78,8 @@ export class AgentApp {
   private renderedConnectionEditing = false;
   private connectionEditing = false;
   private autoConnectStarted = false;
+  private lastNotificationMessage: string | undefined;
+  private lastNotificationKind: "normal" | "success" | "error" | undefined;
   private pendingAttachments: readonly PendingAttachment[] = [];
   private readonly modelAttachments = new Map<string, ModelAttachment>();
   private visionRetry: VisionRetry | undefined;
@@ -89,8 +97,11 @@ export class AgentApp {
   }
 
   async start(): Promise<void> {
+    const generation = ++this.lifecycleGeneration;
     if ("scrollRestoration" in window.history) window.history.scrollRestoration = "auto";
     Object.assign(this.elements, renderShell(this.root));
+    this.lastNotificationMessage = undefined;
+    this.lastNotificationKind = undefined;
     let streamPresentation: StreamPresentation | undefined;
     const streamAdapter = createDomStreamPresentationAdapter({
       conversation: this.element("conversation-content"),
@@ -105,16 +116,23 @@ export class AgentApp {
     this.chat = { messages: [] };
     this.store = createBrowserStateStore({ databaseName: "static-web-agent", objectStoreName: "workspace" });
     const savedSettings = await loadConnectionSettings(this.store);
+    if (generation !== this.lifecycleGeneration) return;
     this.applyConnectionSettings(savedSettings);
     this.attachmentIntake = createAttachmentIntake();
     await this.restoreTranscript();
-    this.harness = await createHarness({
+    if (generation !== this.lifecycleGeneration) return;
+    const harness = await createHarness({
       stateStore: this.store,
       ...(this.options.plugins === undefined ? {} : { plugins: this.options.plugins }),
       ...(this.options.initialModelId === undefined ? {} : { initialModelId: this.options.initialModelId }),
     });
-    this.modelConnection = createModelConnection({ harness: this.harness, store: this.store });
-    this.harness.subscribe((snapshot) => {
+    if (generation !== this.lifecycleGeneration) {
+      await harness.dispose();
+      return;
+    }
+    this.harness = harness;
+    this.modelConnection = createModelConnection({ harness, store: this.store });
+    this.harnessUnsubscribe = harness.subscribe((snapshot) => {
       this.selectedModelId = snapshot.selectedModelId;
       if (this.ready) {
         this.renderExtensions();
@@ -126,11 +144,21 @@ export class AgentApp {
     this.renderAll();
     this.resizeMessageInput();
     this.focusComposer();
-    if (this.options.autoConnect !== false) void this.autoConnect(savedSettings);
+    if (this.options.autoConnect !== false) void this.autoConnect(savedSettings, generation);
   }
 
   async stop(): Promise<void> {
+    this.lifecycleGeneration += 1;
     this.runController?.abort();
+    this.runController = undefined;
+    this.busy = false;
+    this.cancelChatRender();
+    if (this.messageResizeTimer !== undefined) window.clearTimeout(this.messageResizeTimer);
+    this.messageResizeTimer = undefined;
+    this.eventController?.abort();
+    this.eventController = undefined;
+    this.harnessUnsubscribe?.();
+    this.harnessUnsubscribe = undefined;
     await this.attachmentIntake?.dispose();
     this.chatObserver?.disconnect();
     this.chatObserver = undefined;
@@ -152,10 +180,16 @@ export class AgentApp {
     this.attachmentProgress = undefined;
     this.connectionEditing = false;
     this.autoConnectStarted = false;
+    this.lastNotificationMessage = undefined;
+    this.lastNotificationKind = undefined;
     this.ready = false;
   }
 
   private bindEvents(): void {
+    this.eventController?.abort();
+    const eventController = new AbortController();
+    this.eventController = eventController;
+    const signal = eventController.signal;
     this.elements["composer-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
       if (this.busy) {
@@ -163,12 +197,18 @@ export class AgentApp {
         return;
       }
       void this.sendMessage();
-    });
+    }, { signal });
     const messageInput = this.elements["message-input"] as HTMLTextAreaElement | undefined;
-    if (typeof CSS === "undefined" || !CSS.supports("field-sizing", "content")) {
-      messageInput?.addEventListener("input", () => this.resizeMessageInput());
-    }
+    const supportsFieldSizing = typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
+    messageInput?.addEventListener("input", () => {
+      if (!supportsFieldSizing || this.busy) this.scheduleMessageInputResize();
+    }, { signal });
     messageInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.busy && !event.isComposing) {
+        event.preventDefault();
+        this.runController?.abort();
+        return;
+      }
       if (event.key !== "Enter" || event.isComposing) return;
       event.preventDefault();
       if (event.metaKey || event.ctrlKey) {
@@ -180,18 +220,24 @@ export class AgentApp {
         // The composer stays editable during a run; Enter may only abort an empty
         // input so a drafted next message cannot trigger an accidental abort.
         if (!messageInput.value.trim()) this.runController?.abort();
+        else {
+          const start = messageInput.selectionStart;
+          const end = messageInput.selectionEnd;
+          messageInput.setRangeText("\n", start, end, "end");
+          messageInput.dispatchEvent(new Event("input", { bubbles: true }));
+        }
       }
       else void this.sendMessage();
-    });
+    }, { signal });
     this.elements["attachment-button"]?.addEventListener("click", () => {
       if (this.busy) return;
       (this.elements["attachment-input"] as HTMLInputElement | undefined)?.click();
-    });
+    }, { signal });
     this.elements["attachment-input"]?.addEventListener("change", (event) => {
       const input = event.currentTarget as HTMLInputElement;
       this.queueAttachments(input.files === null ? [] : [...input.files]);
       input.value = "";
-    });
+    }, { signal });
     this.elements["attachment-list"]?.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -202,44 +248,48 @@ export class AgentApp {
       }
       const retry = target.closest<HTMLButtonElement>("button[data-action=vision-fallback]");
       if (retry !== null) void this.retryWithLocalOcr();
-    });
+    }, { signal });
     const chat = this.elements["chat-log"];
     chat?.addEventListener("scroll", () => {
+      const wasFollowing = this.streamPresentation?.isFollowingChat() ?? false;
       this.streamPresentation?.onScroll(chat);
-    }, { passive: true });
+      const isFollowing = this.streamPresentation?.isFollowingChat() ?? false;
+      if (this.busy && wasFollowing && !isFollowing) this.cancelChatRender();
+      else if (this.busy && !wasFollowing && isFollowing) this.streamPresentation?.render();
+    }, { passive: true, signal });
     chat?.addEventListener("wheel", (event) => {
       this.streamPresentation?.markUserScrollGesture(event.deltaY < 0);
-    }, { passive: true });
+    }, { passive: true, signal });
     chat?.addEventListener("touchmove", () => {
       this.streamPresentation?.markUserScrollGesture();
-    }, { passive: true });
+    }, { passive: true, signal });
     chat?.addEventListener("pointerdown", () => {
       this.streamPresentation?.markUserScrollGesture();
-    }, { passive: true });
+    }, { passive: true, signal });
     this.elements["scroll-bottom-button"]?.addEventListener("click", () => {
       this.streamPresentation?.scrollToLatest();
       this.streamPresentation?.render();
-    });
+    }, { signal });
     const chatMenu = this.element("chat-menu");
     const menuDetails = this.element("chat-menu-details") as HTMLDetailsElement;
     this.element("menu-open-settings").addEventListener("click", () => {
       menuDetails.open = false;
       this.openConnectionSettings();
-    });
+    }, { signal });
     this.element("menu-clear-chat").addEventListener("click", () => {
       menuDetails.open = false;
       void this.clearConversation();
-    });
+    }, { signal });
     document.addEventListener("click", (event) => {
       if (!(event.target instanceof Node) || !chatMenu.contains(event.target)) menuDetails.open = false;
-    });
+    }, { signal });
     menuDetails.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
         menuDetails.open = false;
         this.focusComposer(true);
       }
-    });
+    }, { signal });
     this.elements["conversation-content"]?.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
@@ -254,29 +304,29 @@ export class AgentApp {
         const input = editor?.querySelector<HTMLTextAreaElement>("textarea");
         if (input !== null && input !== undefined) void this.resendEditedMessage(index, input.value);
       }
-    });
+    }, { signal });
     if (chat !== undefined && typeof MutationObserver === "function") {
       this.chatObserver = new MutationObserver(() => {
-        if (!this.busy && this.streamPresentation?.snapshot().followChat) this.scheduleChatRender();
+        if (!this.busy && this.streamPresentation?.isFollowingChat()) this.scheduleChatRender();
       });
       this.chatObserver.observe(chat, { childList: true, subtree: true });
     }
     this.elements["connection-form"]?.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.connectRemote(event.currentTarget as HTMLFormElement);
-    });
+    }, { signal });
     for (const field of ["model-endpoint", "model-name"]) {
-      this.elements[field]?.addEventListener("input", () => this.clearFieldError(field));
+      this.elements[field]?.addEventListener("input", () => this.clearFieldError(field), { signal });
     }
     window.addEventListener("popstate", () => {
       this.normalizeUrl(false);
-    });
+    }, { signal });
     window.addEventListener("beforeunload", (event) => {
       const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
       if (this.busy || input === undefined || input.value.trim().length === 0) return;
       event.preventDefault();
       event.returnValue = "";
-    });
+    }, { signal });
   }
 
   private normalizeUrl(push: boolean): void {
@@ -454,6 +504,7 @@ export class AgentApp {
   }
 
   private async sendMessage(forceLocalOcr = false): Promise<void> {
+    const generation = this.lifecycleGeneration;
     if (!this.ready) {
       this.notify("Starting chat…");
       return;
@@ -476,7 +527,7 @@ export class AgentApp {
     const controller = new AbortController();
     this.runController = controller;
     this.streamPresentation?.startRun();
-    this.chatRenderScheduled = false;
+    this.cancelChatRender();
     this.setBusy(true);
     let prepared: PreparedAttachments | undefined;
     try {
@@ -487,10 +538,12 @@ export class AgentApp {
           supportsVision: forceLocalOcr ? false : this.visionEnabled(),
           signal: controller.signal,
           onProgress: (progress) => {
+            if (generation !== this.lifecycleGeneration) return;
             this.attachmentProgress = progress;
             this.renderAttachmentList();
           },
         });
+        if (generation !== this.lifecycleGeneration) return;
         this.attachmentProgress = undefined;
         for (const attachment of prepared.attachments) this.modelAttachments.set(attachment.id, attachment);
       }
@@ -502,6 +555,7 @@ export class AgentApp {
         role: "user",
         content: prompt || "Please analyze the attached files.",
       }, controller.signal);
+      if (generation !== this.lifecycleGeneration) return;
       if (!isMessageEnvelope(processed) || processed.role !== "user" || typeof processed.content !== "string") {
         throw new Error("A message processor must return a user message.");
       }
@@ -528,8 +582,11 @@ export class AgentApp {
         messages: this.chat.messages,
         ...(modelAttachments.length === 0 ? {} : { attachments: modelAttachments }),
         signal: controller.signal,
-        onEvent: (event) => this.handleAgentEvent(event),
+        onEvent: (event) => {
+          if (generation === this.lifecycleGeneration) this.handleAgentEvent(event);
+        },
       });
+      if (generation !== this.lifecycleGeneration) return;
       this.chat.messages = normalizeMessages(result.messages);
       this.pruneModelAttachments();
       this.persistTranscript();
@@ -546,6 +603,7 @@ export class AgentApp {
         }
       }
     } catch (error) {
+      if (generation !== this.lifecycleGeneration) return;
       if (prepared?.usedVision && !controller.signal.aborted) {
         this.visionRetry = { content: rawContent, files: selectedAttachments, historyLength };
         this.pendingAttachments = [...selectedAttachments];
@@ -554,6 +612,7 @@ export class AgentApp {
         this.notify(error instanceof Error ? error.message : "The run failed.", "error");
       }
     } finally {
+      if (generation !== this.lifecycleGeneration) return;
       this.attachmentProgress = undefined;
       this.streamPresentation?.resetPending();
       this.runController = undefined;
@@ -564,15 +623,17 @@ export class AgentApp {
   }
 
   private handleAgentEvent(event: AgentEvent): void {
-    this.streamPresentation?.handle(event);
+    const streamChanged = this.streamPresentation?.handle(event) ?? false;
     switch (event.type) {
       case "text-delta":
+        if (!streamChanged) break;
         this.notify("Receiving response…");
-        this.scheduleChatRender();
+        if (this.streamPresentation?.isFollowingChat()) this.scheduleChatRender();
         break;
       case "reasoning-delta":
+        if (!streamChanged) break;
         this.notify("Thinking…");
-        this.scheduleChatRender();
+        if (this.streamPresentation?.isFollowingChat()) this.scheduleChatRender();
         break;
       case "model-started":
         this.notify(`Thinking · turn ${event.turn}…`);
@@ -581,23 +642,23 @@ export class AgentApp {
         this.renderChat();
         break;
       case "tool-call-delta": {
+        if (!streamChanged) break;
         this.notify("Preparing tool…");
-        this.scheduleChatRender();
+        if (this.streamPresentation?.isFollowingChat()) this.scheduleChatRender();
         break;
       }
       case "tool-started":
         this.notify(`Running ${event.call.name}…`);
-        this.scheduleChatRender();
+        if (this.streamPresentation?.isFollowingChat()) this.scheduleChatRender();
         break;
       case "tool-finished":
         this.notify(event.result.ok ? `Finished ${event.call.name}.` : `${event.call.name} returned an error.`, event.result.ok ? "success" : "error");
-        this.scheduleChatRender();
+        if (this.streamPresentation?.isFollowingChat()) this.scheduleChatRender();
         break;
       case "run-error":
         this.notify(event.error.message, "error");
         break;
       case "run-finished":
-        this.renderChat();
         break;
       case "run-started":
       case "assistant-message":
@@ -640,22 +701,44 @@ export class AgentApp {
     this.chatRenderScheduled = true;
     const render = () => {
       if (!this.chatRenderScheduled) return;
+      this.chatRenderFrame = undefined;
+      if (this.chatRenderTimer !== undefined) {
+        window.clearTimeout(this.chatRenderTimer);
+        this.chatRenderTimer = undefined;
+      }
       const delay = STREAM_RENDER_INTERVAL_MS - (performance.now() - this.lastChatRenderAt);
       if (delay > 1) {
-        window.setTimeout(render, delay);
+        this.chatRenderTimer = window.setTimeout(() => {
+          this.chatRenderTimer = undefined;
+          render();
+        }, delay);
         return;
       }
       this.chatRenderScheduled = false;
       if (this.ready) this.renderChat();
     };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(render);
-    // A backgrounded or headless tab may throttle animation frames. The
-    // timeout is a safety net and is ignored when the frame already flushed.
-    window.setTimeout(render, 50);
+    if (typeof requestAnimationFrame === "function") {
+      this.chatRenderFrame = window.requestAnimationFrame(render);
+      // A backgrounded or headless tab may throttle animation frames; cancel this
+      // fallback as soon as the frame (or its short delay timer) gets the render.
+      this.chatRenderTimer = window.setTimeout(() => {
+        this.chatRenderTimer = undefined;
+        if (this.chatRenderFrame !== undefined) {
+          window.cancelAnimationFrame(this.chatRenderFrame);
+          this.chatRenderFrame = undefined;
+        }
+        render();
+      }, 50);
+    } else {
+      this.chatRenderTimer = window.setTimeout(() => {
+        this.chatRenderTimer = undefined;
+        render();
+      }, 50);
+    }
   }
 
   private renderChat(): void {
-    this.chatRenderScheduled = false;
+    this.cancelChatRender();
     this.lastChatRenderAt = performance.now();
     const chat = this.elements["chat-log"];
     const conversation = this.elements["conversation-content"];
@@ -708,7 +791,7 @@ export class AgentApp {
           change.addEventListener("click", () => {
             this.connectionEditing = true;
             this.renderChat();
-            queueMicrotask(() => this.element<HTMLInputElement>("model-endpoint").focus());
+            this.focusConnectionEndpoint();
           });
           welcome.append(change);
           conversation.append(welcome);
@@ -725,15 +808,47 @@ export class AgentApp {
     this.streamPresentation?.render();
   }
 
-  private resizeMessageInput(): void {
+  private cancelChatRender(): void {
+    this.chatRenderScheduled = false;
+    if (this.chatRenderFrame !== undefined) window.cancelAnimationFrame(this.chatRenderFrame);
+    if (this.chatRenderTimer !== undefined) window.clearTimeout(this.chatRenderTimer);
+    this.chatRenderFrame = undefined;
+    this.chatRenderTimer = undefined;
+  }
+
+  private keepChatAtLatest(): boolean {
+    if (!this.busy || !this.streamPresentation?.isFollowingChat()) return false;
+    this.streamPresentation.scrollToLatest();
+    this.streamPresentation.render();
+    return true;
+  }
+
+  private resizeMessageInput(): boolean {
+    if (this.messageResizeTimer !== undefined) {
+      window.clearTimeout(this.messageResizeTimer);
+      this.messageResizeTimer = undefined;
+    }
     const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
-    if (input === undefined || (typeof CSS !== "undefined" && CSS.supports("field-sizing", "content"))) return;
-    input.style.height = "auto";
-    input.style.overflowY = "hidden";
-    const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
-    const height = Number.isFinite(maxHeight) ? Math.min(input.scrollHeight, maxHeight) : input.scrollHeight;
-    input.style.height = `${height}px`;
-    input.style.overflowY = input.scrollHeight > height + 1 ? "auto" : "hidden";
+    if (input === undefined) return false;
+    if (typeof CSS === "undefined" || !CSS.supports("field-sizing", "content")) {
+      input.style.height = "auto";
+      input.style.overflowY = "hidden";
+      const maxHeight = Number.parseFloat(getComputedStyle(input).maxHeight);
+      const scrollHeight = input.scrollHeight;
+      const height = Number.isFinite(maxHeight) ? Math.min(scrollHeight, maxHeight) : scrollHeight;
+      input.style.height = `${height}px`;
+      input.style.overflowY = scrollHeight > height + 1 ? "auto" : "hidden";
+    }
+    return this.keepChatAtLatest();
+  }
+
+  private scheduleMessageInputResize(): void {
+    if (this.messageResizeTimer !== undefined) return;
+    // A timer also runs when a hidden/debug target pauses animation frames.
+    this.messageResizeTimer = window.setTimeout(() => {
+      this.messageResizeTimer = undefined;
+      this.resizeMessageInput();
+    }, 32);
   }
 
   private startMessageEdit(index: number): void {
@@ -812,7 +927,7 @@ export class AgentApp {
     this.uiCleanup = this.harness.kernel.mountUi(extensionHost);
   }
 
-  private async connectRemote(form: HTMLFormElement, automatic = false): Promise<void> {
+  private async connectRemote(form: HTMLFormElement, automatic = false, generation = this.lifecycleGeneration): Promise<void> {
     if (!this.ready || this.busy) return;
     const submit = this.elements["connection-submit"] as HTMLButtonElement | undefined;
     const spinner = submit?.querySelector<HTMLElement>(".spinner");
@@ -826,6 +941,7 @@ export class AgentApp {
       const connection = this.modelConnection;
       if (connection === undefined) throw new Error("The Model Connection is not ready.");
       const result = await connection.connect(values);
+      if (generation !== this.lifecycleGeneration) return;
       if (result.credentialSaved) {
         this.element("credential-status").textContent = "Saved the model name as the password-manager username and the API key as the password; endpoint saved locally.";
       }
@@ -833,25 +949,27 @@ export class AgentApp {
       this.element("connection-status").textContent = "Remote model selected. Connection settings saved in this browser.";
       this.notify("Remote model selected.", "success");
     } catch (error) {
+      if (generation !== this.lifecycleGeneration) return;
       this.connectionEditing = true;
       const status = this.element("connection-status");
       status.className = "connection-status";
       status.textContent = error instanceof Error ? error.message : "Could not select the model.";
       this.notify(status.textContent, "error");
     } finally {
+      if (generation !== this.lifecycleGeneration) return;
       if (submit !== null && submit !== undefined) submit.disabled = false;
       if (spinner !== null && spinner !== undefined) spinner.hidden = true;
       this.renderChat();
     }
   }
 
-  private async autoConnect(savedSettings: ConnectionSettings | undefined): Promise<void> {
+  private async autoConnect(savedSettings: ConnectionSettings | undefined, generation = this.lifecycleGeneration): Promise<void> {
     if (this.autoConnectStarted || !this.ready) return;
     this.autoConnectStarted = true;
     const connection = this.modelConnection;
     if (connection === undefined) return;
     const restored = await connection.restore(savedSettings);
-    if (!this.ready || this.selectedModelId !== undefined) return;
+    if (generation !== this.lifecycleGeneration || !this.ready || this.selectedModelId !== undefined) return;
     const settings = restored.settings;
     if (settings === undefined) return;
     if (!settings.endpoint || !settings.model) return;
@@ -863,7 +981,7 @@ export class AgentApp {
     } else {
       this.element("credential-status").textContent = "Restoring a saved connection from this browser's local settings.";
     }
-    await this.connectRemote(form, true);
+    await this.connectRemote(form, true, generation);
   }
 
   private async restoreTranscript(): Promise<void> {
@@ -903,10 +1021,21 @@ export class AgentApp {
   private openConnectionSettings(): void {
     this.connectionEditing = true;
     this.renderChat();
-    queueMicrotask(() => this.element<HTMLInputElement>("model-endpoint").focus());
+    this.focusConnectionEndpoint();
+  }
+
+  private focusConnectionEndpoint(): void {
+    const generation = this.lifecycleGeneration;
+    queueMicrotask(() => {
+      if (generation !== this.lifecycleGeneration || !this.ready) return;
+      this.element<HTMLInputElement>("model-endpoint").focus();
+    });
   }
 
   private notify(message: string, kind: "normal" | "success" | "error" = "normal"): void {
+    if (message === this.lastNotificationMessage && kind === this.lastNotificationKind) return;
+    this.lastNotificationMessage = message;
+    this.lastNotificationKind = kind;
     const status = this.element("run-status");
     if (status.textContent !== message) status.textContent = message;
     // Progress chatter stays screen-reader-only because the live stream already shows it;
@@ -919,7 +1048,9 @@ export class AgentApp {
 
   private focusComposer(force = false): void {
     if (!force && window.matchMedia("(max-width: 720px)").matches) return;
+    const generation = this.lifecycleGeneration;
     queueMicrotask(() => {
+      if (generation !== this.lifecycleGeneration) return;
       const input = this.elements["message-input"] as HTMLTextAreaElement | undefined;
       const active = document.activeElement;
       if (input === undefined || (!force && (window.getSelection()?.isCollapsed === false || (active !== document.body && active !== this.root)))) return;
