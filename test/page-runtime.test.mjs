@@ -57,6 +57,17 @@ test("JSON validation treats prototype-named keys as data", () => {
   assert.equal(validate({ type: "object", properties: JSON.parse('{"__proto__":{"type":"object"}}') }, value).valid, true);
 });
 
+test("JSON schema equality distinguishes arrays and handles cycles", () => {
+  assert.equal(validate({ enum: [[1]] }, { 0: 1 }).valid, false);
+  assert.equal(validate({ enum: [{ 0: 1 }] }, [1]).valid, false);
+  assert.equal(validate({ enum: [[1]] }, [1]).valid, true);
+  const left = {};
+  left.self = left;
+  const right = {};
+  right.self = right;
+  assert.equal(validate({ const: left }, right).valid, false);
+});
+
 test("empty page code is rejected at the boundary", async () => {
   await assert.rejects(new BrowserPageRuntime().execute("  ", null), (error) => error instanceof HarnessError && error.code === "INVALID_PAGE_RUNTIME_INPUT");
 });

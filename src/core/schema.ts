@@ -29,19 +29,27 @@ function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
   }
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
+function sameJson(left: unknown, right: unknown, pairs = new WeakMap<object, WeakSet<object>>()): boolean {
   if (Object.is(left, right)) return true;
   if (typeof left !== typeof right || left === null || right === null) return false;
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return left.length === right.length && left.every((item, index) => sameJson(item, right[index]));
-  }
   if (typeof left === "object" && typeof right === "object") {
+    const matched = pairs.get(left);
+    if (matched?.has(right)) return true;
+    if (matched === undefined) pairs.set(left, new WeakSet([right]));
+    else matched.add(right);
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+      for (let index = 0; index < left.length; index += 1) {
+        if (!Object.hasOwn(left, index) || !Object.hasOwn(right, index) || !sameJson(left[index], right[index], pairs)) return false;
+      }
+      return true;
+    }
     const leftEntries = Object.entries(left);
     const rightRecord = right as Record<string, unknown>;
     const rightEntries = Object.entries(rightRecord);
     return (
       leftEntries.length === rightEntries.length &&
-      leftEntries.every(([key, value]) => Object.prototype.hasOwnProperty.call(rightRecord, key) && sameJson(value, rightRecord[key]))
+      leftEntries.every(([key, value]) => Object.prototype.hasOwnProperty.call(rightRecord, key) && sameJson(value, rightRecord[key], pairs))
     );
   }
   return false;
