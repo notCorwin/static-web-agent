@@ -185,11 +185,14 @@ export class AgentApp {
   }
 
   private async copyMessage(content: string): Promise<void> {
+    const generation = this.lifecycleGeneration;
     try {
       if (typeof navigator.clipboard?.writeText !== "function") throw new Error("Clipboard access is unavailable.");
       await navigator.clipboard.writeText(content);
+      if (generation !== this.lifecycleGeneration) return;
       this.setStatus("Copied.", "success");
     } catch (error) {
+      if (generation !== this.lifecycleGeneration) return;
       this.setStatus(asErrorMessage(error), "error");
     }
   }

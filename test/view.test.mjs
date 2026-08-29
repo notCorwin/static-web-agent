@@ -20,3 +20,25 @@ test("completed streamed tool cards do not absorb a reused call ID", () => {
   assert.equal(stream.tools[0].status, "finished");
   assert.equal(stream.tools[1].status, "preparing");
 });
+
+test("late clipboard completion cannot update a stopped app", async () => {
+  let release;
+  const clipboard = globalThis.navigator.clipboard;
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => new Promise((resolve) => { release = resolve; }) },
+  });
+  try {
+    const app = new AgentApp({ replaceChildren() {} });
+    const statuses = [];
+    app.setStatus = (message, kind) => statuses.push([message, kind]);
+    const pending = app.copyMessage("old message");
+    await app.stop();
+    release();
+    await pending;
+    assert.deepEqual(statuses, []);
+  } finally {
+    if (clipboard === undefined) delete globalThis.navigator.clipboard;
+    else Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
