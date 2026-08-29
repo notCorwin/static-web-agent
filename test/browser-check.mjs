@@ -118,6 +118,17 @@ function waitForOutput(child) {
   });
 }
 
+function waitForExit(child) {
+  return new Promise((resolve) => {
+    const onExit = () => {
+      child.off("exit", onExit);
+      resolve();
+    };
+    child.once("exit", onExit);
+    if (child.exitCode !== null || child.signalCode !== null) onExit();
+  });
+}
+
 class CdpPage {
   constructor(url) {
     this.socket = new WebSocket(url);
@@ -225,6 +236,10 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
   assert.deepEqual(await page.evaluate(`({ text: document.querySelector('#send-button')?.textContent, disabled: document.querySelector('#send-button')?.disabled, busy: document.querySelector('#chat-log')?.getAttribute('aria-busy') })`), { text: "Send", disabled: false, busy: "false" });
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
 
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
@@ -333,7 +348,7 @@ try {
 } finally {
   page?.close();
   child.kill();
-  await new Promise((resolve) => child.once("exit", resolve));
+  await waitForExit(child);
   await server.close();
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

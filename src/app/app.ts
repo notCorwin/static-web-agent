@@ -139,6 +139,12 @@ export class AgentApp {
     }, { signal });
     this.element("open-settings").addEventListener("click", () => {
       if (this.harness?.modelId === undefined) return;
+      if (this.connectionEditing) {
+        this.connectionEditing = false;
+        this.render();
+        this.focusComposer();
+        return;
+      }
       this.connectionEditing = true;
       this.render();
       this.element<HTMLInputElement>("model-endpoint").focus();
