@@ -61,6 +61,8 @@ export class AgentApp {
   private runStatus = "";
   private runStatusKind: "normal" | "success" | "error" = "normal";
   private connectionRunStatusBeforeEdit: { message: string; kind: "normal" | "success" | "error" } | undefined;
+  private runRevision = 0;
+  private connectionRunRevisionBeforeEdit: number | undefined;
   private messageEditRunStatusBefore: { message: string; kind: "normal" | "success" | "error" } | undefined;
   private followChat = true;
   private renderedMessages: readonly ModelMessage[] | undefined;
@@ -88,6 +90,8 @@ export class AgentApp {
     this.stream = undefined;
     this.runStatus = "";
     this.connectionRunStatusBeforeEdit = undefined;
+    this.runRevision = 0;
+    this.connectionRunRevisionBeforeEdit = undefined;
     this.messageEditRunStatusBefore = undefined;
     this.bindEvents();
 
@@ -132,6 +136,8 @@ export class AgentApp {
     this.runStatus = "";
     this.runStatusKind = "normal";
     this.connectionRunStatusBeforeEdit = undefined;
+    this.runRevision = 0;
+    this.connectionRunRevisionBeforeEdit = undefined;
     this.messageEditRunStatusBefore = undefined;
     this.followChat = true;
     this.renderedMessages = undefined;
@@ -164,7 +170,7 @@ export class AgentApp {
     }, { signal, passive: true });
     window.addEventListener("resize", () => {
       const chat = this.element("chat-log");
-      if (this.followChat) chat.scrollTop = chat.scrollHeight;
+      if (this.followChat && !this.connectionEditing) chat.scrollTop = chat.scrollHeight;
       this.keepMessageEditVisible();
     }, { signal });
     input.addEventListener("keydown", (event) => {
@@ -195,13 +201,15 @@ export class AgentApp {
       if (this.harness?.modelId === undefined) return;
       if (this.connectionEditing) {
         const previousStatus = this.connectionRunStatusBeforeEdit;
+        const runRevisionBeforeEdit = this.connectionRunRevisionBeforeEdit;
         this.connectionRunStatusBeforeEdit = undefined;
+        this.connectionRunRevisionBeforeEdit = undefined;
         this.connectionEditing = false;
         this.applyConnectionSettings(this.connectedSettings);
         this.clearFieldError("model-endpoint");
         this.clearFieldError("model-name");
         this.setConnectionStatus("");
-        if (previousStatus !== undefined) this.setStatus(previousStatus.message, previousStatus.kind);
+        if (previousStatus !== undefined && runRevisionBeforeEdit === this.runRevision) this.setStatus(previousStatus.message, previousStatus.kind);
         this.render();
         this.restoreConnectionScroll();
         this.focusComposer();
@@ -211,6 +219,7 @@ export class AgentApp {
       this.connectionScrollTop = chat.scrollTop;
       this.connectionFollowChat = this.followChat;
       this.connectionRunStatusBeforeEdit = { message: this.runStatus, kind: this.runStatusKind };
+      this.connectionRunRevisionBeforeEdit = this.runRevision;
       this.connectionEditing = true;
       this.render();
       this.element("chat-log").scrollTop = 0;
@@ -315,10 +324,12 @@ export class AgentApp {
       && this.connectedSettings.apiKey === settings.apiKey
       && this.connectionEditing) {
       const previousStatus = this.connectionRunStatusBeforeEdit;
+      const runRevisionBeforeEdit = this.connectionRunRevisionBeforeEdit;
       this.connectionRunStatusBeforeEdit = undefined;
+      this.connectionRunRevisionBeforeEdit = undefined;
       this.connectionEditing = false;
       this.setConnectionStatus("");
-      if (previousStatus !== undefined) this.setStatus(previousStatus.message, previousStatus.kind);
+      if (previousStatus !== undefined && runRevisionBeforeEdit === this.runRevision) this.setStatus(previousStatus.message, previousStatus.kind);
       this.render();
       this.restoreConnectionScroll();
       this.focusComposer();
@@ -333,6 +344,7 @@ export class AgentApp {
       this.connectedSettings = settings;
       this.connectedModelName = settings.model;
       this.connectionRunStatusBeforeEdit = undefined;
+      this.connectionRunRevisionBeforeEdit = undefined;
       this.connectionEditing = false;
       this.setConnectionStatus("");
       this.setStatus(`Connected to ${displayModelName(settings.model)}.`, "success");
@@ -381,6 +393,7 @@ export class AgentApp {
     const generation = this.lifecycleGeneration;
     const controller = new AbortController();
     this.runController = controller;
+    this.runRevision += 1;
     this.busy = true;
     this.stream = { text: "", tools: [] };
     this.setStatus("Running…", "normal");
@@ -424,6 +437,7 @@ export class AgentApp {
       }
     } finally {
       if (generation === this.lifecycleGeneration) {
+        this.runRevision += 1;
         this.busy = false;
         this.runController = undefined;
         this.render();
@@ -569,7 +583,7 @@ export class AgentApp {
         this.liveElement = live;
       }
     }
-    if (this.followChat) chat.scrollTop = chat.scrollHeight;
+    if (this.followChat && !this.connectionEditing) chat.scrollTop = chat.scrollHeight;
   }
 
   private startMessageEdit(index: number): void {

@@ -463,6 +463,17 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Keep my place';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "a run started from the visible composer should finish while settings remain open");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "closing settings must preserve a run completed behind the panel");
 
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Use the page tool';
@@ -471,6 +482,35 @@ try {
   await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
   await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1).open = true");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.open"), true);
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Keep my place';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.streaming-run') !== null");
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    window.dispatchEvent(new Event('resize'));
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  const settingsDuringStream = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const card = document.querySelector('#connection-card');
+    const endpoint = document.querySelector('#model-endpoint');
+    return {
+      card: card?.getBoundingClientRect().toJSON(),
+      endpoint: endpoint?.getBoundingClientRect().toJSON(),
+      chat: chat?.getBoundingClientRect().toJSON(),
+      header: document.querySelector('.chat-header')?.getBoundingClientRect().toJSON(),
+      scrollTop: chat?.scrollTop,
+    };
+  })()`);
+  assert.ok(settingsDuringStream.card.top >= settingsDuringStream.header.bottom - 1, `settings should stay below the header while a stream updates: ${JSON.stringify(settingsDuringStream)}`);
+  assert.ok(settingsDuringStream.endpoint.top >= settingsDuringStream.card.top && settingsDuringStream.endpoint.bottom <= settingsDuringStream.chat.bottom, `settings fields should stay visible while a stream updates: ${JSON.stringify(settingsDuringStream)}`);
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "a completed run should update status while settings remain open");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "closing settings must not restore a stale running status");
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Keep my place';
     document.querySelector('#composer-form').requestSubmit();
