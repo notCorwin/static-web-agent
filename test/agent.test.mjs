@@ -984,6 +984,30 @@ test("Harness preserves non-enumerable own run fields", async () => {
   await harness.dispose();
 });
 
+test("custom array iterators cannot replace indexed message data", async () => {
+  const messages = [{ role: "invalid", content: "actual" }];
+  Object.setPrototypeOf(messages, {
+    [Symbol.iterator]: function* () {
+      yield { role: "user", content: "forged" };
+    },
+  });
+  let modelCalls = 0;
+  const harness = await createHarness({
+    model: {
+      id: "indexed-messages",
+      async *stream() {
+        modelCalls += 1;
+        yield completed("unexpected");
+      },
+    },
+  });
+  const result = await harness.run({ messages });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MESSAGES");
+  assert.equal(modelCalls, 0);
+  await harness.dispose();
+});
+
 test("message fields cannot come from the prototype chain", async () => {
   const keys = ["role", "content"];
   const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(Object.prototype, key)]));

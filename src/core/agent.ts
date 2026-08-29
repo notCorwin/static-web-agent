@@ -61,6 +61,10 @@ function cloneMessages(messages: readonly ModelMessage[]): ModelMessage[] {
   return clone(messages).map((message) => freeze(message));
 }
 
+function copyArrayByIndex<T>(items: readonly T[]): T[] {
+  return Array.from({ length: items.length }, (_, index) => items[index] as T);
+}
+
 function abortReason(signal: AbortSignal): unknown {
   try {
     return signal.reason;
@@ -188,13 +192,14 @@ function snapshotAssistant(message: AssistantMessage): AssistantMessage {
   return {
     role: "assistant",
     content: message.content,
-    ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls.map(snapshotToolCall) }),
+    ...(message.toolCalls === undefined ? {} : { toolCalls: copyArrayByIndex(message.toolCalls).map(snapshotToolCall) }),
   };
 }
 
 function assertToolCalls(calls: readonly ToolCall[]): void {
   const ids = new Set<string>();
-  for (const call of calls) {
+  for (let index = 0; index < calls.length; index += 1) {
+    const call = calls[index] as ToolCall;
     assertToolCall(call);
     if (ids.has(call.id)) throw new HarnessError("INVALID_MODEL_OUTPUT", `Model returned duplicate tool call ID “${call.id}”.`);
     ids.add(call.id);
@@ -254,7 +259,8 @@ function assertAssistant(message: AssistantMessage): void {
 function assertMessages(messages: readonly ModelMessage[]): void {
   if (!Array.isArray(messages)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be an array.");
   const pendingToolCalls = new Map<string, string>();
-  for (const message of messages) {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
     if (!isJsonValue(message) || typeof message !== "object" || Array.isArray(message)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be JSON objects.");
     const record = message as Record<string, unknown>;
     if (!hasEnumerableOwn(record, "role") || (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool")) throw new HarnessError("INVALID_MESSAGES", "Model messages have an invalid role.");
@@ -262,7 +268,11 @@ function assertMessages(messages: readonly ModelMessage[]): void {
     if (record.role === "assistant") {
       assertAssistant(message as unknown as AssistantMessage);
       if (pendingToolCalls.size > 0) throw new HarnessError("INVALID_MESSAGES", `Tool call “${pendingToolCalls.keys().next().value}” has no result before the next assistant message.`);
-      for (const call of (message as unknown as AssistantMessage).toolCalls ?? []) pendingToolCalls.set(call.id, call.name);
+      const toolCalls = (message as unknown as AssistantMessage).toolCalls ?? [];
+      for (let callIndex = 0; callIndex < toolCalls.length; callIndex += 1) {
+        const call = toolCalls[callIndex] as ToolCall;
+        pendingToolCalls.set(call.id, call.name);
+      }
     } else if (record.role === "tool") {
       if (!hasEnumerableOwn(record, "callId") || typeof record.callId !== "string" || record.callId.length === 0 || !hasEnumerableOwn(record, "name") || typeof record.name !== "string" || record.name.length === 0) {
         throw new HarnessError("INVALID_MESSAGES", "Tool messages need a call ID and name.");
@@ -315,7 +325,7 @@ function isPageExecutionResult(value: unknown): value is PageExecutionResult {
     && isJsonValue(record.value)
     && hasEnumerableOwn(record, "logs")
     && Array.isArray(record.logs)
-    && Array.from(record.logs).every((line) => typeof line === "string")
+    && Array.prototype.every.call(record.logs, (line: unknown) => typeof line === "string")
     && hasEnumerableOwn(record, "durationMs")
     && typeof record.durationMs === "number"
     && Number.isFinite(record.durationMs)
@@ -335,7 +345,7 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
     const result = await runtime.execute(input.code as string, pageInput === undefined ? null : clone(pageInput), { signal });
     throwIfAborted(signal);
     if (!isPageExecutionResult(result)) return errorResult("INVALID_PAGE_RUNTIME_RESULT", "Page runtime returned an invalid result.", duration());
-    return { ok: true, value: { value: clone(result.value), logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
+    return { ok: true, value: { value: clone(result.value), logs: copyArrayByIndex(result.logs), durationMs: result.durationMs }, durationMs: duration() };
   } catch (error) {
     if (signal.aborted) throw error;
     const toolError = isAbortError(error)
@@ -601,7 +611,7 @@ export class Agent {
       let calls: ToolCall[];
       try {
         calls = completed.toolCalls !== undefined && completed.toolCalls.length > 0
-          ? [...completed.toolCalls]
+          ? copyArrayByIndex(completed.toolCalls)
           : streamedCalls.length > 0
             ? streamedCalls
             : completeStreamedToolCalls(streamedCallDeltas);
