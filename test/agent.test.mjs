@@ -474,6 +474,21 @@ test("hostile model errors still end the run visibly", async () => {
   }
 });
 
+test("non-string error messages stay out of public run results", async () => {
+  const error = new Error("provider failed");
+  error.message = { unsafe: true };
+  assert.deepEqual(errorInfo(error, "MODEL_ERROR"), { code: "MODEL_ERROR", message: "Operation failed." });
+  const harness = await createHarness({ model: { id: "non-string-error", async *stream() { throw error; } } });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "failed");
+    assert.deepEqual(result.error, { code: "MODEL_ERROR", message: "Operation failed." });
+    assert.doesNotThrow(() => JSON.stringify(result));
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("accessor-backed assistant output is rejected before use", async () => {
   let reads = 0;
   const message = { role: "assistant", get content() { reads += 1; return reads === 1 ? "ok" : { length: 1 }; } };
