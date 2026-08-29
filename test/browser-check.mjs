@@ -248,6 +248,31 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
+  assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test. Ask the agent to do something.");
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#model-name').value = 'browser-test-switched';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test Switched. Ask the agent to do something.");
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#model-name').value = 'browser-test';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'line one\\nline two';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  assert.ok(await page.evaluate("document.querySelector('#message-input').clientHeight > 44 && document.querySelector('#message-input').scrollHeight <= document.querySelector('#message-input').clientHeight"), "multi-line input must remain visible");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
   assert.deepEqual(await page.evaluate(`({ text: document.querySelector('#send-button')?.textContent, disabled: document.querySelector('#send-button')?.disabled, busy: document.querySelector('#chat-log')?.getAttribute('aria-busy') })`), { text: "Send", disabled: false, busy: "false" });
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
@@ -343,6 +368,17 @@ try {
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.scrollTop"), 0, "streaming must respect a manual scroll-up");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.open"), true, "expanded tool details must survive later streaming");
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+  const scrollBeforeSettings = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = chat.scrollHeight;
+    chat.dispatchEvent(new Event('scroll'));
+    return chat.scrollTop;
+  })()`);
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.ok(Math.abs(await page.evaluate("document.querySelector('#chat-log')?.scrollTop") - scrollBeforeSettings) < 2, "closing settings must restore the conversation position");
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Fail during model';
     document.querySelector('#composer-form').requestSubmit();
@@ -362,6 +398,18 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('.stream-error') !== null");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2, "failed runs should not duplicate committed tool traces");
+
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Use the page tool';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
+  const reusedToolCall = await page.evaluate(`(() => {
+    const traces = [...document.querySelectorAll('.tool-trace')];
+    return { firstOpen: traces[0]?.open, lastOpen: traces.at(-1)?.open };
+  })()`);
+  assert.equal(reusedToolCall.firstOpen, true, "the original expanded tool must stay open");
+  assert.equal(reusedToolCall.lastOpen, false, "a reused call ID must not expand the new tool card");
 
   await page.evaluate(`document.querySelector('#open-settings').click()`);
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");

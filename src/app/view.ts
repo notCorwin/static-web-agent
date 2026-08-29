@@ -185,7 +185,11 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
 
   if (message.content.length > 0) article.append(textElement("div", message.content, "message-body"));
   if (message.role === "assistant") {
-    for (const call of message.toolCalls ?? []) article.append(toolElement(call, undefined, undefined, results.get(call), "finished"));
+    for (const [callIndex, call] of (message.toolCalls ?? []).entries()) {
+      const details = toolElement(call, undefined, undefined, results.get(call), "finished");
+      details.dataset.toolCallKey = `${index}:${callIndex}:${call.id}`;
+      article.append(details);
+    }
   }
   const actions = document.createElement("div");
   actions.className = "message-actions";

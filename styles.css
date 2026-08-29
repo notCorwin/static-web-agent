@@ -54,7 +54,7 @@ button:disabled { cursor: default; opacity: .58; }
 .settings-button { min-height: 32px; }
 .chat-scroll { position: relative; min-width: 0; min-height: 0; padding: 18px clamp(18px, 4vw, 48px); overflow: auto; overscroll-behavior: contain; }
 .conversation-content { display: flex; flex-direction: column; gap: 18px; min-width: 0; min-height: 100%; }
-.connection-card { position: absolute; z-index: 2; top: 50%; left: 50%; width: min(680px, calc(100% - 32px)); max-height: calc(100% - 32px); margin: 0; overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
+.connection-card { position: absolute; z-index: 2; top: 50%; left: 50%; width: min(680px, calc(100% - 32px)); max-height: 100%; margin: 0; overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
 .connection-card[hidden], .settings-button[hidden], .send-button[hidden] { display: none; }
 .connection-intro { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
 .connection-intro h2 { margin: 3px 0 0; font-size: 22px; letter-spacing: -.03em; }
@@ -105,7 +105,7 @@ button:disabled { cursor: default; opacity: .58; }
 .composer-wrap { padding: 10px clamp(18px, 4vw, 48px) 18px; }
 .composer { display: grid; gap: 5px; }
 .composer-input-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
-.composer textarea { min-height: 44px; max-height: 220px; padding: 11px 12px; resize: vertical; line-height: 1.4; }
+.composer textarea { field-sizing: content; min-height: 44px; max-height: 220px; padding: 11px 12px; resize: vertical; line-height: 1.4; }
 .send-button { min-height: 44px; }
 .status-message { min-height: 17px; color: var(--muted); overflow-wrap: anywhere; }
 .status-message.success { color: var(--success); }

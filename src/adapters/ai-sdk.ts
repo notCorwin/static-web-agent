@@ -312,7 +312,7 @@ export class AiSdkAdapter implements ModelAdapter {
           case "tool-input-start": {
             const index = indexes.get(part.id) ?? nextIndex++;
             indexes.set(part.id, index);
-            yield { type: "tool-call-delta", delta: { index, id: part.id, name: part.toolName } };
+            yield { type: "tool-call-delta", delta: { index, id: part.id, name: localToolName(part.toolName, names) } };
             break;
           }
           case "tool-input-delta": {

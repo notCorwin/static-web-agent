@@ -50,6 +50,7 @@ export class AgentApp {
   private connecting = false;
   private editingIndex: number | undefined;
   private connectionEditing = false;
+  private connectedModelName: string | undefined;
   private lifecycleGeneration = 0;
   private renderScheduled = false;
   private renderFrame: number | undefined;
@@ -59,8 +60,11 @@ export class AgentApp {
   private followChat = true;
   private renderedMessages: readonly ModelMessage[] | undefined;
   private renderedConnected: boolean | undefined;
+  private renderedConnectedModelName: string | undefined;
   private renderedEditingIndex: number | undefined;
   private liveElement: HTMLElement | undefined;
+  private connectionScrollTop: number | undefined;
+  private connectionFollowChat: boolean | undefined;
 
   constructor(root: HTMLElement, options: AgentAppOptions = {}) {
     this.root = root;
@@ -115,13 +119,17 @@ export class AgentApp {
     this.connecting = false;
     this.editingIndex = undefined;
     this.connectionEditing = false;
+    this.connectedModelName = undefined;
     this.runStatus = "";
     this.runStatusKind = "normal";
     this.followChat = true;
     this.renderedMessages = undefined;
     this.renderedConnected = undefined;
+    this.renderedConnectedModelName = undefined;
     this.renderedEditingIndex = undefined;
     this.liveElement = undefined;
+    this.connectionScrollTop = undefined;
+    this.connectionFollowChat = undefined;
     this.ready = false;
     this.root.replaceChildren();
     for (const key of Object.keys(this.elements)) Reflect.deleteProperty(this.elements, key);
@@ -164,12 +172,18 @@ export class AgentApp {
       if (this.connectionEditing) {
         this.connectionEditing = false;
         this.render();
+        this.restoreConnectionScroll();
         this.focusComposer();
         return;
       }
+      const chat = this.element("chat-log");
+      this.connectionScrollTop = chat.scrollTop;
+      this.connectionFollowChat = this.followChat;
       this.connectionEditing = true;
       this.render();
-      this.element<HTMLInputElement>("model-endpoint").focus();
+      this.element("chat-log").scrollTop = 0;
+      this.element("connection-card").scrollTop = 0;
+      this.element<HTMLInputElement>("model-endpoint").focus({ preventScroll: true });
     }, { signal });
 
     for (const id of ["model-endpoint", "model-name"]) {
@@ -259,10 +273,12 @@ export class AgentApp {
     try {
       await connection.connect(settings);
       if (generation !== this.lifecycleGeneration) return;
+      this.connectedModelName = settings.model;
       this.connectionEditing = false;
       this.setConnectionStatus("");
       this.setStatus(`Connected to ${displayModelName(settings.model)}.`, "success");
       this.render();
+      this.restoreConnectionScroll();
       this.focusComposer();
     } catch (error) {
       if (generation === this.lifecycleGeneration) {
@@ -455,11 +471,12 @@ export class AgentApp {
     const connected = this.harness?.modelId !== undefined;
     const historyChanged = this.renderedMessages !== this.messages
       || this.renderedConnected !== connected
+      || this.renderedConnectedModelName !== this.connectedModelName
       || this.renderedEditingIndex !== this.editingIndex;
 
     if (historyChanged) {
-      const openToolCallIds = new Set(
-        [...conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-id][open]")].map((details) => details.dataset.toolCallId),
+      const openToolCallKeys = new Set(
+        [...conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-key][open]")].map((details) => details.dataset.toolCallKey),
       );
       conversation.replaceChildren();
       if (!connected) {
@@ -467,16 +484,17 @@ export class AgentApp {
       } else if (this.messages.length === 0 && this.stream === undefined) {
         const empty = document.createElement("div");
         empty.className = "empty-state";
-        empty.append(textElement("h2", "Ready when you are"), textElement("p", `Connected to ${displayModelName(this.harness?.modelId ?? "model")}. Ask the agent to do something.`));
+        empty.append(textElement("h2", "Ready when you are"), textElement("p", `Connected to ${displayModelName(this.connectedModelName ?? this.harness?.modelId ?? "model")}. Ask the agent to do something.`));
         conversation.append(empty);
       } else {
         conversation.append(...messageElements(this.messages, this.editingIndex));
       }
-      for (const details of conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-id]")) {
-        if (details.dataset.toolCallId !== undefined && openToolCallIds.has(details.dataset.toolCallId)) details.open = true;
+      for (const details of conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-key]")) {
+        if (details.dataset.toolCallKey !== undefined && openToolCallKeys.has(details.dataset.toolCallKey)) details.open = true;
       }
       this.renderedMessages = this.messages;
       this.renderedConnected = connected;
+      this.renderedConnectedModelName = this.connectedModelName;
       this.renderedEditingIndex = this.editingIndex;
     }
 
@@ -514,6 +532,15 @@ export class AgentApp {
 
   private setConnectionStatus(message: string): void {
     this.element("connection-status").textContent = message;
+  }
+
+  private restoreConnectionScroll(): void {
+    if (this.connectionScrollTop === undefined) return;
+    const chat = this.element("chat-log");
+    chat.scrollTop = this.connectionScrollTop;
+    if (this.connectionFollowChat !== undefined) this.followChat = this.connectionFollowChat;
+    this.connectionScrollTop = undefined;
+    this.connectionFollowChat = undefined;
   }
 
   private setStatus(message: string, kind: "normal" | "success" | "error"): void {
