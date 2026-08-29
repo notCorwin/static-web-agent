@@ -903,3 +903,10 @@ test("a Harness without a model fails explicitly and disposal is final", async (
   assert.deepEqual(statuses, ["active", "disposed"]);
   await assert.rejects(harness.run({ messages: [] }), (error) => error instanceof HarnessError && error.code === "HARNESS_DISPOSED");
 });
+
+test("a disposed Harness does not retain late subscribers", async () => {
+  const harness = await createHarness();
+  await harness.dispose();
+  harness.subscribe(() => {});
+  assert.equal(harness.listeners.size, 0);
+});

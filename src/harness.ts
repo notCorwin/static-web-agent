@@ -103,7 +103,7 @@ export class Harness {
   }
 
   subscribe(listener: HarnessListener): () => void {
-    this.listeners.add(listener);
+    if (!this.disposed) this.listeners.add(listener);
     try {
       const observed = listener(this.snapshot()) as unknown;
       if (observed !== undefined) void Promise.resolve(observed).catch(() => undefined);
