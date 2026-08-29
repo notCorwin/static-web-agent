@@ -521,7 +521,7 @@ try {
     };
   })()`);
   assert.equal(compactSettings.pageWidth, 280);
-  assert.ok(compactSettings.endpoint.top >= compactSettings.card.top && compactSettings.endpoint.bottom <= compactSettings.chat.bottom, "the required endpoint stays visible in a short settings card");
+  assert.ok(compactSettings.endpoint.top >= compactSettings.card.top && compactSettings.endpoint.bottom <= compactSettings.chat.bottom, `the required endpoint stays visible in a short settings card: ${JSON.stringify(compactSettings)}`);
   assert.equal(compactSettings.focused, "model-endpoint");
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
