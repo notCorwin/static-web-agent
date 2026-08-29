@@ -288,11 +288,7 @@ export class AgentApp {
       });
       if (generation !== this.lifecycleGeneration) return;
       this.messages = [...result.messages];
-      const finishedToolIds = new Set(result.messages.filter((message) => message.role === "tool").map((message) => message.callId));
-      const retainPendingTools = (stream: StreamState): StreamTool[] => stream.tools.filter((item) => {
-        const id = item.call?.id ?? item.delta?.id;
-        return id === undefined || !finishedToolIds.has(id);
-      });
+      const retainPendingTools = (stream: StreamState): StreamTool[] => stream.tools.filter((item) => item.status !== "finished");
       if (result.status === "completed") {
         this.stream = undefined;
         this.setStatus("Response complete.", "success");
@@ -350,7 +346,7 @@ export class AgentApp {
   }
 
   private mergeToolDelta(stream: StreamState, delta: ToolCallDelta): void {
-    const index = stream.tools.findIndex((item) => item.delta?.index === delta.index || (delta.id !== undefined && (item.call?.id === delta.id || item.delta?.id === delta.id)));
+    const index = stream.tools.findIndex((item) => item.status !== "finished" && (item.delta?.index === delta.index || (delta.id !== undefined && (item.call?.id === delta.id || item.delta?.id === delta.id))));
     const current = index < 0 ? undefined : stream.tools[index];
     const previous = current?.delta;
     const merged: ToolCallDelta = {
@@ -365,7 +361,7 @@ export class AgentApp {
   }
 
   private updateTool(stream: StreamState, call: ToolCall, result: ToolExecutionResult | undefined, status: StreamTool["status"]): void {
-    const index = stream.tools.findIndex((item) => item.call?.id === call.id || item.delta?.id === call.id);
+    const index = stream.tools.findIndex((item) => item.status !== "finished" && (item.call?.id === call.id || item.delta?.id === call.id));
     const fallbackIndex = index >= 0
       ? index
       : stream.tools.findIndex((item) => item.status !== "finished" && (item.call?.name === call.name || item.delta?.name === call.name));

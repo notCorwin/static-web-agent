@@ -62,7 +62,12 @@ async function startServer() {
         return;
       }
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      if (messages.at(-1)?.role === "tool") {
+      if (lastUser?.content === "Fail during model") {
+        const code = "return { partial: true }";
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
+        response.end(`data: ${JSON.stringify({ error: { message: "intentional model failure" } })}\n\n`);
+        return;
+      } else if (messages.at(-1)?.role === "tool") {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "done from browser" } }] })}\n\n`);
       } else {
         const code = lastUser?.content === "Cancel this run"
@@ -287,11 +292,29 @@ try {
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
 
   await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Use the page tool';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.message.assistant .message-body')?.textContent.includes('done from browser') === true");
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Fail during model';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.stream-error') !== null");
+  const tracesAfterModelFailure = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => ({
+    summary: trace.querySelector('summary')?.textContent,
+    code: trace.querySelector('.trace-code')?.textContent,
+  })) )()`);
+  assert.equal(tracesAfterModelFailure.length, 2);
+  assert.match(tracesAfterModelFailure.at(-1).summary, /preparing|running/);
+  assert.match(tracesAfterModelFailure.at(-1).code, /partial/);
+
+  await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Fail after tool';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('.stream-error') !== null");
-  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 1, "failed runs should not duplicate committed tool traces");
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2, "failed runs should not duplicate committed tool traces");
 
   await page.evaluate(`document.querySelector('#open-settings').click()`);
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
