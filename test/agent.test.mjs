@@ -212,6 +212,33 @@ test("model timeouts suppress late events from an uncooperative stream", async (
   await harness.dispose();
 });
 
+test("model cancellation preserves the signal reason", async () => {
+  let started;
+  const modelStarted = new Promise((resolve) => { started = resolve; });
+  const harness = await createHarness({
+    model: {
+      id: "reason-preserving-cancel",
+      stream({ signal }) {
+        started();
+        return (async function* () {
+          await new Promise((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", resolve, { once: true });
+          });
+        })();
+      },
+    },
+  });
+  const controller = new AbortController();
+  const running = harness.run({ messages: [{ role: "user", content: "wait" }], signal: controller.signal });
+  await modelStarted;
+  controller.abort(new HarnessError("MODEL_REPLACED", "connection changed"));
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.error.code, "MODEL_REPLACED");
+  await harness.dispose();
+});
+
 test("malformed tool history is rejected at the run boundary", async () => {
   const harness = await createHarness({ model: { id: "history-validation", async *stream() { yield completed("unused"); } } });
   const result = await harness.run({ messages: [{ role: "tool", callId: "call-1", name: "page.run", content: "{}", isError: "true" }] });

@@ -433,9 +433,11 @@ export class Agent {
       try {
         const abort = new Promise<never>((_, reject) => {
           const onAbort = () => {
-            const error = new Error("Operation cancelled.");
-            error.name = "AbortError";
-            reject(error);
+            try {
+              throwIfAborted(signal);
+            } catch (error) {
+              reject(error);
+            }
           };
           signal.addEventListener("abort", onAbort, { once: true });
           if (signal.aborted) onAbort();
