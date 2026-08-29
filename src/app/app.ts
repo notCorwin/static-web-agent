@@ -303,6 +303,21 @@ export class AgentApp {
     if (this.connecting || generation !== this.lifecycleGeneration) return;
     const connection = this.modelConnection;
     if (connection === undefined) return;
+    if (this.connectedSettings !== undefined
+      && this.connectedSettings.endpoint === settings.endpoint
+      && this.connectedSettings.model === settings.model
+      && this.connectedSettings.apiKey === settings.apiKey
+      && this.connectionEditing) {
+      const previousStatus = this.connectionRunStatusBeforeEdit;
+      this.connectionRunStatusBeforeEdit = undefined;
+      this.connectionEditing = false;
+      this.setConnectionStatus("");
+      if (previousStatus !== undefined) this.setStatus(previousStatus.message, previousStatus.kind);
+      this.render();
+      this.restoreConnectionScroll();
+      this.focusComposer();
+      return;
+    }
     this.connecting = true;
     this.setConnectionStatus(automatic ? "Restoring connection…" : "Connecting…");
     this.renderConnection();

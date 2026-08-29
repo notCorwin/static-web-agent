@@ -370,8 +370,15 @@ try {
     document.querySelector('#open-settings').click();
     document.querySelector('#connection-form').requestSubmit();
   })()`);
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Stop' && document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Running…", "submitting unchanged connection settings should keep the active run alive");
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#model-name').value = 'browser-test-replaced';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send' && document.querySelector('#connection-card')?.hidden === true");
-  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Connected to Browser Test.");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Connected to Browser Test Replaced.");
 
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
