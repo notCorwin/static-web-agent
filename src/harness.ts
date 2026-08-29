@@ -99,14 +99,15 @@ export class Harness {
     if (model === undefined) throw new HarnessError("MODEL_NOT_CONNECTED", "Connect a model adapter before starting a run.");
 
     const controller = new AbortController();
-    const relayAbort = () => controller.abort(abortReason(request.signal));
-    request.signal?.addEventListener("abort", relayAbort, { once: true });
-    if (request.signal?.aborted) relayAbort();
+    const requestSignal = Object.hasOwn(request, "signal") ? request.signal : undefined;
+    const relayAbort = () => controller.abort(abortReason(requestSignal));
+    requestSignal?.addEventListener("abort", relayAbort, { once: true });
+    if (requestSignal?.aborted) relayAbort();
     this.activeRuns.add(controller);
     try {
       return await new Agent(model, this.pageRuntime).run({ ...request, signal: controller.signal });
     } finally {
-      removeAbortListener(request.signal, relayAbort);
+      removeAbortListener(requestSignal, relayAbort);
       this.activeRuns.delete(controller);
     }
   }

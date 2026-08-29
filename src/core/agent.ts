@@ -391,15 +391,19 @@ export class Agent {
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     const id = runId();
-    const signal = request.signal ?? NEVER_ABORTED_SIGNAL;
-    validatePositive(request.modelTimeoutMs, "modelTimeoutMs");
-    validatePositive(request.toolTimeoutMs, "toolTimeoutMs");
-    if (request.maxTurns !== undefined && request.maxTurns !== Number.POSITIVE_INFINITY && (!Number.isInteger(request.maxTurns) || request.maxTurns < 1)) throw new Error("maxTurns must be a positive integer or Infinity.");
+    const signal = (Object.hasOwn(request, "signal") ? request.signal : undefined) ?? NEVER_ABORTED_SIGNAL;
+    const modelTimeoutMs = Object.hasOwn(request, "modelTimeoutMs") ? request.modelTimeoutMs : undefined;
+    const toolTimeoutMs = Object.hasOwn(request, "toolTimeoutMs") ? request.toolTimeoutMs : undefined;
+    const maxTurns = Object.hasOwn(request, "maxTurns") ? request.maxTurns : undefined;
+    const onEvent = Object.hasOwn(request, "onEvent") ? request.onEvent : undefined;
+    validatePositive(modelTimeoutMs, "modelTimeoutMs");
+    validatePositive(toolTimeoutMs, "toolTimeoutMs");
+    if (maxTurns !== undefined && maxTurns !== Number.POSITIVE_INFINITY && (!Number.isInteger(maxTurns) || maxTurns < 1)) throw new Error("maxTurns must be a positive integer or Infinity.");
 
     const messages: ModelMessage[] = [];
     let turns = 0;
     let usage: ModelUsage | undefined;
-    this.emit(request.onEvent, { type: "run-started", runId: id });
+    this.emit(onEvent, { type: "run-started", runId: id });
 
     const finish = (result: Omit<AgentRunResult, "runId" | "messages" | "turns" | "usage">): AgentRunResult => {
       const complete: AgentRunResult = freeze({
@@ -412,17 +416,18 @@ export class Agent {
         ...(result.error === undefined ? {} : { error: result.error }),
         ...(usage === undefined ? {} : { usage }),
       });
-      this.emit(request.onEvent, { type: "run-finished", result: complete });
+      this.emit(onEvent, { type: "run-finished", result: complete });
       return complete;
     };
 
     const fail = (error: ToolError, partial?: AssistantMessage): AgentRunResult => {
       const immutableError = freeze(error);
-      this.emit(request.onEvent, { type: "run-error", error: immutableError });
+      this.emit(onEvent, { type: "run-error", error: immutableError });
       return finish({ status: "failed", error: immutableError, ...(partial === undefined ? {} : { partial }) });
     };
 
     try {
+      if (!Object.hasOwn(request, "messages")) throw new HarnessError("INVALID_MESSAGES", "Model messages must be an array.");
       assertMessages(request.messages);
       messages.push(...cloneMessages(request.messages));
     } catch (error) {
@@ -437,7 +442,7 @@ export class Agent {
       }
 
       turns += 1;
-      this.emit(request.onEvent, { type: "model-started", turn: turns });
+      this.emit(onEvent, { type: "model-started", turn: turns });
       let completed: AssistantMessage | undefined;
       const streamedText: string[] = [];
       const streamedCalls: ToolCall[] = [];
@@ -471,7 +476,7 @@ export class Agent {
                 const delta = event.delta;
                 if (delta.length > 0) {
                   streamedText.push(delta);
-                  this.emit(request.onEvent, { type: "text-delta", delta });
+                  this.emit(onEvent, { type: "text-delta", delta });
                 }
                 break;
               }
@@ -491,7 +496,7 @@ export class Agent {
                 }
                 if (delta.name !== undefined) draft.name.push(delta.name);
                 if (delta.arguments !== undefined) draft.arguments.push(delta.arguments);
-                this.emit(request.onEvent, { type: "tool-call-delta", delta });
+                this.emit(onEvent, { type: "tool-call-delta", delta });
                 break;
               }
               case "tool-call": {
@@ -499,7 +504,7 @@ export class Agent {
                 const call = event.call as unknown as ToolCall;
                 assertToolCall(call);
                 streamedCalls.push(snapshotToolCall(call));
-                this.emit(request.onEvent, { type: "tool-call-delta", delta: { index: streamedCalls.length - 1, id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) } });
+                this.emit(onEvent, { type: "tool-call-delta", delta: { index: streamedCalls.length - 1, id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) } });
                 break;
               }
               case "usage": {
@@ -517,7 +522,7 @@ export class Agent {
                 completed = snapshotAssistant(message);
                 if (streamedText.length === 0 && message.content.length > 0) {
                   streamedText.push(message.content);
-                  this.emit(request.onEvent, { type: "text-delta", delta: message.content });
+                  this.emit(onEvent, { type: "text-delta", delta: message.content });
                 }
                 sawCompleted = true;
                 const currentUsage = event.usage as ModelUsage | undefined;
@@ -559,7 +564,6 @@ export class Agent {
           if (signal.aborted) onAbort();
           abortListener = onAbort;
         });
-        const modelTimeoutMs = request.modelTimeoutMs;
         const timeout = modelTimeoutMs === undefined || modelTimeoutMs === Number.POSITIVE_INFINITY
           ? undefined
           : new Promise<never>((_, reject) => {
@@ -614,20 +618,20 @@ export class Agent {
       if (assistant.content.trim().length === 0 && calls.length === 0) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned an empty response." });
       const immutableAssistant = freeze(assistant);
       messages.push(immutableAssistant);
-      this.emit(request.onEvent, { type: "assistant-message", message: immutableAssistant });
+      this.emit(onEvent, { type: "assistant-message", message: immutableAssistant });
 
       const appendToolResult = (call: ToolCall, result: ToolExecutionResult): void => {
         const toolMessage: ToolMessage = result.ok
           ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value as JsonObject), durationMs: result.durationMs }
           : { role: "tool", callId: call.id, name: call.name, content: jsonString(jsonError(result.error)), isError: true, durationMs: result.durationMs };
-        this.emit(request.onEvent, { type: "tool-finished", call, result: freeze(result) });
+        this.emit(onEvent, { type: "tool-finished", call, result: freeze(result) });
         messages.push(Object.freeze(toolMessage));
       };
       const cancelTools = (startIndex: number, error: unknown, firstStarted = false): AgentRunResult => {
         for (let index = startIndex; index < calls.length; index += 1) {
           const call = calls[index];
           if (call === undefined) break;
-          if (!(firstStarted && index === startIndex)) this.emit(request.onEvent, { type: "tool-started", call });
+          if (!(firstStarted && index === startIndex)) this.emit(onEvent, { type: "tool-started", call });
           appendToolResult(call, abortedToolResult(error));
         }
         return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
@@ -638,9 +642,9 @@ export class Agent {
         return cancelTools(0, error);
       }
       if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
-      if (request.maxTurns !== undefined && turns >= request.maxTurns) {
+      if (maxTurns !== undefined && turns >= maxTurns) {
         for (const call of calls) {
-          this.emit(request.onEvent, { type: "tool-started", call });
+          this.emit(onEvent, { type: "tool-started", call });
           appendToolResult(call, errorResult("MAX_TURNS", "Host turn limit reached before this tool call could run."));
         }
         return finish({ status: "max-turns", response: immutableAssistant });
@@ -653,10 +657,10 @@ export class Agent {
         } catch (error) {
           return cancelTools(index, error);
         }
-        this.emit(request.onEvent, { type: "tool-started", call });
+        this.emit(onEvent, { type: "tool-started", call });
         let result: ToolExecutionResult;
         try {
-          result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
+          result = await executeWithTimeout(this.pageRuntime, call, signal, toolTimeoutMs);
         } catch (error) {
           if (signal.aborted) return cancelTools(index, abortReason(signal) ?? error, true);
           result = errorResult("PAGE_TOOL_ERROR", safeErrorMessage(error, "Page tool execution failed."));

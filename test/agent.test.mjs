@@ -1277,6 +1277,36 @@ test("page tool input cannot come from the prototype chain", async () => {
   }
 });
 
+test("optional run limits cannot come from the prototype chain", async () => {
+  const key = "maxTurns";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: 1 });
+  let turn = 0;
+  let executed = 0;
+  const harness = await createHarness({
+    model: {
+      id: "inherited-run-limit",
+      async *stream({ messages }) {
+        if (turn++ === 0) yield completed("", [{ id: "call", name: "page.run", arguments: { code: "return 1" } }]);
+        else {
+          assert.equal(messages.at(-1)?.role, "tool");
+          yield completed("done");
+        }
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: 1, logs: [], durationMs: 0 }; } },
+  });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "completed");
+    assert.equal(executed, 1);
+  } finally {
+    await harness.dispose();
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
+
 test("tool timeout reports its elapsed duration", async () => {
   let turn = 0;
   const harness = await createHarness({
