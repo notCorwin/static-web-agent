@@ -55,6 +55,13 @@ test("the OpenAI-compatible adapter rejects invalid IDs", () => {
   }
 });
 
+test("the OpenAI-compatible adapter rejects non-string API keys", () => {
+  assert.throws(
+    () => new AiSdkAdapter({ endpoint: "http://example.test/v1", model: "demo", apiKey: 123, fetcher: async () => response() }),
+    /API key must be a string/,
+  );
+});
+
 test("an omitted API key cannot be inherited from the prototype chain", async () => {
   const key = "apiKey";
   const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
