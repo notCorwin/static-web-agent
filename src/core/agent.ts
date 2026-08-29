@@ -50,14 +50,15 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function freeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
-  for (const child of Object.values(value)) freeze(child);
+function freeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value) || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) freeze(child, seen);
   return Object.freeze(value);
 }
 
 function cloneMessages(messages: readonly ModelMessage[]): ModelMessage[] {
-  return clone(messages).map(freeze);
+  return clone(messages).map((message) => freeze(message));
 }
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -307,7 +308,7 @@ export class Agent {
     this.emit(request.onEvent, { type: "run-started", runId: id });
 
     const finish = (result: Omit<AgentRunResult, "runId" | "messages" | "turns" | "usage">): AgentRunResult => {
-      const complete: AgentRunResult = {
+      const complete: AgentRunResult = freeze({
         runId: id,
         status: result.status,
         messages: Object.freeze([...messages]),
@@ -316,14 +317,15 @@ export class Agent {
         ...(result.partial === undefined ? {} : { partial: result.partial }),
         ...(result.error === undefined ? {} : { error: result.error }),
         ...(usage === undefined ? {} : { usage }),
-      };
+      });
       this.emit(request.onEvent, { type: "run-finished", result: complete });
       return complete;
     };
 
     const fail = (error: ToolError, partial?: AssistantMessage): AgentRunResult => {
-      this.emit(request.onEvent, { type: "run-error", error });
-      return finish({ status: "failed", error, ...(partial === undefined ? {} : { partial }) });
+      const immutableError = freeze(error);
+      this.emit(request.onEvent, { type: "run-error", error: immutableError });
+      return finish({ status: "failed", error: immutableError, ...(partial === undefined ? {} : { partial }) });
     };
 
     try {
@@ -357,6 +359,7 @@ export class Agent {
       let modelTimer: ReturnType<typeof setTimeout> | undefined;
 
       const consume = (async () => {
+        throwIfAborted(modelController.signal);
         const iterable = this.model.stream({ messages: Object.freeze([...messages]), tools: [PAGE_TOOL_DESCRIPTOR], signal: modelController.signal });
         const currentIterator = iterable[Symbol.asyncIterator]();
         iterator = currentIterator;
@@ -479,6 +482,7 @@ export class Agent {
             ? streamedCalls
             : completeStreamedToolCalls(streamedCallDeltas);
         assertToolCalls(calls);
+        calls = calls.map((call) => freeze({ id: call.id, name: call.name, arguments: clone(call.arguments) }));
       } catch (error) {
         return fail(errorInfo(error, "MODEL_ERROR"), partialMessage(streamedText.join(""), streamedCalls));
       }
@@ -486,7 +490,7 @@ export class Agent {
       const assistant: AssistantMessage = {
         role: "assistant",
         content,
-        ...(calls.length === 0 ? {} : { toolCalls: calls.map((call) => ({ ...call, arguments: clone(call.arguments) })) }),
+        ...(calls.length === 0 ? {} : { toolCalls: calls }),
       };
       if (assistant.content.trim().length === 0 && calls.length === 0) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned an empty response." });
       const immutableAssistant = freeze(assistant);
@@ -494,10 +498,10 @@ export class Agent {
       this.emit(request.onEvent, { type: "assistant-message", message: immutableAssistant });
 
       const appendToolResult = (call: ToolCall, result: ToolExecutionResult): void => {
-        this.emit(request.onEvent, { type: "tool-finished", call, result });
         const toolMessage: ToolMessage = result.ok
           ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value as JsonObject), durationMs: result.durationMs }
           : { role: "tool", callId: call.id, name: call.name, content: jsonString(jsonError(result.error)), isError: true, durationMs: result.durationMs };
+        this.emit(request.onEvent, { type: "tool-finished", call, result: freeze(result) });
         messages.push(Object.freeze(toolMessage));
       };
       if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });

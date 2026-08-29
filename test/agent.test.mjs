@@ -322,6 +322,58 @@ test("tool execution catches an abort between the parent check and relay registr
   assert.equal(JSON.parse(result.messages.at(-1).content).code, "MODEL_CLEARED");
 });
 
+test("model streaming does not start after a relay race abort", async () => {
+  const reason = new HarnessError("MODEL_REPLACED", "connection changed");
+  let streamCalls = 0;
+  const signal = {
+    aborted: false,
+    reason,
+    addEventListener() { this.aborted = true; },
+    removeEventListener() {},
+  };
+  const agent = new Agent({
+    id: "model-relay-race",
+    stream() {
+      streamCalls += 1;
+      return (async function* () { yield completed("unexpected"); })();
+    },
+  }, {
+    execute() {
+      throw new Error("must not execute");
+    },
+  });
+  const result = await agent.run({ messages: [{ role: "user", content: "wait" }], signal });
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.error.code, "MODEL_REPLACED");
+  assert.equal(streamCalls, 0);
+});
+
+test("event observers cannot mutate calls or final results", async () => {
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "immutable-events",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "tool-1", name: "page.run", arguments: { code: "return 1" } }]);
+        } else {
+          assert.equal(JSON.parse(messages.at(-1).content).value, 1);
+          yield completed("done");
+        }
+      },
+    },
+  });
+  const result = await harness.run({
+    messages: [{ role: "user", content: "run" }],
+    onEvent: (event) => {
+      if (event.type === "tool-started") event.call.arguments.code = "return 99";
+      if (event.type === "run-finished") event.result.status = "failed";
+    },
+  });
+  assert.equal(result.status, "completed");
+  await harness.dispose();
+});
+
 test("malformed tool history is rejected at the run boundary", async () => {
   const harness = await createHarness({ model: { id: "history-validation", async *stream() { yield completed("unused"); } } });
   const result = await harness.run({ messages: [{ role: "tool", callId: "call-1", name: "page.run", content: "{}", isError: "true" }] });

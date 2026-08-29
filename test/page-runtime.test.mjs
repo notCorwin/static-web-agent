@@ -15,6 +15,11 @@ test("repeated page references are not mistaken for cycles", async () => {
   assert.deepEqual(result.value, { first: { answer: 42 }, second: { answer: 42 } });
 });
 
+test("common built-in values keep a readable serialized form", async () => {
+  const result = await new BrowserPageRuntime().execute("return { date: new Date(0), pattern: /agent/gi };", null);
+  assert.deepEqual(result.value, { date: "1970-01-01T00:00:00.000Z", pattern: "/agent/gi" });
+});
+
 test("empty page code is rejected at the boundary", async () => {
   await assert.rejects(new BrowserPageRuntime().execute("  ", null), (error) => error instanceof HarnessError && error.code === "INVALID_PAGE_RUNTIME_INPUT");
 });
@@ -29,11 +34,13 @@ test("page runtime preserves an abort reason", async () => {
 test("page runtime catches an abort between the initial check and listener registration", async () => {
   const reason = new HarnessError("MODEL_CLEARED", "connection cleared");
   let aborted = false;
+  const input = { executed: false };
   const signal = {
     reason,
     get aborted() { return aborted; },
     addEventListener() { aborted = true; },
     removeEventListener() {},
   };
-  await assert.rejects(new BrowserPageRuntime().execute("return 1", null, { signal }), (error) => error === reason);
+  await assert.rejects(new BrowserPageRuntime().execute("input.executed = true; return 1", input, { signal }), (error) => error === reason);
+  assert.equal(input.executed, false);
 });

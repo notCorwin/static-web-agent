@@ -25,6 +25,8 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
       };
     }
     if (typeof URL !== "undefined" && value instanceof URL) return value.toString();
+    if (typeof Date !== "undefined" && value instanceof Date) return Date.prototype.toJSON.call(value);
+    if (typeof RegExp !== "undefined" && value instanceof RegExp) return RegExp.prototype.toString.call(value);
     if (typeof Response !== "undefined" && value instanceof Response) {
       return { type: "Response", url: value.url, status: value.status, ok: value.ok, redirected: value.redirected };
     }
@@ -97,7 +99,7 @@ export class BrowserPageRuntime implements PageRuntime {
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) onAbort();
       void Promise.resolve()
-        .then(() => execute(input, pageConsole, signal))
+        .then(() => settled ? undefined : execute(input, pageConsole, signal))
         .then((value) => {
           if (settled) return;
           const serialized = serialize(value);
