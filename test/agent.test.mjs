@@ -474,6 +474,24 @@ test("hostile model errors still end the run visibly", async () => {
   }
 });
 
+test("cancellation during assistant delivery wins over completion", async () => {
+  const controller = new AbortController();
+  const harness = await createHarness({
+    model: { id: "assistant-cancel", async *stream() { yield completed("done"); } },
+  });
+  const result = await harness.run({
+    messages: [{ role: "user", content: "go" }],
+    signal: controller.signal,
+    onEvent: (event) => {
+      if (event.type === "assistant-message") controller.abort(new Error("observer stopped"));
+    },
+  });
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.error.code, "ABORTED");
+  assert.equal(result.messages.at(-1).content, "done");
+  await harness.dispose();
+});
+
 test("model timeouts suppress late events from an uncooperative stream", async () => {
   const events = [];
   let cleanupRejection;

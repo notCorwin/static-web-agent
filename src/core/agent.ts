@@ -522,6 +522,13 @@ export class Agent {
         if (timedOut) modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
       }
 
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        const partial = partialMessage(streamedText.join(""), streamedCalls);
+        return finish({ status: "cancelled", error: errorInfo(error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
+      }
+
       if (!sawCompleted || completed === undefined) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned no completed response." }, partialMessage(streamedText.join(""), streamedCalls));
       let calls: ToolCall[];
       try {
@@ -553,14 +560,6 @@ export class Agent {
         this.emit(request.onEvent, { type: "tool-finished", call, result: freeze(result) });
         messages.push(Object.freeze(toolMessage));
       };
-      if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
-      if (request.maxTurns !== undefined && turns >= request.maxTurns) {
-        for (const call of calls) {
-          this.emit(request.onEvent, { type: "tool-started", call });
-          appendToolResult(call, errorResult("MAX_TURNS", "Host turn limit reached before this tool call could run."));
-        }
-        return finish({ status: "max-turns", response: immutableAssistant });
-      }
       const cancelTools = (startIndex: number, error: unknown, firstStarted = false): AgentRunResult => {
         for (let index = startIndex; index < calls.length; index += 1) {
           const call = calls[index];
@@ -570,6 +569,19 @@ export class Agent {
         }
         return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
       };
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        return cancelTools(0, error);
+      }
+      if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
+      if (request.maxTurns !== undefined && turns >= request.maxTurns) {
+        for (const call of calls) {
+          this.emit(request.onEvent, { type: "tool-started", call });
+          appendToolResult(call, errorResult("MAX_TURNS", "Host turn limit reached before this tool call could run."));
+        }
+        return finish({ status: "max-turns", response: immutableAssistant });
+      }
       for (let index = 0; index < calls.length; index += 1) {
         const call = calls[index];
         if (call === undefined) break;
