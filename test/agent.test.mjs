@@ -937,6 +937,33 @@ test("message fields must survive the JSON clone boundary", async () => {
   await harness.dispose();
 });
 
+test("message fields cannot come from the prototype chain", async () => {
+  const keys = ["role", "content"];
+  const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(Object.prototype, key)]));
+  for (const key of keys) Object.defineProperty(Object.prototype, key, { configurable: true, value: key === "role" ? "user" : "inherited" });
+  const message = {};
+  let modelCalls = 0;
+  const harness = await createHarness({ model: { id: "inherited-message", async *stream() { modelCalls += 1; yield completed("unused"); } } });
+  let running;
+  try {
+    running = harness.run({ messages: [message] });
+  } finally {
+    for (const key of keys) {
+      const descriptor = previous.get(key);
+      if (descriptor === undefined) delete Object.prototype[key];
+      else Object.defineProperty(Object.prototype, key, descriptor);
+    }
+  }
+  try {
+    const result = await running;
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "INVALID_MESSAGES");
+    assert.equal(modelCalls, 0);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("tool history requires matching preceding calls", async () => {
   for (const messages of [
     [{ role: "user", content: "go" }, { role: "tool", callId: "missing", name: "page.run", content: "{}" }],

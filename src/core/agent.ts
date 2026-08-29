@@ -125,6 +125,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasEnumerableOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.getOwnPropertyDescriptor(record, key)?.enumerable === true;
+}
+
 function now(): number {
   return typeof performance === "undefined" ? Date.now() : performance.now();
 }
@@ -170,9 +174,9 @@ function assertToolCall(call: ToolCall): void {
   if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
   const record = candidate;
   if (
-    typeof record.id !== "string" || record.id.length === 0 ||
-    typeof record.name !== "string" || record.name.length === 0 ||
-    !isJsonValue(record.arguments)
+    !hasEnumerableOwn(record, "id") || typeof record.id !== "string" || record.id.length === 0 ||
+    !hasEnumerableOwn(record, "name") || typeof record.name !== "string" || record.name.length === 0 ||
+    !hasEnumerableOwn(record, "arguments") || !isJsonValue(record.arguments)
   ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
 }
 
@@ -237,9 +241,9 @@ function assertAssistant(message: AssistantMessage): void {
   const candidate: unknown = message;
   if (!isRecord(candidate) || !isJsonValue(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   const record = candidate as Record<string, unknown>;
-  if (record.role !== "assistant" || typeof record.content !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
+  if (!hasEnumerableOwn(record, "role") || record.role !== "assistant" || !hasEnumerableOwn(record, "content") || typeof record.content !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   if (record.toolCalls !== undefined) {
-    if (!Array.isArray(record.toolCalls)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
+    if (!hasEnumerableOwn(record, "toolCalls") || !Array.isArray(record.toolCalls)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
     assertToolCalls(record.toolCalls as ToolCall[]);
   }
 }
@@ -250,20 +254,20 @@ function assertMessages(messages: readonly ModelMessage[]): void {
   for (const message of messages) {
     if (!isJsonValue(message) || typeof message !== "object" || Array.isArray(message)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be JSON objects.");
     const record = message as Record<string, unknown>;
-    if (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool") throw new HarnessError("INVALID_MESSAGES", "Model messages have an invalid role.");
-    if (typeof record.content !== "string") throw new HarnessError("INVALID_MESSAGES", "Every model message needs string content.");
+    if (!hasEnumerableOwn(record, "role") || (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool")) throw new HarnessError("INVALID_MESSAGES", "Model messages have an invalid role.");
+    if (!hasEnumerableOwn(record, "content") || typeof record.content !== "string") throw new HarnessError("INVALID_MESSAGES", "Every model message needs string content.");
     if (record.role === "assistant") {
       assertAssistant(message as unknown as AssistantMessage);
       if (pendingToolCalls.size > 0) throw new HarnessError("INVALID_MESSAGES", `Tool call “${pendingToolCalls.keys().next().value}” has no result before the next assistant message.`);
       for (const call of (message as unknown as AssistantMessage).toolCalls ?? []) pendingToolCalls.set(call.id, call.name);
     } else if (record.role === "tool") {
-      if (typeof record.callId !== "string" || record.callId.length === 0 || typeof record.name !== "string" || record.name.length === 0) {
+      if (!hasEnumerableOwn(record, "callId") || typeof record.callId !== "string" || record.callId.length === 0 || !hasEnumerableOwn(record, "name") || typeof record.name !== "string" || record.name.length === 0) {
         throw new HarnessError("INVALID_MESSAGES", "Tool messages need a call ID and name.");
       }
-      if (record.isError !== undefined && typeof record.isError !== "boolean") {
+      if (record.isError !== undefined && (!hasEnumerableOwn(record, "isError") || typeof record.isError !== "boolean")) {
         throw new HarnessError("INVALID_MESSAGES", "Tool message error status must be boolean.");
       }
-      if (record.durationMs !== undefined && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0)) {
+      if (record.durationMs !== undefined && (!hasEnumerableOwn(record, "durationMs") || typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0)) {
         throw new HarnessError("INVALID_MESSAGES", "Tool message timing must be a non-negative number.");
       }
       const expectedName = pendingToolCalls.get(record.callId);
