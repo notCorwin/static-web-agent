@@ -102,6 +102,34 @@ test("ordinary model text is never interpreted as a tool call", async () => {
   await harness.dispose();
 });
 
+test("completed model events end an otherwise open stream", async () => {
+  let closed = false;
+  const harness = await createHarness({
+    model: {
+      id: "terminal-completed",
+      async *stream() {
+        try {
+          yield completed("done");
+          await new Promise(() => {});
+        } finally {
+          closed = true;
+        }
+      },
+    },
+  });
+  try {
+    const result = await Promise.race([
+      harness.run({ messages: [{ role: "user", content: "go" }] }),
+      new Promise((resolve) => setTimeout(() => resolve({ status: "probe-timeout" }), 100)),
+    ]);
+    assert.equal(result.status, "completed");
+    assert.equal(result.response.content, "done");
+    assert.equal(closed, true);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("duplicate tool call IDs are rejected before page execution", async () => {
   let executed = 0;
   const harness = await createHarness({

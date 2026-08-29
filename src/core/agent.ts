@@ -424,6 +424,7 @@ export class Agent {
               default:
                 throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
             }
+            if (sawCompleted) break;
             if (request.onEvent !== undefined && ++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
               eventsSinceYield = 0;
               await yieldToHost(modelController.signal);
