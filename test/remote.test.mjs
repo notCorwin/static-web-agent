@@ -46,6 +46,28 @@ test("the OpenAI-compatible adapter preserves exact completion endpoints", async
   }
 });
 
+test("an omitted API key cannot be inherited from the prototype chain", async () => {
+  const key = "apiKey";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: "polluted-key" });
+  let headers;
+  try {
+    const adapter = new AiSdkAdapter({
+      endpoint: "http://example.test/v1",
+      model: "demo",
+      fetcher: async (_input, init) => {
+        headers = Object.fromEntries(new Headers(init?.headers).entries());
+        return response();
+      },
+    });
+    for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools: [], signal: new AbortController().signal })) {}
+    assert.equal(headers.authorization, undefined);
+  } finally {
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
+
 test("unknown provider tool names are not silently aliased", async () => {
   const chunks = [
     { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "page", arguments: JSON.stringify({ code: "return 1" }) } }] } }] },

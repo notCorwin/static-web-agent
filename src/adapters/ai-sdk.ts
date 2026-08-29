@@ -243,28 +243,34 @@ export class AiSdkAdapter implements ModelAdapter {
   private readonly provider: ReturnType<typeof createOpenAICompatible>;
 
   constructor(options: AiSdkAdapterOptions) {
-    this.id = options.id ?? "ai-sdk";
-    this.model = options.model.trim();
-    if (!this.model) throw new Error("A model name is required.");
-    if (typeof options.fetcher !== "function") throw new Error("A model fetcher is required.");
-    const resolvedEndpoint = resolveEndpoint(options.endpoint);
+    const id = Object.hasOwn(options, "id") ? options.id : undefined;
+    const endpoint = Object.hasOwn(options, "endpoint") ? options.endpoint : undefined;
+    const model = Object.hasOwn(options, "model") ? options.model : undefined;
+    const apiKey = Object.hasOwn(options, "apiKey") ? options.apiKey : undefined;
+    const fetcher = Object.hasOwn(options, "fetcher") ? options.fetcher : undefined;
+    const headers = Object.hasOwn(options, "headers") ? options.headers : undefined;
+    this.id = id ?? "ai-sdk";
+    if (typeof model !== "string" || !(this.model = model.trim())) throw new Error("A model name is required.");
+    if (typeof endpoint !== "string") throw new Error("A valid model endpoint is required.");
+    if (typeof fetcher !== "function") throw new Error("A model fetcher is required.");
+    const resolvedEndpoint = resolveEndpoint(endpoint);
     const endpointFetcher: BrowserFetcher = resolvedEndpoint.directURL === undefined
       ? resolvedEndpoint.search === undefined
-        ? options.fetcher
+        ? fetcher
         : (input, init) => {
             const url = new URL(String(input));
             url.search = resolvedEndpoint.search!;
-            return options.fetcher(url, init);
+            return fetcher(url, init);
           }
-      : (_input, init) => options.fetcher(resolvedEndpoint.directURL!, init);
-    this.provider = createOpenAICompatible({
-      name: this.id,
-      baseURL: resolvedEndpoint.baseURL,
-      ...(options.apiKey === undefined || options.apiKey.length === 0 ? {} : { apiKey: options.apiKey }),
-      ...(options.headers === undefined ? {} : { headers: { ...options.headers } }),
-      includeUsage: true,
-      fetch: safariSafeFetcher(endpointFetcher),
-    });
+      : (_input, init) => fetcher(resolvedEndpoint.directURL!, init);
+    const providerOptions = Object.create(null) as Parameters<typeof createOpenAICompatible>[0];
+    providerOptions.name = this.id;
+    providerOptions.baseURL = resolvedEndpoint.baseURL;
+    if (apiKey !== undefined && apiKey.length > 0) providerOptions.apiKey = apiKey;
+    if (headers !== undefined) providerOptions.headers = { ...headers };
+    providerOptions.includeUsage = true;
+    providerOptions.fetch = safariSafeFetcher(endpointFetcher);
+    this.provider = createOpenAICompatible(providerOptions);
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
