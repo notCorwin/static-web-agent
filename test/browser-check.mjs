@@ -264,6 +264,15 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
   assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test. Ask the agent to do something.");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 240, height: 240, deviceScaleFactor: 1, mobile: false });
+  const tinyEmptyLayout = await page.evaluate(`(() => ({
+    chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
+    empty: document.querySelector('.empty-state')?.getBoundingClientRect().toJSON(),
+    scrollTop: document.querySelector('#chat-log')?.scrollTop,
+  }))()`);
+  assert.ok(tinyEmptyLayout.empty.top >= tinyEmptyLayout.chat.top - 1, `the tiny empty state must not hide under the header: ${JSON.stringify(tinyEmptyLayout)}`);
+  assert.equal(tinyEmptyLayout.scrollTop, 0, `the tiny empty state should start at its readable top: ${JSON.stringify(tinyEmptyLayout)}`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
   assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#send-button')).color"), "rgb(23, 23, 23)", "dark theme primary buttons should use readable text");
   await page.send("Emulation.setEmulatedMedia", { features: [] });
@@ -471,9 +480,28 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "a run started from the visible composer should finish while settings remain open");
+  for (let run = 0; run < 2; run += 1) {
+    await page.evaluate(`(() => {
+      document.querySelector('#message-input').value = 'Keep my place';
+      document.querySelector('#composer-form').requestSubmit();
+    })()`);
+    await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+  }
+  const settingsRunScroll = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const body = [...document.querySelectorAll('.message.assistant .message-body')].at(-1);
+    return { top: chat?.scrollTop, max: (chat?.scrollHeight ?? 0) - (chat?.clientHeight ?? 0), body: body?.getBoundingClientRect().toJSON() };
+  })()`);
+  assert.ok(settingsRunScroll.max > 80 && settingsRunScroll.top < settingsRunScroll.max - 80, `settings should keep the pre-edit position while new content is behind the panel: ${JSON.stringify(settingsRunScroll)}`);
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "closing settings must preserve a run completed behind the panel");
+  const settingsRunScrollAfterClose = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const body = [...document.querySelectorAll('.message.assistant .message-body')].at(-1);
+    return { top: chat?.scrollTop, max: (chat?.scrollHeight ?? 0) - (chat?.clientHeight ?? 0), body: body?.getBoundingClientRect().toJSON(), chat: chat?.getBoundingClientRect().toJSON() };
+  })()`);
+  assert.ok(Math.abs(settingsRunScrollAfterClose.top - settingsRunScrollAfterClose.max) < 2, `closing settings after a bottom-following run should reveal the newest response: ${JSON.stringify(settingsRunScrollAfterClose)}`);
 
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Use the page tool';
