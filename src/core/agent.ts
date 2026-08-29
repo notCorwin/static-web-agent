@@ -12,6 +12,7 @@ import type {
   ModelMessage,
   ModelUsage,
   PageRuntime,
+  PageExecutionResult,
   ToolCall,
   ToolCallDelta,
   ToolError,
@@ -22,10 +23,10 @@ import type {
 
 export const PAGE_TOOL_NAME = "page.run";
 
-export const PAGE_TOOL_DESCRIPTOR: ToolDescriptor = Object.freeze({
+export const PAGE_TOOL_DESCRIPTOR: ToolDescriptor = freeze({
   name: PAGE_TOOL_NAME,
   description: "Run JavaScript in the current Harness page. Use the real Web APIs available to this page and return a JSON-serializable value. The page is trusted, not sandboxed; no shell, native process, host filesystem, or other-tab access is provided.",
-  inputSchema: Object.freeze({
+  inputSchema: {
     type: "object" as const,
     properties: {
       code: { type: "string" as const, minLength: 1 },
@@ -33,7 +34,7 @@ export const PAGE_TOOL_DESCRIPTOR: ToolDescriptor = Object.freeze({
     },
     required: ["code"],
     additionalProperties: false,
-  }),
+  },
 });
 
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
@@ -95,6 +96,10 @@ function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined)
 
 function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
+}
+
+function now(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
 function errorResult(code: string, message: string, durationMs = 0): Extract<ToolExecutionResult, { readonly ok: false }> {
@@ -170,6 +175,9 @@ function assertMessages(messages: readonly ModelMessage[]): void {
     if (record.role === "tool" && (typeof record.callId !== "string" || record.callId.length === 0 || typeof record.name !== "string" || record.name.length === 0)) {
       throw new HarnessError("INVALID_MESSAGES", "Tool messages need a call ID and name.");
     }
+    if (record.role === "tool" && record.isError !== undefined && typeof record.isError !== "boolean") {
+      throw new HarnessError("INVALID_MESSAGES", "Tool message error status must be boolean.");
+    }
     if (record.role === "tool" && record.durationMs !== undefined && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0)) {
       throw new HarnessError("INVALID_MESSAGES", "Tool message timing must be a non-negative number.");
     }
@@ -199,9 +207,20 @@ function partialMessage(text: string, calls: readonly ToolCall[]): AssistantMess
   };
 }
 
+function isPageExecutionResult(value: unknown): value is PageExecutionResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return isJsonValue(record.value)
+    && Array.isArray(record.logs)
+    && Array.from(record.logs).every((line) => typeof line === "string")
+    && typeof record.durationMs === "number"
+    && Number.isFinite(record.durationMs)
+    && record.durationMs >= 0;
+}
+
 async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: AbortSignal): Promise<ToolExecutionResult> {
-  const started = typeof performance === "undefined" ? Date.now() : performance.now();
-  const duration = (): number => Math.max(0, Math.round((typeof performance === "undefined" ? Date.now() : performance.now()) - started));
+  const started = now();
+  const duration = (): number => Math.max(0, Math.round(now() - started));
   if (call.name !== PAGE_TOOL_NAME) return errorResult("TOOL_NOT_FOUND", `Tool “${call.name}” is not available.`, duration());
   const validation = validate(PAGE_TOOL_DESCRIPTOR.inputSchema, call.arguments);
   if (!validation.valid) return errorResult("INVALID_TOOL_INPUT", formatIssues(validation.issues), duration());
@@ -209,6 +228,7 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
   try {
     throwIfAborted(signal);
     const result = await runtime.execute(input.code as string, input.input ?? null, { signal });
+    if (!isPageExecutionResult(result)) return errorResult("INVALID_PAGE_RUNTIME_RESULT", "Page runtime returned an invalid result.", duration());
     return { ok: true, value: { value: result.value, logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
   } catch (error) {
     if (signal.aborted || isAbortError(error)) throw error;
@@ -218,6 +238,8 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
 
 async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSignal: AbortSignal, timeoutMs: number | undefined): Promise<ToolExecutionResult> {
   throwIfAborted(parentSignal);
+  const started = now();
+  const duration = (): number => Math.max(0, Math.round(now() - started));
   const controller = new AbortController();
   const relayAbort = () => controller.abort(parentSignal.reason);
   parentSignal.addEventListener("abort", relayAbort, { once: true });
@@ -228,7 +250,7 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
     const timeout = new Promise<ToolExecutionResult>((resolve) => {
       timer = setTimeout(() => {
         controller.abort(new HarnessError("TOOL_TIMEOUT", "Page tool execution timed out."));
-        resolve(errorResult("TOOL_TIMEOUT", `Page tool execution exceeded ${timeoutMs} ms.`));
+        resolve(errorResult("TOOL_TIMEOUT", `Page tool execution exceeded ${timeoutMs} ms.`, duration()));
       }, timeoutMs);
     });
     return await Promise.race([execution, timeout]);
@@ -296,6 +318,7 @@ export class Agent {
       let sawCompleted = false;
       let iterator: AsyncIterator<ModelEvent> | undefined;
       let timedOut = false;
+      let abortListener: (() => void) | undefined;
       const modelController = new AbortController();
       const relayModelAbort = () => modelController.abort(signal.reason);
       signal.addEventListener("abort", relayModelAbort, { once: true });
@@ -379,11 +402,14 @@ export class Agent {
 
       try {
         const abort = new Promise<never>((_, reject) => {
-          signal.addEventListener("abort", () => {
+          const onAbort = () => {
             const error = new Error("Operation cancelled.");
             error.name = "AbortError";
             reject(error);
-          }, { once: true });
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) onAbort();
+          abortListener = onAbort;
         });
         const timeout = request.modelTimeoutMs === undefined || request.modelTimeoutMs === Number.POSITIVE_INFINITY
           ? undefined
@@ -405,6 +431,7 @@ export class Agent {
         return fail(errorInfo(error, "MODEL_ERROR"), partial);
       } finally {
         signal.removeEventListener("abort", relayModelAbort);
+        if (abortListener !== undefined) signal.removeEventListener("abort", abortListener);
         if (modelTimer !== undefined) clearTimeout(modelTimer);
         if (timedOut) modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
       }

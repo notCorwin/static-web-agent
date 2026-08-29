@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BrowserPageRuntime, HarnessError, createHarness } from "../dist/index.js";
+import { Agent, BrowserPageRuntime, HarnessError, createHarness } from "../dist/index.js";
 
 function completed(content, toolCalls) {
   return { type: "completed", message: { role: "assistant", content, ...(toolCalls === undefined ? {} : { toolCalls }) } };
@@ -34,6 +34,7 @@ test("the Harness exposes one page tool and executes formal calls sequentially",
 
   assert.equal(harness.snapshot().tools.length, 1);
   assert.equal(harness.snapshot().tools[0].name, "page.run");
+  assert.equal(Object.isFrozen(harness.snapshot().tools[0].inputSchema.properties), true);
   assert.deepEqual(requests[0].tools.map((tool) => tool.name), ["page.run"]);
   assert.equal(result.status, "completed");
   assert.equal(result.response.content, "finished");
@@ -79,6 +80,30 @@ test("ordinary model text is never interpreted as a tool call", async () => {
   await harness.dispose();
 });
 
+test("model transport failures end the run with a visible error", async () => {
+  const events = [];
+  const harness = await createHarness({
+    model: {
+      id: "transport-error",
+      async *stream() { throw new Error("provider unavailable"); },
+    },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "hello" }], onEvent: (event) => events.push(event.type) });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "MODEL_ERROR");
+  assert.match(result.error.message, /provider unavailable/);
+  assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
+  await harness.dispose();
+});
+
+test("malformed tool history is rejected at the run boundary", async () => {
+  const harness = await createHarness({ model: { id: "history-validation", async *stream() { yield completed("unused"); } } });
+  const result = await harness.run({ messages: [{ role: "tool", callId: "call-1", name: "page.run", content: "{}", isError: "true" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MESSAGES");
+  await harness.dispose();
+});
+
 test("cancellation returns streamed partial output", async () => {
   const harness = await createHarness({
     model: {
@@ -97,6 +122,83 @@ test("cancellation returns streamed partial output", async () => {
   const result = await running;
   assert.equal(result.status, "cancelled");
   assert.equal(result.partial.content, "partial");
+  await harness.dispose();
+});
+
+test("completed model turns remove their cancellation listeners", async () => {
+  class TrackingSignal {
+    aborted = false;
+    reason = undefined;
+    listeners = new Set();
+
+    addEventListener(type, listener) {
+      if (type === "abort") this.listeners.add(listener);
+    }
+
+    removeEventListener(type, listener) {
+      if (type === "abort") this.listeners.delete(listener);
+    }
+  }
+
+  const signal = new TrackingSignal();
+  const agent = new Agent({ id: "listener-probe", async *stream() { yield completed("ok"); } }, new BrowserPageRuntime());
+  for (let index = 0; index < 5; index += 1) {
+    const result = await agent.run({ messages: [{ role: "user", content: String(index) }], signal });
+    assert.equal(result.status, "completed");
+  }
+  assert.equal(signal.listeners.size, 0);
+});
+
+test("invalid page runtime results return an error to the model", async () => {
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "invalid-runtime-result",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "invalid", name: "page.run", arguments: { code: "return 1" } }]);
+        } else {
+          assert.equal(messages.at(-1).isError, true);
+          yield completed("recovered");
+        }
+      },
+    },
+    pageRuntime: { async execute() { return { value: undefined, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "try" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(result.response.content, "recovered");
+  assert.match(result.messages[2].content, /INVALID_PAGE_RUNTIME_RESULT/);
+  await harness.dispose();
+});
+
+test("tool timeout reports its elapsed duration", async () => {
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "tool-timeout",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "slow", name: "page.run", arguments: { code: "await new Promise(() => {})" } }]);
+        } else {
+          const tool = messages.at(-1);
+          assert.equal(tool.isError, true);
+          assert.equal(JSON.parse(tool.content).code, "TOOL_TIMEOUT");
+          assert.ok(tool.durationMs > 0);
+          yield completed("recovered");
+        }
+      },
+    },
+    pageRuntime: {
+      execute(_code, _input, { signal }) {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "wait" }], toolTimeoutMs: 10 });
+  assert.equal(result.status, "completed");
   await harness.dispose();
 });
 

@@ -69,7 +69,7 @@ export function renderShell(root: HTMLElement): AppElements {
             <label class="sr-only" for="message-input">Message the agent</label>
             <div class="composer-input-row">
               <textarea id="message-input" name="message" rows="1" inputmode="text" autocomplete="off" placeholder="Ask anything…" spellcheck="true" disabled></textarea>
-              <button class="primary-button send-button" id="send-button" type="submit" aria-label="Stop generation" hidden>Stop</button>
+              <button class="primary-button send-button" id="send-button" type="submit" aria-label="Send message" disabled>Send</button>
             </div>
             <p class="status-message" id="run-status" role="status" aria-live="polite" aria-atomic="true"></p>
           </form>

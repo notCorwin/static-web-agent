@@ -24,4 +24,10 @@ test("connection settings persist locally while arbitrary invalid values are ign
   assert.deepEqual(loadConnectionSettings(fakeStorage), settings);
   fakeStorage.setItem("static-web-agent.connection", "not-json");
   assert.equal(loadConnectionSettings(fakeStorage), undefined);
+  fakeStorage.setItem("static-web-agent.connection", JSON.stringify({ endpoint: "", model: "", apiKey: "secret" }));
+  assert.equal(loadConnectionSettings(fakeStorage), undefined);
+  fakeStorage.setItem("static-web-agent.connection", JSON.stringify({ endpoint: " https://example.test/v1 ", model: " demo ", apiKey: "secret" }));
+  assert.deepEqual(loadConnectionSettings(fakeStorage), settings);
+  saveConnectionSettings({ endpoint: "invalid", model: "", apiKey: "secret" }, fakeStorage);
+  assert.deepEqual(loadConnectionSettings(fakeStorage), settings);
 });

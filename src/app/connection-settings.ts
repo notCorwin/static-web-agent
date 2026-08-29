@@ -52,7 +52,7 @@ export function loadConnectionSettings(storage: StorageLike | undefined = localS
     const raw = storage.getItem(CONNECTION_SETTINGS_KEY);
     if (raw === null) return undefined;
     const value: unknown = JSON.parse(raw);
-    return isConnectionSettings(value) ? value : undefined;
+    return isConnectionSettings(value) ? validateConnectionDraft(value).settings : undefined;
   } catch {
     return undefined;
   }
@@ -61,7 +61,9 @@ export function loadConnectionSettings(storage: StorageLike | undefined = localS
 export function saveConnectionSettings(settings: ConnectionSettings, storage: StorageLike | undefined = localStorageOrUndefined()): void {
   if (storage === undefined) return;
   try {
-    storage.setItem(CONNECTION_SETTINGS_KEY, JSON.stringify(settings));
+    const valid = validateConnectionDraft(settings).settings;
+    if (valid === undefined) return;
+    storage.setItem(CONNECTION_SETTINGS_KEY, JSON.stringify(valid));
   } catch {
     // Chat remains usable when browser storage is unavailable or full.
   }

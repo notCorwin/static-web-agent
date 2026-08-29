@@ -192,12 +192,15 @@ try {
 
   const initial = await page.evaluate(`({
     connectionVisible: document.querySelector('#connection-card')?.hidden === false,
+    sendVisible: document.querySelector('#send-button')?.hidden === false,
+    sendDisabled: document.querySelector('#send-button')?.disabled === true,
+    chatNotBusy: document.querySelector('#chat-log')?.getAttribute('aria-busy') === 'false',
     noAttachments: document.querySelector('#attachment-input') === null,
     noThinking: document.querySelector('#thinking-level') === null,
     noPluginUi: document.querySelector('.extension-host') === null,
     oneToolName: document.querySelector('#connection-card') !== null,
   })`);
-  assert.deepEqual(initial, { connectionVisible: true, noAttachments: true, noThinking: true, noPluginUi: true, oneToolName: true });
+  assert.deepEqual(initial, { connectionVisible: true, sendVisible: true, sendDisabled: true, chatNotBusy: true, noAttachments: true, noThinking: true, noPluginUi: true, oneToolName: true });
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = 'http://127.0.0.1:${port}/v1';
@@ -207,6 +210,7 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
+  assert.deepEqual(await page.evaluate(`({ text: document.querySelector('#send-button')?.textContent, disabled: document.querySelector('#send-button')?.disabled, busy: document.querySelector('#chat-log')?.getAttribute('aria-busy') })`), { text: "Send", disabled: false, busy: "false" });
 
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
@@ -224,6 +228,7 @@ try {
   assert.match(toolTrace.code, /document\.title/);
   assert.match(toolTrace.result, /42/);
   assert.equal(toolTrace.requestCount, 2);
+  assert.equal(await page.evaluate("document.querySelector('#chat-log')?.getAttribute('aria-busy')"), "false");
 
   await page.evaluate(`(() => {
     document.querySelector('[data-action="edit-message"]').click();
@@ -238,6 +243,20 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
+
+  await page.evaluate(`document.querySelector('#open-settings').click()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = 'http://127.0.0.1:${port}/missing';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Show the provider error';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.stream-error') !== null");
+  assert.match(await page.evaluate("document.querySelector('.stream-error')?.textContent"), /Not Found|failed|error/i);
   console.log("Browser smoke passed.");
 } finally {
   page?.close();

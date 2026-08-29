@@ -62,6 +62,7 @@ export class AgentApp {
   }
 
   async start(): Promise<void> {
+    if (this.ready || this.harness !== undefined || this.eventController !== undefined) await this.stop();
     const generation = ++this.lifecycleGeneration;
     Object.assign(this.elements, renderShell(this.root));
     this.messages = [];
@@ -103,7 +104,9 @@ export class AgentApp {
     this.connecting = false;
     this.editingIndex = undefined;
     this.connectionEditing = false;
+    this.runStatusKind = "normal";
     this.ready = false;
+    this.root.replaceChildren();
   }
 
   private bindEvents(): void {
@@ -393,8 +396,11 @@ export class AgentApp {
     const input = this.element<HTMLTextAreaElement>("message-input");
     input.disabled = !connected;
     const button = this.element<HTMLButtonElement>("send-button");
-    button.hidden = !this.busy;
-    button.disabled = !this.busy;
+    button.hidden = false;
+    button.disabled = !this.busy && !connected;
+    button.textContent = this.busy ? "Stop" : "Send";
+    button.setAttribute("aria-label", this.busy ? "Stop generation" : "Send message");
+    this.element("chat-log").setAttribute("aria-busy", String(this.busy));
     this.element("run-status").textContent = this.runStatus;
     this.element("run-status").className = `status-message ${this.runStatusKind}`;
   }
