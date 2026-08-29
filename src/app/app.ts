@@ -210,7 +210,7 @@ export class AgentApp {
       endpoint.focus({ preventScroll: true });
       const cardBounds = card.getBoundingClientRect();
       const endpointBounds = endpoint.getBoundingClientRect();
-      if (endpointBounds.bottom > cardBounds.bottom) card.scrollTop = Math.min(card.scrollHeight - card.clientHeight, endpointBounds.bottom - cardBounds.bottom);
+      if (endpointBounds.bottom > cardBounds.bottom) card.scrollTop = Math.min(card.scrollHeight - card.clientHeight, Math.ceil(endpointBounds.bottom - cardBounds.bottom));
       else if (endpointBounds.top < cardBounds.top) card.scrollTop = Math.max(0, endpointBounds.top - cardBounds.top);
     }, { signal });
 
