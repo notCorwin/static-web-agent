@@ -194,8 +194,8 @@ function completeStreamedToolCalls(drafts: ReadonlyMap<number, StreamedToolCallD
 
 function assertAssistant(message: AssistantMessage): void {
   const candidate: unknown = message;
-  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
-  const record = candidate;
+  if (!isRecord(candidate) || !isJsonValue(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
+  const record = candidate as Record<string, unknown>;
   if (record.role !== "assistant" || typeof record.content !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   if (record.toolCalls !== undefined) {
     if (!Array.isArray(record.toolCalls)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");

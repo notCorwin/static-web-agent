@@ -23,7 +23,12 @@ function copyable(message: ModelMessage): string | undefined {
 }
 
 function asErrorMessage(value: unknown): string {
-  return value instanceof Error ? value.message || "Operation failed." : "Operation failed.";
+  try {
+    const message = value instanceof Error ? value.message : undefined;
+    return typeof message === "string" && message.length > 0 ? message : "Operation failed.";
+  } catch {
+    return "Operation failed.";
+  }
 }
 
 export interface AgentAppOptions {

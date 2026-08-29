@@ -474,6 +474,19 @@ test("hostile model errors still end the run visibly", async () => {
   }
 });
 
+test("accessor-backed assistant output is rejected before use", async () => {
+  let reads = 0;
+  const message = { role: "assistant", get content() { reads += 1; return reads === 1 ? "ok" : { length: 1 }; } };
+  const harness = await createHarness({ model: { id: "accessor-assistant", async *stream() { yield { type: "completed", message }; } } });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("cancellation during assistant delivery wins over completion", async () => {
   const controller = new AbortController();
   const harness = await createHarness({

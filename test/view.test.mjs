@@ -42,3 +42,23 @@ test("late clipboard completion cannot update a stopped app", async () => {
     else Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: clipboard });
   }
 });
+
+test("hostile clipboard errors become a visible status", async () => {
+  const source = new Error("copy failed");
+  const hostile = new Proxy(source, { getPrototypeOf() { throw new Error("blocked prototype"); } });
+  const clipboard = globalThis.navigator.clipboard;
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.reject(hostile) },
+  });
+  try {
+    const app = new AgentApp({});
+    const statuses = [];
+    app.setStatus = (message, kind) => statuses.push([message, kind]);
+    await app.copyMessage("message");
+    assert.deepEqual(statuses, [["Operation failed.", "error"]]);
+  } finally {
+    if (clipboard === undefined) delete globalThis.navigator.clipboard;
+    else Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
