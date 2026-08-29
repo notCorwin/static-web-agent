@@ -472,9 +472,6 @@ export class Agent {
       messages.push(immutableAssistant);
       this.emit(request.onEvent, { type: "assistant-message", message: immutableAssistant });
 
-      if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
-      if (request.maxTurns !== undefined && turns >= request.maxTurns) return finish({ status: "max-turns", response: immutableAssistant });
-
       const appendToolResult = (call: ToolCall, result: ToolExecutionResult): void => {
         this.emit(request.onEvent, { type: "tool-finished", call, result });
         const toolMessage: ToolMessage = result.ok
@@ -482,6 +479,14 @@ export class Agent {
           : { role: "tool", callId: call.id, name: call.name, content: jsonString(jsonError(result.error)), isError: true, durationMs: result.durationMs };
         messages.push(Object.freeze(toolMessage));
       };
+      if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
+      if (request.maxTurns !== undefined && turns >= request.maxTurns) {
+        for (const call of calls) {
+          this.emit(request.onEvent, { type: "tool-started", call });
+          appendToolResult(call, errorResult("MAX_TURNS", "Host turn limit reached before this tool call could run."));
+        }
+        return finish({ status: "max-turns", response: immutableAssistant });
+      }
       const cancelTools = (startIndex: number, error: unknown, firstStarted = false): AgentRunResult => {
         for (let index = startIndex; index < calls.length; index += 1) {
           const call = calls[index];

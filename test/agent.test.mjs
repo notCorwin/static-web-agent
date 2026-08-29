@@ -120,6 +120,32 @@ test("streamed tool protocol failures end the run visibly", async () => {
   await harness.dispose();
 });
 
+test("max-turn limits close unexecuted tool calls for continuation", async () => {
+  let executed = 0;
+  const harness = await createHarness({
+    model: {
+      id: "max-turn-history",
+      async *stream({ messages }) {
+        if (messages.at(-1)?.role === "tool") {
+          yield completed("continued");
+          return;
+        }
+        yield completed("", [{ id: "limited", name: "page.run", arguments: { code: "return 1" } }]);
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: executed, logs: [], durationMs: 0 }; } },
+  });
+  const first = await harness.run({ messages: [{ role: "user", content: "go" }], maxTurns: 1 });
+  assert.equal(first.status, "max-turns");
+  assert.equal(executed, 0);
+  assert.deepEqual(first.messages.map((message) => message.role), ["user", "assistant", "tool"]);
+  assert.equal(JSON.parse(first.messages.at(-1).content).code, "MAX_TURNS");
+  const second = await harness.run({ messages: first.messages, maxTurns: 1 });
+  assert.equal(second.status, "completed");
+  assert.equal(second.response.content, "continued");
+  await harness.dispose();
+});
+
 test("model transport failures end the run with a visible error", async () => {
   const events = [];
   const harness = await createHarness({
