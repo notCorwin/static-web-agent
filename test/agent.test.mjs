@@ -1213,6 +1213,42 @@ test("invalid page runtime results return an error to the model", async () => {
   await harness.dispose();
 });
 
+test("page tool input cannot come from the prototype chain", async () => {
+  const key = "input";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: { polluted: true } });
+  let turn = 0;
+  let seenInput;
+  const harness = await createHarness({
+    model: {
+      id: "inherited-page-input",
+      async *stream() {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "input", name: "page.run", arguments: { code: "return input" } }]);
+        } else {
+          yield completed("recovered");
+        }
+      },
+    },
+    pageRuntime: {
+      async execute(_code, input) {
+        seenInput = input;
+        return { value: input, logs: [], durationMs: 0 };
+      },
+    },
+  });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "completed");
+    assert.equal(seenInput, null);
+    assert.deepEqual(JSON.parse(result.messages[2].content).value, null);
+  } finally {
+    await harness.dispose();
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
+
 test("tool timeout reports its elapsed duration", async () => {
   let turn = 0;
   const harness = await createHarness({

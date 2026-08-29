@@ -331,7 +331,8 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
   const input = call.arguments as JsonObject;
   try {
     throwIfAborted(signal);
-    const result = await runtime.execute(input.code as string, input.input === undefined ? null : clone(input.input), { signal });
+    const pageInput = hasEnumerableOwn(input, "input") ? input.input : undefined;
+    const result = await runtime.execute(input.code as string, pageInput === undefined ? null : clone(pageInput), { signal });
     throwIfAborted(signal);
     if (!isPageExecutionResult(result)) return errorResult("INVALID_PAGE_RUNTIME_RESULT", "Page runtime returned an invalid result.", duration());
     return { ok: true, value: { value: clone(result.value), logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };

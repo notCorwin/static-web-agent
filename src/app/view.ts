@@ -101,7 +101,7 @@ function callCode(call: ToolCall | undefined, delta: ToolCallDelta | undefined):
 
 function callInput(call: ToolCall | undefined): unknown {
   if (call === undefined || typeof call.arguments !== "object" || call.arguments === null || Array.isArray(call.arguments)) return null;
-  return call.arguments.input ?? null;
+  return Object.hasOwn(call.arguments, "input") ? call.arguments.input : null;
 }
 
 function resultText(result: ToolExecutionResult | undefined, message: Extract<ModelMessage, { readonly role: "tool" }> | undefined): string | undefined {
