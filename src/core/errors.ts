@@ -21,10 +21,14 @@ export class ModelAdapterError extends HarnessError {
 }
 
 export function isAbortError(value: unknown): boolean {
-  return (
-    (typeof DOMException !== "undefined" && value instanceof DOMException && value.name === "AbortError") ||
-    (value instanceof Error && value.name === "AbortError")
-  );
+  try {
+    return (
+      (typeof DOMException !== "undefined" && value instanceof DOMException && value.name === "AbortError") ||
+      (value instanceof Error && value.name === "AbortError")
+    );
+  } catch {
+    return false;
+  }
 }
 
 function safeDetails(value: unknown): JsonValue | undefined {
@@ -39,13 +43,17 @@ function safeDetails(value: unknown): JsonValue | undefined {
 }
 
 export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): ToolError {
-  if (value instanceof HarnessError) {
-    const result: ToolError = { code: value.code, message: value.message };
-    const details = safeDetails(value.details);
-    return details === undefined ? result : { ...result, details };
+  try {
+    if (value instanceof HarnessError) {
+      const result: ToolError = { code: value.code, message: value.message };
+      const details = safeDetails(value.details);
+      return details === undefined ? result : { ...result, details };
+    }
+    if (isAbortError(value)) return { code: "ABORTED", message: "Operation cancelled." };
+    if (value instanceof Error) return { code: fallbackCode, message: value.message || "Operation failed." };
+  } catch {
+    // Error objects are external input; unreadable properties must not escape the run.
   }
-  if (isAbortError(value)) return { code: "ABORTED", message: "Operation cancelled." };
-  if (value instanceof Error) return { code: fallbackCode, message: value.message || "Operation failed." };
   return { code: fallbackCode, message: "Operation failed." };
 }
 

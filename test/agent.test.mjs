@@ -402,6 +402,25 @@ test("model transport failures end the run with a visible error", async () => {
   await harness.dispose();
 });
 
+test("hostile model errors still end the run visibly", async () => {
+  const source = new Error("provider failed");
+  const error = new Proxy(source, {
+    get(target, key, receiver) {
+      if (key === "message" || key === "name") throw new Error("blocked error property");
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const harness = await createHarness({ model: { id: "hostile-error", async *stream() { throw error; } } });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "MODEL_ERROR");
+    assert.equal(result.error.message, "Operation failed.");
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("model timeouts suppress late events from an uncooperative stream", async () => {
   const events = [];
   let cleanupRejection;
