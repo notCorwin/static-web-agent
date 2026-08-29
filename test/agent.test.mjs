@@ -491,6 +491,52 @@ test("hostile cancellation reasons use a safe abort error", async () => {
   }
 });
 
+test("the Harness contains unreadable cancellation reason access", async () => {
+  const signal = {
+    aborted: true,
+    get reason() { throw new Error("blocked reason getter"); },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  let streamed = false;
+  const harness = await createHarness({ model: { id: "unreadable-harness-abort", async *stream() { streamed = true; yield completed("unexpected"); } } });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }], signal });
+    assert.equal(result.status, "cancelled");
+    assert.deepEqual(result.error, { code: "ABORTED", message: "Operation cancelled." });
+    assert.equal(streamed, false);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+test("unreadable cancellation reasons still return a cancelled run", async () => {
+  const listeners = new Set();
+  const signal = {
+    aborted: false,
+    get reason() { throw new Error("blocked reason getter"); },
+    addEventListener(type, listener) { if (type === "abort") listeners.add(listener); },
+    removeEventListener(type, listener) { if (type === "abort") listeners.delete(listener); },
+    trigger() {
+      this.aborted = true;
+      for (const listener of listeners) listener();
+    },
+  };
+  const agent = new Agent({
+    id: "unreadable-abort",
+    stream({ signal: modelSignal }) {
+      return (async function* () {
+        await new Promise((resolve) => modelSignal.addEventListener("abort", resolve, { once: true }));
+      })();
+    },
+  }, new BrowserPageRuntime());
+  const running = agent.run({ messages: [{ role: "user", content: "wait" }], signal });
+  setTimeout(() => signal.trigger(), 0);
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.deepEqual(result.error, { code: "ABORTED", message: "Operation cancelled." });
+});
+
 test("non-string error messages stay out of public run results", async () => {
   const error = new Error("provider failed");
   error.message = { unsafe: true };

@@ -61,13 +61,17 @@ function cloneMessages(messages: readonly ModelMessage[]): ModelMessage[] {
   return clone(messages).map((message) => freeze(message));
 }
 
+function abortReason(signal: AbortSignal): unknown {
+  try {
+    return signal.reason;
+  } catch {
+    return undefined;
+  }
+}
+
 function throwIfAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
-  let reason: unknown;
-  try {
-    reason = signal.reason;
-  } catch {
-  }
+  const reason = abortReason(signal);
   let isError = false;
   try {
     isError = reason instanceof Error;
@@ -307,7 +311,7 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
   const started = now();
   const duration = (): number => Math.max(0, Math.round(now() - started));
   const controller = new AbortController();
-  const relayAbort = () => controller.abort(parentSignal.reason);
+  const relayAbort = () => controller.abort(abortReason(parentSignal));
   parentSignal.addEventListener("abort", relayAbort, { once: true });
   if (parentSignal.aborted) relayAbort();
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -404,7 +408,7 @@ export class Agent {
       let timedOut = false;
       let abortListener: (() => void) | undefined;
       const modelController = new AbortController();
-      const relayModelAbort = () => modelController.abort(signal.reason);
+      const relayModelAbort = () => modelController.abort(abortReason(signal));
       signal.addEventListener("abort", relayModelAbort, { once: true });
       if (signal.aborted) relayModelAbort();
       let modelTimer: ReturnType<typeof setTimeout> | undefined;
@@ -523,7 +527,7 @@ export class Agent {
       } catch (error) {
         const partial = partialMessage(streamedText.join(""), streamedCalls);
         if (timedOut) return fail(errorInfo(error, "MODEL_TIMEOUT"), partial);
-        if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(signal.reason ?? error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
+        if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(abortReason(signal) ?? error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
         return fail(errorInfo(error, "MODEL_ERROR"), partial);
       } finally {
         signal.removeEventListener("abort", relayModelAbort);
@@ -605,7 +609,7 @@ export class Agent {
         try {
           result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
         } catch (error) {
-          if (signal.aborted) return cancelTools(index, signal.reason ?? error, true);
+          if (signal.aborted) return cancelTools(index, abortReason(signal) ?? error, true);
           result = errorResult("PAGE_TOOL_ERROR", safeErrorMessage(error, "Page tool execution failed."));
         }
         appendToolResult(call, result);

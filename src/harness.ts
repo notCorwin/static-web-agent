@@ -26,6 +26,14 @@ function assertModel(model: ModelAdapter): void {
   }
 }
 
+function abortReason(signal: AbortSignal | undefined): unknown {
+  try {
+    return signal?.reason;
+  } catch {
+    return undefined;
+  }
+}
+
 export class Harness {
   private model: ModelAdapter | undefined;
   private readonly pageRuntime: PageRuntime;
@@ -82,7 +90,7 @@ export class Harness {
     if (model === undefined) throw new HarnessError("MODEL_NOT_CONNECTED", "Connect a model adapter before starting a run.");
 
     const controller = new AbortController();
-    const relayAbort = () => controller.abort(request.signal?.reason);
+    const relayAbort = () => controller.abort(abortReason(request.signal));
     request.signal?.addEventListener("abort", relayAbort, { once: true });
     if (request.signal?.aborted) relayAbort();
     this.activeRuns.add(controller);
