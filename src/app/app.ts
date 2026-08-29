@@ -104,14 +104,17 @@ export class AgentApp {
     await this.harness?.dispose();
     this.harness = undefined;
     this.modelConnection = undefined;
+    this.messages = [];
     this.stream = undefined;
     this.busy = false;
     this.connecting = false;
     this.editingIndex = undefined;
     this.connectionEditing = false;
+    this.runStatus = "";
     this.runStatusKind = "normal";
     this.ready = false;
     this.root.replaceChildren();
+    for (const key of Object.keys(this.elements)) Reflect.deleteProperty(this.elements, key);
   }
 
   private bindEvents(): void {

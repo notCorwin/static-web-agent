@@ -62,3 +62,15 @@ test("hostile clipboard errors become a visible status", async () => {
     else Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: clipboard });
   }
 });
+
+test("stopping the app releases conversation and DOM state", async () => {
+  const app = new AgentApp({ replaceChildren() {} });
+  const oldElement = {};
+  app.elements.oldElement = oldElement;
+  app.messages = [{ role: "user", content: "retained conversation" }];
+  app.runStatus = "Running…";
+  await app.stop();
+  assert.equal(app.elements.oldElement, undefined);
+  assert.deepEqual(app.messages, []);
+  assert.equal(app.runStatus, "");
+});
