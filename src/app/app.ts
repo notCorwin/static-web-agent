@@ -173,6 +173,14 @@ export class AgentApp {
       event.preventDefault();
       void this.connectFromForm(event.currentTarget as HTMLFormElement);
     }, { signal });
+    const connectionForm = this.element<HTMLFormElement>("connection-form");
+    for (const id of ["model-endpoint", "model-name", "model-key"]) {
+      this.element<HTMLInputElement>(id).addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" || event.isComposing) return;
+        event.preventDefault();
+        connectionForm.requestSubmit();
+      }, { signal });
+    }
     this.element("open-settings").addEventListener("click", () => {
       if (this.harness?.modelId === undefined) return;
       if (this.connectionEditing) {

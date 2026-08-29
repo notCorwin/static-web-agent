@@ -269,6 +269,13 @@ try {
     label: document.querySelector('#open-settings')?.getAttribute('aria-label'),
     expanded: document.querySelector('#open-settings')?.getAttribute('aria-expanded'),
   })`), { text: "Close", label: "Close connection settings", expanded: "true" });
+  await page.evaluate("document.querySelector('#model-name').focus()");
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "pressing Enter in connection settings should submit and return focus to the composer");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = 'bad';
     document.querySelector('#model-name').value = '';
