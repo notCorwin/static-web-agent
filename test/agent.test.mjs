@@ -301,6 +301,26 @@ test("page tool input is mutable and isolated from the tool call snapshot", asyn
   await harness.dispose();
 });
 
+test("accessor-backed tool arguments are rejected before execution", async () => {
+  let executed = 0;
+  const argumentsValue = {};
+  Object.defineProperty(argumentsValue, "code", { enumerable: true, get: () => "return 1" });
+  const harness = await createHarness({
+    model: {
+      id: "accessor-tool-input",
+      async *stream() {
+        yield completed("", [{ id: "accessor", name: "page.run", arguments: argumentsValue }]);
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: 1, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  assert.equal(executed, 0);
+  await harness.dispose();
+});
+
 test("duplicate tool call IDs are rejected before page execution", async () => {
   let executed = 0;
   const harness = await createHarness({

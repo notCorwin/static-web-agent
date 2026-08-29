@@ -32,6 +32,9 @@ function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
 
 function hasJsonBoundaryProblem(value: object): boolean {
   try {
+    for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+      if (!("value" in descriptor)) return true;
+    }
     return typeof (value as { readonly toJSON?: unknown }).toJSON === "function"
       || (Array.isArray(value) && Object.keys(value).length !== value.length);
   } catch {

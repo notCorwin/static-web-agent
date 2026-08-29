@@ -65,12 +65,19 @@ test("JSON validation rejects array extras and custom JSON hooks", () => {
   Object.defineProperty(arrayHook, "toJSON", { value: () => ({ leaked: true }) });
   const objectHook = { answer: 1 };
   Object.defineProperty(objectHook, "toJSON", { value: () => ({ leaked: true }) });
+  const objectGetter = {};
+  Object.defineProperty(objectGetter, "answer", { enumerable: true, get: () => 1 });
+  const arrayGetter = [];
+  Object.defineProperty(arrayGetter, "0", { enumerable: true, get: () => 1 });
   assert.equal(isJsonValue(extra), false);
   assert.equal(isJsonValue(hiddenIndex), false);
   assert.equal(isJsonValue(arrayHook), false);
   assert.equal(isJsonValue(objectHook), false);
+  assert.equal(isJsonValue(objectGetter), false);
+  assert.equal(isJsonValue(arrayGetter), false);
   assert.equal(validate({ type: "array", items: { type: "number" } }, extra).valid, false);
   assert.equal(validate({ type: "object" }, objectHook).valid, false);
+  assert.equal(validate({ type: "object" }, objectGetter).valid, false);
 });
 
 test("JSON validation treats prototype-named keys as data", () => {
