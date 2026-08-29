@@ -113,10 +113,11 @@ function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], iss
   }
 
   if (typeof value === "string") {
-    if (schema.minLength !== undefined && value.length < schema.minLength) {
+    const length = [...value].length;
+    if (schema.minLength !== undefined && length < schema.minLength) {
       push(issues, path, `Must contain at least ${schema.minLength} characters.`, "minLength");
     }
-    if (schema.maxLength !== undefined && value.length > schema.maxLength) {
+    if (schema.maxLength !== undefined && length > schema.maxLength) {
       push(issues, path, `Must contain at most ${schema.maxLength} characters.`, "maxLength");
     }
     if (schema.pattern !== undefined) {

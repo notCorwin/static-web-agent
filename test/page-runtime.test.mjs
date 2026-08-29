@@ -120,6 +120,11 @@ test("JSON schema equality distinguishes arrays and handles cycles", () => {
   assert.equal(validate({ const: left }, right).valid, false);
 });
 
+test("JSON schema string lengths count Unicode code points", () => {
+  assert.equal(validate({ maxLength: 1 }, "😀").valid, true);
+  assert.equal(validate({ minLength: 2 }, "😀").valid, false);
+});
+
 test("empty page code is rejected at the boundary", async () => {
   await assert.rejects(new BrowserPageRuntime().execute("  ", null), (error) => error instanceof HarnessError && error.code === "INVALID_PAGE_RUNTIME_INPUT");
 });
