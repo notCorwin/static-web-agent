@@ -107,8 +107,7 @@ function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string
 
 function localToolName(providerName: string, names: ReadonlyMap<string, string>): string {
   for (const [localName, mappedName] of names) if (mappedName === providerName) return localName;
-  const partialMatches = [...names.entries()].filter(([, mappedName]) => mappedName.startsWith(providerName));
-  return partialMatches.length === 1 ? partialMatches[0]?.[0] ?? providerName : providerName;
+  return providerName;
 }
 
 function schema(value: JsonSchema): ReturnType<typeof jsonSchema> {

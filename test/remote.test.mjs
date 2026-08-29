@@ -41,3 +41,21 @@ test("the OpenAI-compatible adapter preserves exact completion endpoints", async
     assert.equal(events.at(-1).message.content, "ok");
   }
 });
+
+test("unknown provider tool names are not silently aliased", async () => {
+  const chunks = [
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "page", arguments: JSON.stringify({ code: "return 1" }) } }] } }] },
+    { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    { choices: [{ delta: {}, finish_reason: "stop" }] },
+    "[DONE]",
+  ];
+  const body = chunks.map((chunk) => `data: ${typeof chunk === "string" ? chunk : JSON.stringify(chunk)}\n\n`).join("");
+  const adapter = new AiSdkAdapter({
+    endpoint: "http://example.test/v1",
+    model: "demo",
+    fetcher: async () => new Response(body, { headers: { "content-type": "text/event-stream" } }),
+  });
+  const events = [];
+  for await (const event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools: [{ name: "page.run", description: "page", inputSchema: { type: "object" } }], signal: new AbortController().signal })) events.push(event);
+  assert.equal(events.at(-1).message.toolCalls[0].name, "page");
+});
