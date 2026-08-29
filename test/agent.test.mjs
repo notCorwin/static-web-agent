@@ -47,6 +47,33 @@ test("the Harness exposes one page tool and executes formal calls sequentially",
   await harness.dispose();
 });
 
+test("completed assistant content is emitted before its tools", async () => {
+  let turn = 0;
+  const events = [];
+  const harness = await createHarness({
+    model: {
+      id: "completed-content",
+      async *stream() {
+        if (turn++ === 0) {
+          yield completed("thinking", [{ id: "call-1", name: "page.run", arguments: { code: "return 1" } }]);
+        } else {
+          yield completed("done");
+        }
+      },
+    },
+    pageRuntime: { async execute() { return { value: 1, logs: [], durationMs: 0 }; } },
+  });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }], onEvent: (event) => events.push(event) });
+    assert.equal(result.status, "completed");
+    const textIndex = events.findIndex((event) => event.type === "text-delta" && event.delta === "thinking");
+    const toolIndex = events.findIndex((event) => event.type === "tool-started");
+    assert.ok(textIndex >= 0 && textIndex < toolIndex);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("page tool failures return to the model instead of becoming hidden control flow", async () => {
   let turn = 0;
   const model = {

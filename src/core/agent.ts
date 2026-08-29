@@ -471,6 +471,10 @@ export class Agent {
                 const message = (event as Extract<ModelEvent, { readonly type: "completed" }>).message;
                 assertAssistant(message);
                 completed = snapshotAssistant(message);
+                if (streamedText.length === 0 && message.content.length > 0) {
+                  streamedText.push(message.content);
+                  this.emit(request.onEvent, { type: "text-delta", delta: message.content });
+                }
                 sawCompleted = true;
                 const currentUsage = (event as Extract<ModelEvent, { readonly type: "completed" }>).usage;
                 if (currentUsage !== undefined) {
