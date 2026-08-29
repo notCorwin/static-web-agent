@@ -21,6 +21,21 @@ test("completed streamed tool cards do not absorb a reused call ID", () => {
   assert.equal(stream.tools[1].status, "preparing");
 });
 
+test("completed tool calls keep same-name cards separate without deltas", () => {
+  const app = new AgentApp({});
+  const stream = { text: "", tools: [] };
+  const calls = [
+    { id: "one", name: "page.run", arguments: { code: "return 1" } },
+    { id: "two", name: "page.run", arguments: { code: "return 2" } },
+  ];
+  app.updateTool(stream, calls[0], undefined, "running");
+  app.updateTool(stream, calls[1], undefined, "running");
+  assert.deepEqual(stream.tools.map((item) => item.call.id), ["one", "two"]);
+  app.updateTool(stream, calls[0], { ok: true, value: 1, durationMs: 0 }, "finished");
+  app.updateTool(stream, calls[1], { ok: true, value: 2, durationMs: 0 }, "finished");
+  assert.deepEqual(stream.tools.map((item) => item.status), ["finished", "finished"]);
+});
+
 test("late clipboard completion cannot update a stopped app", async () => {
   let release;
   const clipboard = globalThis.navigator.clipboard;

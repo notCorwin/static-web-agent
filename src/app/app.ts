@@ -381,7 +381,7 @@ export class AgentApp {
     const index = stream.tools.findIndex((item) => item.status !== "finished" && (item.call?.id === call.id || item.delta?.id === call.id));
     const fallbackIndex = index >= 0
       ? index
-      : stream.tools.findIndex((item) => item.status !== "finished" && (item.call?.name === call.name || item.delta?.name === call.name));
+      : stream.tools.findIndex((item) => item.status !== "finished" && item.call === undefined && item.delta?.name === call.name);
     const current = fallbackIndex < 0 ? undefined : stream.tools[fallbackIndex];
     const next: StreamTool = { status, ...(current?.delta === undefined ? {} : { delta: current.delta }), call, ...(result === undefined ? {} : { result }) };
     if (fallbackIndex < 0) stream.tools.push(next);
