@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHarness } from "../dist/index.js";
 import { AiSdkAdapter } from "../dist/remote.js";
 
 function response() {
@@ -61,6 +62,39 @@ test("unknown provider tool names are not silently aliased", async () => {
   const events = [];
   for await (const event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools: [{ name: "page.run", description: "page", inputSchema: { type: "object" } }], signal: new AbortController().signal })) events.push(event);
   assert.equal(events.at(-1).message.toolCalls[0].name, "page");
+});
+
+test("an unmapped provider name cannot execute a same-named local tool", async () => {
+  const toolResponse = [
+    `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: "page.run", arguments: JSON.stringify({ code: "return 1" }) } }] } }] })}\n\n`,
+    'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+    "data: [DONE]\n\n",
+  ].join("");
+  let requests = 0;
+  let executed = 0;
+  const adapter = new AiSdkAdapter({
+    endpoint: "http://example.test/v1",
+    model: "demo",
+    fetcher: async () => {
+      requests += 1;
+      return requests === 1
+        ? new Response(toolResponse, { headers: { "content-type": "text/event-stream" } })
+        : response();
+    },
+  });
+  const harness = await createHarness({
+    model: adapter,
+    pageRuntime: { async execute() { executed += 1; return { value: 1, logs: [], durationMs: 0 }; } },
+  });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "completed");
+    assert.equal(executed, 0);
+    assert.equal(JSON.parse(result.messages[2].content).code, "TOOL_NOT_FOUND");
+  } finally {
+    await harness.dispose();
+  }
 });
 
 test("tool names that overlap object properties stay in the provider request", async () => {

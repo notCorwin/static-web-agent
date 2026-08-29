@@ -115,7 +115,9 @@ function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string
 
 function localToolName(providerName: string, names: ReadonlyMap<string, string>): string {
   for (const [localName, mappedName] of names) if (mappedName === providerName) return localName;
-  return providerName;
+  let unknownName = providerName;
+  while (names.has(unknownName)) unknownName = `unknown_${unknownName}`;
+  return unknownName;
 }
 
 function schema(value: JsonSchema): ReturnType<typeof jsonSchema> {
