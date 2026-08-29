@@ -396,6 +396,7 @@ export class Agent {
     const toolTimeoutMs = Object.hasOwn(request, "toolTimeoutMs") ? request.toolTimeoutMs : undefined;
     const maxTurns = Object.hasOwn(request, "maxTurns") ? request.maxTurns : undefined;
     const onEvent = Object.hasOwn(request, "onEvent") ? request.onEvent : undefined;
+    const inputMessages = Object.hasOwn(request, "messages") ? request.messages : undefined;
     validatePositive(modelTimeoutMs, "modelTimeoutMs");
     validatePositive(toolTimeoutMs, "toolTimeoutMs");
     if (maxTurns !== undefined && maxTurns !== Number.POSITIVE_INFINITY && (!Number.isInteger(maxTurns) || maxTurns < 1)) throw new Error("maxTurns must be a positive integer or Infinity.");
@@ -427,9 +428,9 @@ export class Agent {
     };
 
     try {
-      if (!Object.hasOwn(request, "messages")) throw new HarnessError("INVALID_MESSAGES", "Model messages must be an array.");
-      assertMessages(request.messages);
-      messages.push(...cloneMessages(request.messages));
+      if (inputMessages === undefined) throw new HarnessError("INVALID_MESSAGES", "Model messages must be an array.");
+      assertMessages(inputMessages);
+      messages.push(...cloneMessages(inputMessages));
     } catch (error) {
       return fail(errorInfo(error, "INVALID_MESSAGES"));
     }

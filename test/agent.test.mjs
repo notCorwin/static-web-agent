@@ -1018,6 +1018,28 @@ test("model event fields cannot come from the prototype chain", async () => {
   }
 });
 
+test("run messages are captured before validation", async () => {
+  let reads = 0;
+  let received;
+  const agent = new Agent({
+    id: "message-snapshot",
+    async *stream({ messages }) {
+      received = messages;
+      yield completed("done");
+    },
+  }, new BrowserPageRuntime());
+  const request = {
+    get messages() {
+      reads += 1;
+      return [{ role: reads === 1 ? "user" : "assistant", content: "go" }];
+    },
+  };
+  const result = await agent.run(request);
+  assert.equal(result.status, "completed");
+  assert.equal(reads, 1);
+  assert.equal(received[0].role, "user");
+});
+
 test("tool history requires matching preceding calls", async () => {
   for (const messages of [
     [{ role: "user", content: "go" }, { role: "tool", callId: "missing", name: "page.run", content: "{}" }],
