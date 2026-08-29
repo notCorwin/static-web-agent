@@ -844,7 +844,10 @@ test("tool timeout reports its elapsed duration", async () => {
 
 test("a Harness without a model fails explicitly and disposal is final", async () => {
   const harness = await createHarness();
+  const statuses = [];
+  harness.subscribe((snapshot) => statuses.push(snapshot.status));
   await assert.rejects(harness.run({ messages: [] }), (error) => error instanceof HarnessError && error.code === "MODEL_NOT_CONNECTED");
   await harness.dispose();
+  assert.deepEqual(statuses, ["active", "disposed"]);
   await assert.rejects(harness.run({ messages: [] }), (error) => error instanceof HarnessError && error.code === "HARNESS_DISPOSED");
 });

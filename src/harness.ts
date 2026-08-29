@@ -120,6 +120,7 @@ export class Harness {
     this.activeRuns.clear();
     this.model = undefined;
     this.changed();
+    this.listeners.clear();
   }
 
   static async create(options: HarnessOptions = {}): Promise<Harness> {
