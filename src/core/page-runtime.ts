@@ -39,11 +39,12 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
 
     const output: Record<string, JsonValue> = {};
     for (const key of Object.keys(value)) {
+      let serialized: JsonValue = "[Unreadable]";
       try {
-        output[key] = serialize((value as Record<string, unknown>)[key], seen);
+        serialized = serialize((value as Record<string, unknown>)[key], seen);
       } catch {
-        output[key] = "[Unreadable]";
       }
+      Object.defineProperty(output, key, { value: serialized, enumerable: true, writable: true, configurable: true });
     }
     return output;
   } catch {

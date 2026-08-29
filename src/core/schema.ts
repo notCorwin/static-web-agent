@@ -21,7 +21,7 @@ function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
       }
       return true;
     }
-    return Object.entries(value).every(([key, item]) => key !== "__proto__" && isJsonValueAt(item, ancestors));
+    return Object.entries(value).every(([, item]) => isJsonValueAt(item, ancestors));
   } catch {
     return false;
   } finally {
@@ -146,9 +146,8 @@ function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], iss
       }
     }
     for (const [key, item] of Object.entries(record)) {
-      if (key === "__proto__") json = false;
       path.push(key);
-      const propertySchema = properties[key];
+      const propertySchema = Object.hasOwn(properties, key) ? properties[key] : undefined;
       if (propertySchema !== undefined) {
         if (!validateAt(item, propertySchema, path, issues)) json = false;
       } else if (schema.additionalProperties === false) {

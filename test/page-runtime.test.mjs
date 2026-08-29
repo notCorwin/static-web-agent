@@ -26,6 +26,15 @@ test("repeated page references are not mistaken for cycles", async () => {
   assert.deepEqual(result.value, { first: { answer: 42 }, second: { answer: 42 } });
 });
 
+test("page runtime preserves prototype-named JSON keys safely", async () => {
+  const result = await new BrowserPageRuntime().execute("return JSON.parse('{\"__proto__\":{\"polluted\":true},\"constructor\":2}')", null);
+  const expected = JSON.parse('{"__proto__":{"polluted":true},"constructor":2}');
+  assert.deepEqual(result.value, expected);
+  assert.equal(isJsonValue(result.value), true);
+  assert.equal(Object.getPrototypeOf(result.value), Object.prototype);
+  assert.equal(({}).polluted, undefined);
+});
+
 test("common built-in values keep a readable serialized form", async () => {
   const result = await new BrowserPageRuntime().execute("return { date: new Date(0), pattern: /agent/gi };", null);
   assert.deepEqual(result.value, { date: "1970-01-01T00:00:00.000Z", pattern: "/agent/gi" });
@@ -39,6 +48,13 @@ test("sparse arrays stay within the JSON boundary", async () => {
   const result = await new BrowserPageRuntime().execute("return input", sparse);
   assert.deepEqual(result.value, [null]);
   assert.equal(Object.hasOwn(result.value, 0), true);
+});
+
+test("JSON validation treats prototype-named keys as data", () => {
+  const value = JSON.parse('{"__proto__":{"ok":true}}');
+  assert.equal(isJsonValue(value), true);
+  assert.equal(validate({ type: "object", additionalProperties: false }, value).valid, false);
+  assert.equal(validate({ type: "object", properties: JSON.parse('{"__proto__":{"type":"object"}}') }, value).valid, true);
 });
 
 test("empty page code is rejected at the boundary", async () => {
