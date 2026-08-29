@@ -1104,6 +1104,39 @@ test("completed model turns remove their cancellation listeners", async () => {
   assert.equal(signal.listeners.size, 0);
 });
 
+test("abort listener cleanup cannot replace completed runs", async () => {
+  const signal = {
+    aborted: false,
+    reason: undefined,
+    addEventListener() {},
+    removeEventListener() { throw new Error("cleanup blocked"); },
+  };
+  const agent = new Agent({ id: "cleanup-probe", async *stream() { yield completed("ok"); } }, new BrowserPageRuntime());
+  const agentResult = await agent.run({ messages: [{ role: "user", content: "go" }], signal });
+  assert.equal(agentResult.status, "completed");
+
+  let toolTurn = 0;
+  const toolAgent = new Agent({
+    id: "cleanup-tool",
+    async *stream() {
+      if (toolTurn++ === 0) yield completed("", [{ id: "tool", name: "page.run", arguments: { code: "return 1" } }]);
+      else yield completed("ok");
+    },
+  }, { async execute() { return { value: 1, logs: [], durationMs: 0 }; } });
+  const toolResult = await toolAgent.run({ messages: [{ role: "user", content: "go" }], signal });
+  assert.equal(toolResult.status, "completed");
+  assert.equal(JSON.parse(toolResult.messages[2].content).value, 1);
+
+  const harness = await createHarness({ model: { id: "cleanup-harness", async *stream() { yield completed("ok"); } } });
+  try {
+    const harnessResult = await harness.run({ messages: [{ role: "user", content: "go" }], signal });
+    assert.equal(harnessResult.status, "completed");
+    assert.equal(harness.activeRuns.size, 0);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("invalid page runtime results return an error to the model", async () => {
   let turn = 0;
   const harness = await createHarness({

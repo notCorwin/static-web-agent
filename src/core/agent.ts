@@ -69,6 +69,14 @@ function abortReason(signal: AbortSignal): unknown {
   }
 }
 
+function removeAbortListener(signal: AbortSignal, listener: () => void): void {
+  try {
+    signal.removeEventListener("abort", listener);
+  } catch {
+    // Cleanup cannot change the operation result.
+  }
+}
+
 function throwIfAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
   const reason = abortReason(signal);
@@ -360,8 +368,8 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
     races.push(timeout);
     return await Promise.race(races);
   } finally {
-    parentSignal.removeEventListener("abort", relayAbort);
-    if (abortListener !== undefined) parentSignal.removeEventListener("abort", abortListener);
+    removeAbortListener(parentSignal, relayAbort);
+    if (abortListener !== undefined) removeAbortListener(parentSignal, abortListener);
     cancelTimer?.();
   }
 }
@@ -554,8 +562,8 @@ export class Agent {
         if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(abortReason(signal) ?? error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
         return fail(errorInfo(error, "MODEL_ERROR"), partial);
       } finally {
-        signal.removeEventListener("abort", relayModelAbort);
-        if (abortListener !== undefined) signal.removeEventListener("abort", abortListener);
+        removeAbortListener(signal, relayModelAbort);
+        if (abortListener !== undefined) removeAbortListener(signal, abortListener);
         cancelModelTimer?.();
         if (timedOut) modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
       }

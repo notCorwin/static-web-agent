@@ -81,6 +81,14 @@ function abortError(signal?: AbortSignal): Error {
   return error;
 }
 
+function removeAbortListener(signal: AbortSignal, listener: () => void): void {
+  try {
+    signal.removeEventListener("abort", listener);
+  } catch {
+    // Cleanup cannot change the operation result.
+  }
+}
+
 export class BrowserPageRuntime implements PageRuntime {
   async execute(code: string, input: JsonValue, options: { readonly signal?: AbortSignal } = {}): Promise<PageExecutionResult> {
     const source = code.trim();
@@ -115,7 +123,7 @@ export class BrowserPageRuntime implements PageRuntime {
     const signal = options.signal ?? NEVER_ABORTED_SIGNAL;
     return new Promise<PageExecutionResult>((resolve, reject) => {
       let settled = false;
-      const cleanup = () => signal.removeEventListener("abort", onAbort);
+      const cleanup = () => removeAbortListener(signal, onAbort);
       const onAbort = () => {
         if (settled) return;
         settled = true;

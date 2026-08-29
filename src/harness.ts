@@ -34,6 +34,15 @@ function abortReason(signal: AbortSignal | undefined): unknown {
   }
 }
 
+function removeAbortListener(signal: AbortSignal | undefined, listener: () => void): void {
+  if (signal === undefined) return;
+  try {
+    signal.removeEventListener("abort", listener);
+  } catch {
+    // Cleanup cannot change the operation result.
+  }
+}
+
 export class Harness {
   private model: ModelAdapter | undefined;
   private readonly pageRuntime: PageRuntime;
@@ -97,7 +106,7 @@ export class Harness {
     try {
       return await new Agent(model, this.pageRuntime).run({ ...request, signal: controller.signal });
     } finally {
-      request.signal?.removeEventListener("abort", relayAbort);
+      removeAbortListener(request.signal, relayAbort);
       this.activeRuns.delete(controller);
     }
   }

@@ -161,3 +161,17 @@ test("page runtime catches an abort between the initial check and listener regis
   await assert.rejects(new BrowserPageRuntime().execute("input.executed = true; return 1", input, { signal }), (error) => error === reason);
   assert.equal(input.executed, false);
 });
+
+test("page runtime settles when abort listener cleanup fails", async () => {
+  const signal = {
+    aborted: false,
+    reason: undefined,
+    addEventListener() {},
+    removeEventListener() { throw new Error("cleanup blocked"); },
+  };
+  const result = await Promise.race([
+    new BrowserPageRuntime().execute("return 1", null, { signal }),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("page runtime did not settle")), 50)),
+  ]);
+  assert.equal(result.value, 1);
+});
