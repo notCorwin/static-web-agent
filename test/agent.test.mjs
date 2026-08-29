@@ -924,6 +924,19 @@ test("malformed tool history is rejected at the run boundary", async () => {
   await harness.dispose();
 });
 
+test("message fields must survive the JSON clone boundary", async () => {
+  const message = {};
+  Object.defineProperty(message, "role", { value: "user" });
+  Object.defineProperty(message, "content", { value: "hidden" });
+  let modelCalls = 0;
+  const harness = await createHarness({ model: { id: "hidden-message", async *stream() { modelCalls += 1; yield completed("unused"); } } });
+  const result = await harness.run({ messages: [message] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MESSAGES");
+  assert.equal(modelCalls, 0);
+  await harness.dispose();
+});
+
 test("tool history requires matching preceding calls", async () => {
   for (const messages of [
     [{ role: "user", content: "go" }, { role: "tool", callId: "missing", name: "page.run", content: "{}" }],
