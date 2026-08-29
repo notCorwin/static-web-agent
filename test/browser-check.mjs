@@ -480,6 +480,9 @@ try {
   await waitFor(page, "document.querySelector('.stream-error')?.textContent.includes('before stream') === true");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Run failed. See the error above.");
   assert.deepEqual(page.consoleErrors.slice(consoleErrorsBeforeInitialFailure), [], "provider errors before the first stream must not leak to the browser console");
+  await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+  assert.equal(await page.evaluate("getComputedStyle(document.querySelector('.message-action')).color"), "rgb(112, 112, 112)", "message actions should remain readable in the light theme");
+  await page.send("Emulation.setEmulatedMedia", { features: [] });
 
   await page.evaluate(`document.querySelector('#open-settings').click()`);
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");

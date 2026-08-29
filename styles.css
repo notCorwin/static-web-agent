@@ -81,7 +81,7 @@ button:disabled { cursor: default; opacity: .58; }
 .message-actions { display: flex; gap: 5px; min-height: 25px; opacity: 0; transition: opacity 140ms ease; }
 .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }
 .message.user .message-actions { justify-content: flex-end; }
-.message-action { min-height: 25px; padding: 3px 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--faint); font-size: 11px; }
+.message-action { min-height: 25px; padding: 3px 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; }
 .message-action:hover { border-color: var(--border); background: var(--surface-soft); color: var(--text); }
 .message-edit { display: grid; gap: 8px; }
 .message-edit textarea { min-height: 76px; padding: 9px 10px; resize: vertical; line-height: 1.45; }
@@ -100,7 +100,7 @@ button:disabled { cursor: default; opacity: .58; }
 .streaming-run { display: grid; gap: 11px; align-self: flex-start; width: 100%; min-width: 0; }
 .streaming-run.stopped { opacity: .78; }
 .stream-status, .stream-error, .status-message { margin: 0; font-size: 12px; }
-.stream-status { color: var(--faint); }
+.stream-status { color: var(--muted); }
 .stream-error { color: var(--danger); overflow-wrap: anywhere; }
 .composer-wrap { padding: 10px clamp(18px, 4vw, 48px) 18px; }
 .composer { display: grid; gap: 5px; }
