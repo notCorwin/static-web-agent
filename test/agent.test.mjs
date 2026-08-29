@@ -80,6 +80,27 @@ test("ordinary model text is never interpreted as a tool call", async () => {
   await harness.dispose();
 });
 
+test("duplicate tool call IDs are rejected before page execution", async () => {
+  let executed = 0;
+  const harness = await createHarness({
+    model: {
+      id: "duplicate-tool-id",
+      async *stream() {
+        yield completed("", [
+          { id: "same", name: "page.run", arguments: { code: "return 1" } },
+          { id: "same", name: "page.run", arguments: { code: "return 2" } },
+        ]);
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: executed, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  assert.equal(executed, 0);
+  await harness.dispose();
+});
+
 test("model transport failures end the run with a visible error", async () => {
   const events = [];
   const harness = await createHarness({
@@ -92,6 +113,34 @@ test("model transport failures end the run with a visible error", async () => {
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "MODEL_ERROR");
   assert.match(result.error.message, /provider unavailable/);
+  assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
+  await harness.dispose();
+});
+
+test("model timeouts suppress late events from an uncooperative stream", async () => {
+  const events = [];
+  let nextCall = 0;
+  const harness = await createHarness({
+    model: {
+      id: "late-timeout-event",
+      stream() {
+        return {
+          [Symbol.asyncIterator]() { return this; },
+          next() {
+            return new Promise((resolve) => setTimeout(() => resolve(nextCall++ === 0
+              ? { done: false, value: { type: "text-delta", delta: "late" } }
+              : { done: true, value: undefined }), 20));
+          },
+          return() { return Promise.resolve({ done: true, value: undefined }); },
+        };
+      },
+    },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "wait" }], modelTimeoutMs: 5, onEvent: (event) => events.push(event.type) });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "MODEL_TIMEOUT");
+  assert.equal(events.includes("text-delta"), false);
   assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
   await harness.dispose();
 });

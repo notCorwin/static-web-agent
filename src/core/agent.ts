@@ -121,6 +121,15 @@ function assertToolCall(call: ToolCall): void {
   ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
 }
 
+function assertToolCalls(calls: readonly ToolCall[]): void {
+  const ids = new Set<string>();
+  for (const call of calls) {
+    assertToolCall(call);
+    if (ids.has(call.id)) throw new HarnessError("INVALID_MODEL_OUTPUT", `Model returned duplicate tool call ID “${call.id}”.`);
+    ids.add(call.id);
+  }
+}
+
 function assertToolCallDelta(delta: ToolCallDelta): void {
   const candidate: unknown = delta;
   if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
@@ -164,7 +173,7 @@ function assertAssistant(message: AssistantMessage): void {
   if (record.role !== "assistant" || typeof record.content !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   if (record.toolCalls !== undefined) {
     if (!Array.isArray(record.toolCalls)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
-    for (const call of record.toolCalls) assertToolCall(call as ToolCall);
+    assertToolCalls(record.toolCalls as ToolCall[]);
   }
 }
 
@@ -337,7 +346,7 @@ export class Agent {
           while (true) {
             const next = await currentIterator.next();
             if (next.done) break;
-            throwIfAborted(signal);
+            throwIfAborted(modelController.signal);
             const event: unknown = next.value;
             if (typeof event !== "object" || event === null || typeof (event as { readonly type?: unknown }).type !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
             switch ((event as { readonly type: string }).type) {
@@ -395,7 +404,7 @@ export class Agent {
             }
             if (request.onEvent !== undefined && ++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
               eventsSinceYield = 0;
-              await yieldToHost(signal);
+              await yieldToHost(modelController.signal);
             }
           }
         } finally {
@@ -446,6 +455,7 @@ export class Agent {
         : streamedCalls.length > 0
           ? streamedCalls
           : completeStreamedToolCalls(streamedCallDeltas);
+      assertToolCalls(calls);
       const content = completed.content.length > 0 ? completed.content : streamedText.join("");
       const assistant: AssistantMessage = {
         role: "assistant",
