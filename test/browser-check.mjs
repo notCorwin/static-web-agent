@@ -68,7 +68,7 @@ async function startServer() {
         const code = lastUser?.content === "Cancel this run"
           ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
           : "return { title: document.title, answer: 40 + 2 }";
-        response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser-" + requests, type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
         response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
       }
       response.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
@@ -248,6 +248,9 @@ try {
   await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('.stream-status')?.textContent === 'Stopped' && document.querySelector('#send-button')?.textContent === 'Send'");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2);
+  const tracesAfterStop = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => [...trace.querySelectorAll('.trace-section')].map((section) => [section.querySelector('h3')?.textContent, section.querySelector('pre')?.textContent])))()`);
+  assert.match(JSON.stringify(tracesAfterStop[0]), /42/);
+  assert.match(JSON.stringify(tracesAfterStop[1]), /ABORTED/);
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Continue after stopping';
     document.querySelector('#composer-form').requestSubmit();

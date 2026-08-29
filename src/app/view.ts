@@ -148,7 +148,7 @@ function traceSection(label: string, value: string, code: boolean): HTMLElement 
   return section;
 }
 
-function messageElement(message: ModelMessage, index: number, results: ReadonlyMap<string, Extract<ModelMessage, { readonly role: "tool" }>>, editingIndex: number | undefined): HTMLElement | null {
+function messageElement(message: ModelMessage, index: number, results: ReadonlyMap<ToolCall, Extract<ModelMessage, { readonly role: "tool" }>>, editingIndex: number | undefined): HTMLElement | null {
   if (message.role === "system") return null;
   if (message.role === "tool") return toolElement(undefined, undefined, undefined, message, "finished");
 
@@ -184,7 +184,7 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
 
   if (message.content.length > 0) article.append(textElement("div", message.content, "message-body"));
   if (message.role === "assistant") {
-    for (const call of message.toolCalls ?? []) article.append(toolElement(call, undefined, undefined, results.get(call.id), "finished"));
+    for (const call of message.toolCalls ?? []) article.append(toolElement(call, undefined, undefined, results.get(call), "finished"));
   }
   const actions = document.createElement("div");
   actions.className = "message-actions";
@@ -209,13 +209,24 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
 }
 
 export function messageElements(messages: readonly ModelMessage[], editingIndex?: number): HTMLElement[] {
-  const results = new Map<string, Extract<ModelMessage, { readonly role: "tool" }>>();
-  for (const message of messages) if (message.role === "tool") results.set(message.callId, message);
-  const used = new Set<string>();
+  const results = new Map<ToolCall, Extract<ModelMessage, { readonly role: "tool" }>>();
+  const pending = new Map<string, ToolCall>();
+  const paired = new Set<Extract<ModelMessage, { readonly role: "tool" }>>();
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      for (const call of message.toolCalls ?? []) pending.set(call.id, call);
+    } else if (message.role === "tool") {
+      const call = pending.get(message.callId);
+      if (call !== undefined) {
+        results.set(call, message);
+        paired.add(message);
+        pending.delete(message.callId);
+      }
+    }
+  }
   const result: HTMLElement[] = [];
   messages.forEach((message, index) => {
-    if (message.role === "tool" && used.has(message.callId)) return;
-    if (message.role === "assistant") for (const call of message.toolCalls ?? []) used.add(call.id);
+    if (message.role === "tool" && paired.has(message)) return;
     const element = messageElement(message, index, results, editingIndex);
     if (element !== null) result.push(element);
   });
