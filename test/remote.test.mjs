@@ -61,3 +61,18 @@ test("unknown provider tool names are not silently aliased", async () => {
   for await (const event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools: [{ name: "page.run", description: "page", inputSchema: { type: "object" } }], signal: new AbortController().signal })) events.push(event);
   assert.equal(events.at(-1).message.toolCalls[0].name, "page");
 });
+
+test("tool names that overlap object properties stay in the provider request", async () => {
+  let request;
+  const adapter = new AiSdkAdapter({
+    endpoint: "http://example.test/v1",
+    model: "demo",
+    fetcher: async (_input, init) => {
+      request = JSON.parse(String(init.body));
+      return response();
+    },
+  });
+  const tools = [{ name: "__proto__", description: "proto", inputSchema: { type: "object" } }];
+  for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools, signal: new AbortController().signal })) {}
+  assert.deepEqual(request.tools.map((tool) => tool.function.name), ["__proto__"]);
+});

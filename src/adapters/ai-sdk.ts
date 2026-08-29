@@ -119,7 +119,7 @@ function schema(value: JsonSchema): ReturnType<typeof jsonSchema> {
 }
 
 function aiTools(descriptors: readonly ToolDescriptor[], names: ReadonlyMap<string, string>): ToolSet {
-  const tools: ToolSet = {};
+  const tools: ToolSet = Object.create(null) as ToolSet;
   for (const descriptor of descriptors) {
     const name = names.get(descriptor.name) ?? descriptor.name;
     tools[name] = {
