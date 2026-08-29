@@ -267,6 +267,42 @@ try {
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
   assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#send-button')).color"), "rgb(23, 23, 23)", "dark theme primary buttons should use readable text");
   await page.send("Emulation.setEmulatedMedia", { features: [] });
+  const longModel = `model${"x".repeat(180)}`;
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 320, height: 480, deviceScaleFactor: 1, mobile: false });
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#model-name').value = ${JSON.stringify(longModel)};
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  const longModelLayout = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const empty = document.querySelector('.empty-state');
+    const heading = document.querySelector('.empty-state h2');
+    const paragraph = document.querySelector('.empty-state p');
+    const status = document.querySelector('#run-status');
+    return {
+      pageWidth: document.documentElement.scrollWidth,
+      chat: chat?.getBoundingClientRect().toJSON(),
+      empty: empty?.getBoundingClientRect().toJSON(),
+      heading: heading?.getBoundingClientRect().toJSON(),
+      paragraph: paragraph?.getBoundingClientRect().toJSON(),
+      status: status?.getBoundingClientRect().toJSON(),
+      statusOverflow: status !== null && getComputedStyle(status).overflow,
+    };
+  })()`);
+  assert.equal(longModelLayout.pageWidth, 320);
+  assert.ok(longModelLayout.empty.width <= longModelLayout.chat.width, `long model empty state must stay inside the chat width: ${JSON.stringify(longModelLayout)}`);
+  assert.ok(longModelLayout.paragraph.width <= longModelLayout.chat.width, `long model copy must stay inside the chat width: ${JSON.stringify(longModelLayout)}`);
+  assert.ok(longModelLayout.heading.top >= longModelLayout.chat.top - 1, `long model must not push the empty-state heading behind the header: ${JSON.stringify(longModelLayout)}`);
+  assert.ok(longModelLayout.status.height <= 20 && longModelLayout.statusOverflow === "hidden", `long model success status must not expand the composer: ${JSON.stringify(longModelLayout)}`);
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#model-name').value = 'browser-test';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
   assert.deepEqual(await page.evaluate(`({
