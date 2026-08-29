@@ -111,6 +111,15 @@ function errorResult(code: string, message: string, durationMs = 0): Extract<Too
   return { ok: false, error: { code, message }, durationMs };
 }
 
+function safeErrorMessage(value: unknown, fallback: string): string {
+  try {
+    const message = value instanceof Error ? value.message : undefined;
+    return typeof message === "string" && message.length > 0 ? message : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function abortedToolResult(error: unknown): Extract<ToolExecutionResult, { readonly ok: false }> {
   return { ok: false, error: errorInfo(error, "ABORTED"), durationMs: 0 };
 }
@@ -277,7 +286,7 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
   } catch (error) {
     if (signal.aborted) throw error;
     const toolError = isAbortError(error)
-      ? { code: "PAGE_TOOL_ERROR", message: error instanceof Error ? error.message || "Page tool execution failed." : "Page tool execution failed." }
+      ? { code: "PAGE_TOOL_ERROR", message: safeErrorMessage(error, "Page tool execution failed.") }
       : errorInfo(error, "PAGE_TOOL_ERROR");
     return { ok: false, error: toolError, durationMs: duration() };
   }
@@ -575,7 +584,7 @@ export class Agent {
           result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
         } catch (error) {
           if (signal.aborted) return cancelTools(index, signal.reason ?? error, true);
-          result = errorResult("PAGE_TOOL_ERROR", error instanceof Error ? error.message : "Page tool execution failed.");
+          result = errorResult("PAGE_TOOL_ERROR", safeErrorMessage(error, "Page tool execution failed."));
         }
         appendToolResult(call, result);
       }

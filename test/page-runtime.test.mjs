@@ -78,6 +78,8 @@ test("JSON schema equality distinguishes arrays and handles cycles", () => {
   assert.equal(validate({ enum: [[1]] }, { 0: 1 }).valid, false);
   assert.equal(validate({ enum: [{ 0: 1 }] }, [1]).valid, false);
   assert.equal(validate({ enum: [[1]] }, [1]).valid, true);
+  assert.equal(validate({ const: 0 }, -0).valid, true);
+  assert.equal(validate({ enum: [-0] }, 0).valid, true);
   const left = {};
   left.self = left;
   const right = {};

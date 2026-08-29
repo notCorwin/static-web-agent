@@ -40,7 +40,7 @@ function hasJsonBoundaryProblem(value: object): boolean {
 }
 
 function sameJson(left: unknown, right: unknown, pairs = new WeakMap<object, WeakSet<object>>()): boolean {
-  if (Object.is(left, right)) return true;
+  if (Object.is(left, right) || (typeof left === "number" && typeof right === "number" && left === right)) return true;
   if (typeof left !== typeof right || left === null || right === null) return false;
   if (typeof left === "object" && typeof right === "object") {
     const matched = pairs.get(left);

@@ -124,6 +124,39 @@ test("page-local AbortErrors stay tool-local", async () => {
   await harness.dispose();
 });
 
+test("hostile page errors still return tool results", async () => {
+  const blocked = new Proxy({}, { getPrototypeOf() { throw new Error("blocked prototype"); } });
+  const source = new Error("hidden page failure");
+  const hostile = new Proxy(source, {
+    get(target, key, receiver) {
+      if (key === "name") return "AbortError";
+      if (key === "message") throw blocked;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "hostile-page-error",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "bad-page", name: "page.run", arguments: { code: "return 1" } }]);
+        } else {
+          assert.equal(JSON.parse(messages.at(-1).content).code, "PAGE_TOOL_ERROR");
+          yield completed("recovered");
+        }
+      },
+    },
+    pageRuntime: { execute() { return Promise.reject(hostile); } },
+  });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "completed");
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("ordinary model text is never interpreted as a tool call", async () => {
   const harness = await createHarness({
     model: { id: "text-only", async *stream() { yield completed('{"name":"page.run"}'); } },
