@@ -65,6 +65,7 @@ function asString(value: unknown): string | undefined {
 interface ResolvedEndpoint {
   readonly baseURL: string;
   readonly directURL?: string;
+  readonly search?: string;
 }
 
 function resolveEndpoint(endpoint: string): ResolvedEndpoint {
@@ -78,6 +79,7 @@ function resolveEndpoint(endpoint: string): ResolvedEndpoint {
 
   const originalPath = url.pathname.replace(/\/+$/, "");
   if (originalPath === "/chat/completions") return { baseURL: url.origin, directURL: new URL(endpoint).toString() };
+  const search = url.search || undefined;
   let path = originalPath;
   if (path.endsWith("/chat/completions")) path = path.slice(0, -"/chat/completions".length);
   if (path === "") path = "/v1";
@@ -86,7 +88,7 @@ function resolveEndpoint(endpoint: string): ResolvedEndpoint {
   url.hash = "";
   const baseURL = url.toString().replace(/\/$/, "");
   const isKnownBase = originalPath === "" || originalPath === "/" || originalPath.endsWith("/v1") || originalPath.endsWith("/chat/completions");
-  return isKnownBase ? { baseURL } : { baseURL, directURL: new URL(endpoint).toString() };
+  return isKnownBase ? { baseURL, ...(search === undefined ? {} : { search }) } : { baseURL, directURL: new URL(endpoint).toString() };
 }
 
 function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string, string> {
@@ -228,7 +230,13 @@ export class AiSdkAdapter implements ModelAdapter {
     if (typeof options.fetcher !== "function") throw new Error("A model fetcher is required.");
     const resolvedEndpoint = resolveEndpoint(options.endpoint);
     const endpointFetcher: BrowserFetcher = resolvedEndpoint.directURL === undefined
-      ? options.fetcher
+      ? resolvedEndpoint.search === undefined
+        ? options.fetcher
+        : (input, init) => {
+            const url = new URL(String(input));
+            url.search = resolvedEndpoint.search!;
+            return options.fetcher(url, init);
+          }
       : (_input, init) => options.fetcher(resolvedEndpoint.directURL!, init);
     this.provider = createOpenAICompatible({
       name: this.id,

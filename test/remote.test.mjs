@@ -28,6 +28,8 @@ async function requestFor(endpoint) {
 test("the OpenAI-compatible adapter preserves exact completion endpoints", async () => {
   for (const [endpoint, expected] of [
     ["http://example.test/v1", "http://example.test/v1/chat/completions"],
+    ["http://example.test/v1?tenant=one", "http://example.test/v1/chat/completions?tenant=one"],
+    ["http://example.test/v1?tenant=one&tenant=two&flag", "http://example.test/v1/chat/completions?tenant=one&tenant=two&flag"],
     ["http://example.test/v1/chat/completions", "http://example.test/v1/chat/completions"],
     ["http://example.test/chat/completions", "http://example.test/chat/completions"],
     ["http://example.test/chat/completions?tenant=one", "http://example.test/chat/completions?tenant=one"],
