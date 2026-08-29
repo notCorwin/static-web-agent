@@ -41,6 +41,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function isConnectionSettings(value: unknown): value is ConnectionSettings {
   return isRecord(value)
+    && Object.hasOwn(value, "endpoint")
+    && Object.hasOwn(value, "model")
+    && Object.hasOwn(value, "apiKey")
     && typeof value.endpoint === "string"
     && typeof value.model === "string"
     && typeof value.apiKey === "string";

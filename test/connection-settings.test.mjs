@@ -31,3 +31,17 @@ test("connection settings persist locally while arbitrary invalid values are ign
   saveConnectionSettings({ endpoint: "invalid", model: "", apiKey: "secret" }, fakeStorage);
   assert.deepEqual(loadConnectionSettings(fakeStorage), settings);
 });
+
+test("connection settings do not inherit a missing API key", () => {
+  const key = "apiKey";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: "polluted-key" });
+  try {
+    const fakeStorage = storage();
+    fakeStorage.setItem("static-web-agent.connection", JSON.stringify({ endpoint: "https://example.test/v1", model: "demo" }));
+    assert.equal(loadConnectionSettings(fakeStorage), undefined);
+  } finally {
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
