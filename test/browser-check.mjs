@@ -491,8 +491,8 @@ try {
       buttons: [...(edit?.querySelectorAll('button') ?? [])].map((node) => node.getBoundingClientRect().toJSON()),
     };
   })()`);
-  assert.ok(compactEditor.edit.top >= compactEditor.chat.top && compactEditor.edit.bottom <= compactEditor.chat.bottom, "the compact editor stays inside the short chat viewport");
-  assert.ok(compactEditor.buttons.every((button) => button.top >= compactEditor.chat.top && button.bottom <= compactEditor.chat.bottom), "compact edit actions stay reachable");
+  assert.ok(compactEditor.edit.top >= compactEditor.chat.top && compactEditor.edit.bottom <= compactEditor.chat.bottom, `the compact editor stays inside the short chat viewport: ${JSON.stringify(compactEditor)}`);
+  assert.ok(compactEditor.buttons.every((button) => button.top >= compactEditor.chat.top && button.bottom <= compactEditor.chat.bottom), `compact edit actions stay reachable: ${JSON.stringify(compactEditor)}`);
   await page.evaluate("document.querySelector('[data-action=\"cancel-edit\"]')?.click()");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
