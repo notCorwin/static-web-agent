@@ -27,10 +27,10 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.2",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^3.0.30",
-    "ai": "^7.0.62"
+    "@ai-sdk/openai-compatible": "^3.0.40",
+    "ai": "^7.0.84"
   }
 }

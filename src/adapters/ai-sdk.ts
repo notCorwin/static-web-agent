@@ -302,9 +302,9 @@ export class AiSdkAdapter implements ModelAdapter {
         ...prompt,
         ...(request.tools.length === 0 ? {} : { tools: aiTools(request.tools, names) }),
         maxRetries: 0,
-        onError: ({ error }) => {
-          // Stop the SDK transform before its no-output flush creates an unhandled rejection.
-          throw error;
+        telemetry: { isEnabled: false },
+        onError: () => {
+          // The adapter surfaces errors from the stream's error part.
         },
       });
     } catch (error) {
