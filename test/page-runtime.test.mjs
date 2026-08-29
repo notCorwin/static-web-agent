@@ -110,6 +110,18 @@ test("JSON validation treats prototype-named keys as data", () => {
   assert.equal(validate({ type: "object", properties: JSON.parse('{"__proto__":{"type":"object"}}') }, value).valid, true);
 });
 
+test("JSON schema keywords cannot come from the prototype chain", () => {
+  const key = "type";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: "string" });
+  try {
+    assert.equal(validate({}, {}).valid, true);
+  } finally {
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
+
 test("JSON schema equality distinguishes arrays and handles cycles", () => {
   assert.equal(validate({ enum: [[1]] }, { 0: 1 }).valid, false);
   assert.equal(validate({ enum: [{ 0: 1 }] }, [1]).valid, false);
