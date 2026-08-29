@@ -311,9 +311,12 @@ function partialMessage(text: string, calls: readonly ToolCall[]): AssistantMess
 function isPageExecutionResult(value: unknown): value is PageExecutionResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  return isJsonValue(record.value)
+  return hasEnumerableOwn(record, "value")
+    && isJsonValue(record.value)
+    && hasEnumerableOwn(record, "logs")
     && Array.isArray(record.logs)
     && Array.from(record.logs).every((line) => typeof line === "string")
+    && hasEnumerableOwn(record, "durationMs")
     && typeof record.durationMs === "number"
     && Number.isFinite(record.durationMs)
     && record.durationMs >= 0;

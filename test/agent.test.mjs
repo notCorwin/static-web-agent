@@ -1204,7 +1204,7 @@ test("invalid page runtime results return an error to the model", async () => {
         }
       },
     },
-    pageRuntime: { async execute() { return { value: undefined, logs: [], durationMs: 0 }; } },
+    pageRuntime: { async execute() { return Object.create({ value: 1, logs: [], durationMs: 0 }); } },
   });
   const result = await harness.run({ messages: [{ role: "user", content: "try" }] });
   assert.equal(result.status, "completed");
