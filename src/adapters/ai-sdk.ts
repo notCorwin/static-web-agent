@@ -99,6 +99,7 @@ function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string
   const used = new Set<string>();
   const names = new Map<string, string>();
   for (const [index, tool] of tools.entries()) {
+    if (names.has(tool.name)) throw new ModelAdapterError("Model tools must have unique names.", undefined, "MODEL_PROTOCOL_ERROR");
     const base = tool.name.replace(/[^a-zA-Z0-9_-]/g, "_") || `tool_${index + 1}`;
     let candidate = base;
     let suffix = 2;

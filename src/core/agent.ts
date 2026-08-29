@@ -141,7 +141,7 @@ function assertToolCallDelta(delta: ToolCallDelta): void {
   const record = candidate;
   if (!Number.isInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   if (
-    (record.id !== undefined && typeof record.id !== "string") ||
+    (record.id !== undefined && (typeof record.id !== "string" || record.id.length === 0)) ||
     (record.name !== undefined && typeof record.name !== "string") ||
     (record.arguments !== undefined && typeof record.arguments !== "string")
   ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
@@ -435,7 +435,11 @@ export class Agent {
             }
           }
         } finally {
-          if (currentIterator.return !== undefined) await currentIterator.return();
+          try {
+            void Promise.resolve(currentIterator.return?.()).catch(() => undefined);
+          } catch {
+            // Iterator cleanup cannot change the model result.
+          }
         }
       })();
       void consume.catch(() => undefined);

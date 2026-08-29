@@ -189,6 +189,35 @@ test("completed model events end an otherwise open stream", async () => {
   }
 });
 
+test("completed model events do not wait for hanging iterator cleanup", async () => {
+  const harness = await createHarness({
+    model: {
+      id: "hanging-cleanup",
+      stream() {
+        let first = true;
+        return {
+          async next() {
+            if (first) {
+              first = false;
+              return { done: false, value: completed("done") };
+            }
+            return new Promise(() => {});
+          },
+          return() { return new Promise(() => {}); },
+          [Symbol.asyncIterator]() { return this; },
+        };
+      },
+    },
+  });
+  const result = await Promise.race([
+    harness.run({ messages: [{ role: "user", content: "go" }] }),
+    new Promise((resolve) => setTimeout(() => resolve({ status: "probe-timeout" }), 100)),
+  ]);
+  assert.equal(result.status, "completed");
+  assert.equal(result.response.content, "done");
+  await harness.dispose();
+});
+
 test("duplicate tool call IDs are rejected before page execution", async () => {
   let executed = 0;
   const harness = await createHarness({
@@ -226,6 +255,21 @@ test("streamed tool protocol failures end the run visibly", async () => {
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
   assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
+  await harness.dispose();
+});
+
+test("streamed tool calls reject empty IDs", async () => {
+  const harness = await createHarness({
+    model: {
+      id: "empty-streamed-tool-id",
+      async *stream() {
+        yield { type: "tool-call-delta", delta: { index: 0, id: "", name: "page.run", arguments: "{}" } };
+      },
+    },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
   await harness.dispose();
 });
 

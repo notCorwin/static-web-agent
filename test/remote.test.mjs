@@ -76,3 +76,26 @@ test("tool names that overlap object properties stay in the provider request", a
   for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools, signal: new AbortController().signal })) {}
   assert.deepEqual(request.tools.map((tool) => tool.function.name), ["__proto__"]);
 });
+
+test("duplicate local tool names fail before the provider request", async () => {
+  let called = false;
+  const adapter = new AiSdkAdapter({
+    endpoint: "http://example.test/v1",
+    model: "demo",
+    fetcher: async () => {
+      called = true;
+      return response();
+    },
+  });
+  const tools = [
+    { name: "same", description: "one", inputSchema: { type: "object" } },
+    { name: "same", description: "two", inputSchema: { type: "object" } },
+  ];
+  await assert.rejects(
+    (async () => {
+      for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools, signal: new AbortController().signal })) {}
+    })(),
+    (error) => error?.code === "MODEL_PROTOCOL_ERROR",
+  );
+  assert.equal(called, false);
+});
