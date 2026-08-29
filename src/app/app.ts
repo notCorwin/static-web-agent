@@ -56,6 +56,7 @@ export class AgentApp {
   private renderTimer: number | undefined;
   private runStatus = "";
   private runStatusKind: "normal" | "success" | "error" = "normal";
+  private followChat = true;
 
   constructor(root: HTMLElement, options: AgentAppOptions = {}) {
     this.root = root;
@@ -112,6 +113,7 @@ export class AgentApp {
     this.connectionEditing = false;
     this.runStatus = "";
     this.runStatusKind = "normal";
+    this.followChat = true;
     this.ready = false;
     this.root.replaceChildren();
     for (const key of Object.keys(this.elements)) Reflect.deleteProperty(this.elements, key);
@@ -129,6 +131,10 @@ export class AgentApp {
     }, { signal });
 
     const input = this.element<HTMLTextAreaElement>("message-input");
+    const chat = this.element("chat-log");
+    chat.addEventListener("scroll", () => {
+      this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+    }, { signal, passive: true });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && this.busy && !event.isComposing) {
         event.preventDefault();
@@ -280,6 +286,7 @@ export class AgentApp {
       return;
     }
     this.messages = [...this.messages, { role: "user", content }];
+    this.followChat = true;
     input.value = "";
     this.editingIndex = undefined;
     await this.runAgent();
@@ -437,7 +444,7 @@ export class AgentApp {
   private renderConversation(): void {
     const conversation = this.element("conversation-content");
     const chat = this.element("chat-log");
-    const shouldFollow = this.busy || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+    const shouldFollow = this.followChat;
     conversation.replaceChildren();
     const connected = this.harness?.modelId !== undefined;
     if (!connected) {
@@ -470,6 +477,7 @@ export class AgentApp {
     }
     if (this.busy || this.messages[index]?.role !== "user") return;
     this.messages = [...this.messages.slice(0, index), { role: "user", content }];
+    this.followChat = true;
     this.editingIndex = undefined;
     await this.runAgent();
   }

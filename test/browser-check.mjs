@@ -62,7 +62,20 @@ async function startServer() {
         return;
       }
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      if (lastUser?.content === "Fail during model") {
+      if (lastUser?.content === "Keep my place") {
+        let index = 0;
+        const write = () => {
+          if (index < 80) {
+            response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "streaming response " } }] })}\n\n`);
+            index += 1;
+            setTimeout(write, 10);
+          } else {
+            response.end(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+          }
+        };
+        write();
+        return;
+      } else if (lastUser?.content === "Fail during model") {
         const code = "return { partial: true }";
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
         response.end(`data: ${JSON.stringify({ error: { message: "intentional model failure" } })}\n\n`);
@@ -246,7 +259,7 @@ try {
     input.value = 'Use the page tool';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('.message.assistant .message-body')?.textContent.includes('done from browser') === true");
+  await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
   const toolTrace = await page.evaluate(`(() => ({
     count: document.querySelectorAll('.tool-trace').length,
     code: document.querySelector('.trace-code')?.textContent,
@@ -307,10 +320,27 @@ try {
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
 
   await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Keep my place';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.streaming-run .message-body')?.textContent.length > 1000");
+  const scrollBefore = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = 0;
+    chat.dispatchEvent(new Event('scroll'));
+    return { top: chat.scrollTop, overflow: chat.scrollHeight - chat.clientHeight };
+  })()`);
+  assert.equal(scrollBefore.top, 0);
+  assert.ok(scrollBefore.overflow > 0);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(await page.evaluate("document.querySelector('#chat-log')?.scrollTop"), 0, "streaming must respect a manual scroll-up");
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+
+  await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Use the page tool';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('.message.assistant .message-body')?.textContent.includes('done from browser') === true");
+  await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Fail during model';
     document.querySelector('#composer-form').requestSubmit();
