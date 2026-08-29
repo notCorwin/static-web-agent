@@ -171,7 +171,7 @@ function abortedToolResult(error: unknown): Extract<ToolExecutionResult, { reado
 
 function assertToolCall(call: ToolCall): void {
   const candidate: unknown = call;
-  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
+  if (!isRecord(candidate) || !isJsonValue(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
   const record = candidate;
   if (
     !hasEnumerableOwn(record, "id") || typeof record.id !== "string" || record.id.length === 0 ||
@@ -203,7 +203,7 @@ function assertToolCalls(calls: readonly ToolCall[]): void {
 
 function assertToolCallDelta(delta: ToolCallDelta): void {
   const candidate: unknown = delta;
-  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
+  if (!isRecord(candidate) || !isJsonValue(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
   const record = candidate;
   if (!hasEnumerableOwn(record, "index") || !Number.isSafeInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   if (
@@ -286,7 +286,7 @@ function assertMessages(messages: readonly ModelMessage[]): void {
 
 function assertUsage(usage: ModelUsage): void {
   const candidate: unknown = usage;
-  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
+  if (!isRecord(candidate) || !isJsonValue(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
   const record = candidate;
   for (const key of ["inputTokens", "outputTokens", "totalTokens"]) {
     if (key in record && !hasEnumerableOwn(record, key)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
@@ -309,7 +309,7 @@ function partialMessage(text: string, calls: readonly ToolCall[]): AssistantMess
 }
 
 function isPageExecutionResult(value: unknown): value is PageExecutionResult {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !isJsonValue(value)) return false;
   const record = value as Record<string, unknown>;
   return hasEnumerableOwn(record, "value")
     && isJsonValue(record.value)
@@ -464,7 +464,7 @@ export class Agent {
             if (next.done) break;
             throwIfAborted(modelController.signal);
             const event: unknown = next.value;
-            if (!isRecord(event) || !hasEnumerableOwn(event, "type") || typeof event.type !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
+            if (!isRecord(event) || !isJsonValue(event) || !hasEnumerableOwn(event, "type") || typeof event.type !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
             switch (event.type) {
               case "text-delta": {
                 if (!hasEnumerableOwn(event, "delta") || typeof event.delta !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
@@ -477,7 +477,7 @@ export class Agent {
               }
               case "tool-call-delta": {
                 if (!hasEnumerableOwn(event, "delta")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
-                const delta = event.delta as ToolCallDelta;
+                const delta = event.delta as unknown as ToolCallDelta;
                 assertToolCallDelta(delta);
                 if (delta.id === undefined && (delta.name === undefined || delta.name.length === 0) && (delta.arguments === undefined || delta.arguments.length === 0)) break;
                 let draft = streamedCallDeltas.get(delta.index);
@@ -496,7 +496,7 @@ export class Agent {
               }
               case "tool-call": {
                 if (!hasEnumerableOwn(event, "call")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
-                const call = event.call as ToolCall;
+                const call = event.call as unknown as ToolCall;
                 assertToolCall(call);
                 streamedCalls.push(snapshotToolCall(call));
                 this.emit(request.onEvent, { type: "tool-call-delta", delta: { index: streamedCalls.length - 1, id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) } });
@@ -512,7 +512,7 @@ export class Agent {
               case "completed": {
                 if (!hasEnumerableOwn(event, "message")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
                 if ("usage" in event && !hasEnumerableOwn(event, "usage")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
-                const message = event.message as AssistantMessage;
+                const message = event.message as unknown as AssistantMessage;
                 assertAssistant(message);
                 completed = snapshotAssistant(message);
                 if (streamedText.length === 0 && message.content.length > 0) {

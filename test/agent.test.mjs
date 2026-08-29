@@ -629,6 +629,34 @@ test("accessor-backed assistant output is rejected before use", async () => {
   }
 });
 
+test("accessor-backed direct tool calls are rejected before execution", async () => {
+  let executed = 0;
+  const call = {};
+  Object.defineProperties(call, {
+    id: { enumerable: true, get: () => "accessor-call" },
+    name: { enumerable: true, get: () => "page.run" },
+    arguments: { enumerable: true, value: { code: "return 1" } },
+  });
+  const harness = await createHarness({
+    model: {
+      id: "accessor-direct-tool-call",
+      async *stream() {
+        yield { type: "tool-call", call };
+        yield completed("unused");
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: 1, logs: [], durationMs: 0 }; } },
+  });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+    assert.equal(executed, 0);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("cancellation during assistant delivery wins over completion", async () => {
   const controller = new AbortController();
   const harness = await createHarness({
