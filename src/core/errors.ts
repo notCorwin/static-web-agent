@@ -65,6 +65,7 @@ export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): Tool
   } catch {
     // Error objects are external input; unreadable properties must not escape the run.
   }
+  if (code === "ABORTED") return { code, message: "Operation cancelled." };
   return { code, message: "Operation failed." };
 }
 

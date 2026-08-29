@@ -709,6 +709,30 @@ test("model cancellation preserves the signal reason", async () => {
   await harness.dispose();
 });
 
+test("non-error cancellation reasons still return a cancelled run", async () => {
+  let started;
+  const modelStarted = new Promise((resolve) => { started = resolve; });
+  const harness = await createHarness({
+    model: {
+      id: "non-error-cancel",
+      stream({ signal }) {
+        started();
+        return (async function* () {
+          await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+        })();
+      },
+    },
+  });
+  const controller = new AbortController();
+  const running = harness.run({ messages: [{ role: "user", content: "wait" }], signal: controller.signal });
+  await modelStarted;
+  controller.abort("stop");
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.deepEqual(result.error, { code: "ABORTED", message: "Operation cancelled." });
+  await harness.dispose();
+});
+
 test("page tool cancellation preserves the signal reason", async () => {
   let started;
   const toolStarted = new Promise((resolve) => { started = resolve; });
