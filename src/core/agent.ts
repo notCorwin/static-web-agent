@@ -455,7 +455,7 @@ export class Agent {
               modelTimer = setTimeout(() => {
                 timedOut = true;
                 modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
-                void iterator?.return?.();
+                void Promise.resolve().then(() => iterator?.return?.()).catch(() => undefined);
                 reject(new HarnessError("MODEL_TIMEOUT", `Model request exceeded ${request.modelTimeoutMs} ms.`));
               }, request.modelTimeoutMs);
             });

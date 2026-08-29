@@ -69,6 +69,31 @@ test("page tool failures return to the model instead of becoming hidden control 
   await harness.dispose();
 });
 
+test("cyclic error details stay serializable tool results", async () => {
+  const details = { reason: "cycle" };
+  details.self = details;
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "cyclic-error-details",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "bad", name: "page.run", arguments: { code: "return 1" } }]);
+        } else {
+          assert.equal(JSON.parse(messages.at(-1).content).code, "PAGE_FAILURE");
+          yield completed("recovered");
+        }
+      },
+    },
+    pageRuntime: { async execute() { throw new HarnessError("PAGE_FAILURE", "bad page", details); } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(result.response.content, "recovered");
+  assert.equal(JSON.parse(result.messages[2].content).details, undefined);
+  await harness.dispose();
+});
+
 test("page-local AbortErrors stay tool-local", async () => {
   let turn = 0;
   const harness = await createHarness({
@@ -223,6 +248,9 @@ test("model transport failures end the run with a visible error", async () => {
 
 test("model timeouts suppress late events from an uncooperative stream", async () => {
   const events = [];
+  let cleanupRejection;
+  const onUnhandledRejection = (error) => { cleanupRejection = error; };
+  process.on("unhandledRejection", onUnhandledRejection);
   let nextCall = 0;
   const harness = await createHarness({
     model: {
@@ -235,18 +263,23 @@ test("model timeouts suppress late events from an uncooperative stream", async (
               ? { done: false, value: { type: "text-delta", delta: "late" } }
               : { done: true, value: undefined }), 20));
           },
-          return() { return Promise.resolve({ done: true, value: undefined }); },
+          return() { return Promise.reject(new Error("iterator cleanup failed")); },
         };
       },
     },
   });
-  const result = await harness.run({ messages: [{ role: "user", content: "wait" }], modelTimeoutMs: 5, onEvent: (event) => events.push(event.type) });
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal(result.status, "failed");
-  assert.equal(result.error.code, "MODEL_TIMEOUT");
-  assert.equal(events.includes("text-delta"), false);
-  assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
-  await harness.dispose();
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "wait" }], modelTimeoutMs: 5, onEvent: (event) => events.push(event.type) });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "MODEL_TIMEOUT");
+    assert.equal(events.includes("text-delta"), false);
+    assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
+    assert.equal(cleanupRejection, undefined);
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    await harness.dispose();
+  }
 });
 
 test("model cancellation preserves the signal reason", async () => {

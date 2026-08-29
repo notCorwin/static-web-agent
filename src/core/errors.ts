@@ -1,4 +1,5 @@
 import type { JsonValue, ToolError } from "./types.js";
+import { isJsonValue } from "./schema.js";
 
 export class HarnessError extends Error {
   readonly code: string;
@@ -26,10 +27,15 @@ export function isAbortError(value: unknown): boolean {
   );
 }
 
+function safeDetails(value: unknown): JsonValue | undefined {
+  return isJsonValue(value) ? value : undefined;
+}
+
 export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): ToolError {
   if (value instanceof HarnessError) {
     const result: ToolError = { code: value.code, message: value.message };
-    return value.details === undefined ? result : { ...result, details: value.details };
+    const details = safeDetails(value.details);
+    return details === undefined ? result : { ...result, details };
   }
   if (isAbortError(value)) return { code: "ABORTED", message: "Operation cancelled." };
   if (value instanceof Error) return { code: fallbackCode, message: value.message || "Operation failed." };
@@ -37,9 +43,10 @@ export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): Tool
 }
 
 export function jsonError(error: ToolError): JsonValue {
+  const details = safeDetails(error.details);
   return {
     code: error.code,
     message: error.message,
-    ...(error.details === undefined ? {} : { details: error.details }),
+    ...(details === undefined ? {} : { details }),
   };
 }
