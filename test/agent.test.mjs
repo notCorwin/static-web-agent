@@ -218,6 +218,56 @@ test("completed model events do not wait for hanging iterator cleanup", async ()
   await harness.dispose();
 });
 
+test("model stream events are snapshotted before iterator cleanup", async () => {
+  let turn = 0;
+  const firstMessage = { role: "assistant", content: "", toolCalls: [{ id: "call-1", name: "page.run", arguments: { code: "return 1" } }] };
+  let executedCode;
+  const harness = await createHarness({
+    model: {
+      id: "mutable-stream-event",
+      stream() {
+        if (turn++ > 0) return (async function* () { yield completed("done"); })();
+        return {
+          async next() { return { done: false, value: { type: "completed", message: firstMessage } }; },
+          return() {
+            firstMessage.toolCalls[0].arguments.code = "return 99";
+            return Promise.resolve({ done: true, value: undefined });
+          },
+          [Symbol.asyncIterator]() { return this; },
+        };
+      },
+    },
+    pageRuntime: { async execute(code) { executedCode = code; return { value: code, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(executedCode, "return 1");
+  assert.equal(firstMessage.toolCalls[0].arguments.code, "return 99");
+  await harness.dispose();
+});
+
+test("page tool input is mutable and isolated from the tool call snapshot", async () => {
+  let turn = 0;
+  const call = { id: "call-1", name: "page.run", arguments: { code: "input.count += 1; return input", input: { count: 1 } } };
+  const harness = await createHarness({
+    model: {
+      id: "mutable-page-input",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [call]);
+        } else {
+          assert.deepEqual(JSON.parse(messages.at(-1).content).value, { count: 2 });
+          yield completed("done");
+        }
+      },
+    },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(call.arguments.input.count, 1);
+  await harness.dispose();
+});
+
 test("duplicate tool call IDs are rejected before page execution", async () => {
   let executed = 0;
   const harness = await createHarness({
@@ -270,6 +320,25 @@ test("streamed tool calls reject empty IDs", async () => {
   const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
   assert.equal(result.status, "failed");
   assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  await harness.dispose();
+});
+
+test("streamed tool calls reject changing IDs", async () => {
+  let executed = 0;
+  const harness = await createHarness({
+    model: {
+      id: "changing-streamed-tool-id",
+      async *stream() {
+        yield { type: "tool-call-delta", delta: { index: 0, id: "first", name: "page.run", arguments: "{\"code\":\"return 1\"}" } };
+        yield { type: "tool-call-delta", delta: { index: 0, id: "second" } };
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: executed, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  assert.equal(executed, 0);
   await harness.dispose();
 });
 

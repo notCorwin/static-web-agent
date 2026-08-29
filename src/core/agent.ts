@@ -126,6 +126,18 @@ function assertToolCall(call: ToolCall): void {
   ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
 }
 
+function snapshotToolCall(call: ToolCall): ToolCall {
+  return { id: call.id, name: call.name, arguments: clone(call.arguments) };
+}
+
+function snapshotAssistant(message: AssistantMessage): AssistantMessage {
+  return {
+    role: "assistant",
+    content: message.content,
+    ...(message.toolCalls === undefined ? {} : { toolCalls: message.toolCalls.map(snapshotToolCall) }),
+  };
+}
+
 function assertToolCalls(calls: readonly ToolCall[]): void {
   const ids = new Set<string>();
   for (const call of calls) {
@@ -148,7 +160,7 @@ function assertToolCallDelta(delta: ToolCallDelta): void {
 }
 
 interface StreamedToolCallDraft {
-  id: string;
+  id?: string;
   readonly name: string[];
   readonly arguments: string[];
 }
@@ -167,7 +179,7 @@ function completeStreamedToolCalls(drafts: ReadonlyMap<number, StreamedToolCallD
       }
     }
     if (!isJsonValue(argumentsValue)) throw new HarnessError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned non-JSON arguments.`);
-    return { id: draft.id || `call-${index + 1}`, name, arguments: argumentsValue };
+    return { id: draft.id ?? `call-${index + 1}`, name, arguments: argumentsValue };
   });
 }
 
@@ -258,7 +270,7 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
   const input = call.arguments as JsonObject;
   try {
     throwIfAborted(signal);
-    const result = await runtime.execute(input.code as string, input.input ?? null, { signal });
+    const result = await runtime.execute(input.code as string, input.input === undefined ? null : clone(input.input), { signal });
     throwIfAborted(signal);
     if (!isPageExecutionResult(result)) return errorResult("INVALID_PAGE_RUNTIME_RESULT", "Page runtime returned an invalid result.", duration());
     return { ok: true, value: { value: clone(result.value), logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
@@ -391,10 +403,13 @@ export class Agent {
                 if (delta.id === undefined && (delta.name === undefined || delta.name.length === 0) && (delta.arguments === undefined || delta.arguments.length === 0)) break;
                 let draft = streamedCallDeltas.get(delta.index);
                 if (draft === undefined) {
-                  draft = { id: `call-${delta.index + 1}`, name: [], arguments: [] };
+                  draft = { name: [], arguments: [] };
                   streamedCallDeltas.set(delta.index, draft);
                 }
-                if (delta.id !== undefined) draft.id = delta.id;
+                if (delta.id !== undefined) {
+                  if (draft.id !== undefined && draft.id !== delta.id) throw new HarnessError("INVALID_MODEL_OUTPUT", `Tool call ${delta.index + 1} changed its ID while streaming.`);
+                  draft.id = delta.id;
+                }
                 if (delta.name !== undefined) draft.name.push(delta.name);
                 if (delta.arguments !== undefined) draft.arguments.push(delta.arguments);
                 this.emit(request.onEvent, { type: "tool-call-delta", delta });
@@ -403,7 +418,7 @@ export class Agent {
               case "tool-call": {
                 const call = (event as Extract<ModelEvent, { readonly type: "tool-call" }>).call;
                 assertToolCall(call);
-                streamedCalls.push(call);
+                streamedCalls.push(snapshotToolCall(call));
                 this.emit(request.onEvent, { type: "tool-call-delta", delta: { index: streamedCalls.length - 1, id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) } });
                 break;
               }
@@ -416,7 +431,7 @@ export class Agent {
               case "completed": {
                 const message = (event as Extract<ModelEvent, { readonly type: "completed" }>).message;
                 assertAssistant(message);
-                completed = message;
+                completed = snapshotAssistant(message);
                 sawCompleted = true;
                 const currentUsage = (event as Extract<ModelEvent, { readonly type: "completed" }>).usage;
                 if (currentUsage !== undefined) {
@@ -491,7 +506,7 @@ export class Agent {
             ? streamedCalls
             : completeStreamedToolCalls(streamedCallDeltas);
         assertToolCalls(calls);
-        calls = calls.map((call) => freeze({ id: call.id, name: call.name, arguments: clone(call.arguments) }));
+        calls = calls.map((call) => freeze(snapshotToolCall(call)));
       } catch (error) {
         return fail(errorInfo(error, "MODEL_ERROR"), partialMessage(streamedText.join(""), streamedCalls));
       }

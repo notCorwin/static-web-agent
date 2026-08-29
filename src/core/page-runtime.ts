@@ -69,7 +69,10 @@ export class BrowserPageRuntime implements PageRuntime {
     const pageConsole: PageConsole = {};
     for (const method of ["log", "info", "warn", "error", "debug"]) {
       pageConsole[method] = (...values) => {
-        const line = values.map((value) => serialize(value)).join(" ");
+        const line = values.map((value) => {
+          const serialized = serialize(value);
+          return typeof serialized === "string" ? serialized : JSON.stringify(serialized);
+        }).join(" ");
         logs.push(line);
       };
     }
