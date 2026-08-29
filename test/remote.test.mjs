@@ -46,6 +46,15 @@ test("the OpenAI-compatible adapter preserves exact completion endpoints", async
   }
 });
 
+test("the OpenAI-compatible adapter rejects invalid IDs", () => {
+  for (const id of [123, "  "]) {
+    assert.throws(
+      () => new AiSdkAdapter({ id, endpoint: "http://example.test/v1", model: "demo", fetcher: async () => response() }),
+      /adapter ID is required/,
+    );
+  }
+});
+
 test("an omitted API key cannot be inherited from the prototype chain", async () => {
   const key = "apiKey";
   const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);

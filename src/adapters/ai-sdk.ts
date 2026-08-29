@@ -249,6 +249,7 @@ export class AiSdkAdapter implements ModelAdapter {
     const apiKey = Object.hasOwn(options, "apiKey") ? options.apiKey : undefined;
     const fetcher = Object.hasOwn(options, "fetcher") ? options.fetcher : undefined;
     const headers = Object.hasOwn(options, "headers") ? options.headers : undefined;
+    if (id !== undefined && (typeof id !== "string" || id.trim().length === 0)) throw new Error("A model adapter ID is required.");
     this.id = id ?? "ai-sdk";
     if (typeof model !== "string" || !(this.model = model.trim())) throw new Error("A model name is required.");
     if (typeof endpoint !== "string") throw new Error("A valid model endpoint is required.");
