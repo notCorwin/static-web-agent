@@ -212,3 +212,27 @@ test("the adapter contains hostile cancellation reasons", async () => {
   );
   assert.equal(called, false);
 });
+
+test("the adapter aborts an in-flight provider request through a request-scoped signal", async () => {
+  let providerSignal;
+  const adapter = new AiSdkAdapter({
+    endpoint: "http://example.test/v1",
+    model: "demo",
+    fetcher: async (_input, init) => {
+      providerSignal = init.signal;
+      return await new Promise((_, reject) => {
+        providerSignal.addEventListener("abort", () => reject(providerSignal.reason), { once: true });
+      });
+    },
+  });
+  const controller = new AbortController();
+  const running = (async () => {
+    for await (const _event of adapter.stream({ messages: [{ role: "user", content: "hello" }], tools: [], signal: controller.signal })) {}
+  })();
+  for (let attempt = 0; providerSignal === undefined && attempt < 20; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(providerSignal instanceof AbortSignal);
+  assert.notEqual(providerSignal, controller.signal);
+  controller.abort();
+  await assert.rejects(running);
+  assert.equal(providerSignal.aborted, true);
+});

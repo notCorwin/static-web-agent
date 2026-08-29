@@ -129,3 +129,19 @@ button:disabled { cursor: default; opacity: .58; }
   .message.user { max-width: 92%; }
   .message-actions { opacity: 1; }
 }
+
+@media (max-width: 600px) and (max-height: 400px) {
+  .chat-scroll { padding-block: 0; }
+  .empty-state { margin: 0; padding: 12px 8px; }
+  .empty-state h2 { font-size: 18px; }
+  .empty-state p { margin-top: 4px; font-size: 14px; line-height: 1.35; }
+  .connection-card { padding: 12px; }
+  .connection-intro { align-items: center; flex-direction: row; gap: 8px; margin-bottom: 8px; }
+  .connection-intro h2 { font-size: 18px; }
+  .connection-intro .primary-button { align-self: auto; min-height: 34px; padding: 6px 9px; }
+  .connection-form { gap: 8px; }
+  .field { gap: 3px; }
+  .field input { height: 34px; }
+  .composer textarea { max-height: min(220px, calc(100dvh - 170px)); }
+  .message-edit textarea { height: 48px; min-height: 48px; max-height: 48px; resize: none; }
+}

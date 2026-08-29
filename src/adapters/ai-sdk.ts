@@ -240,7 +240,7 @@ function throwIfAborted(signal: AbortSignal): void {
 export class AiSdkAdapter implements ModelAdapter {
   readonly id: string;
   private readonly model: string;
-  private readonly provider: ReturnType<typeof createOpenAICompatible>;
+  private readonly providerOptions: Parameters<typeof createOpenAICompatible>[0];
 
   constructor(options: AiSdkAdapterOptions) {
     const id = Object.hasOwn(options, "id") ? options.id : undefined;
@@ -272,7 +272,7 @@ export class AiSdkAdapter implements ModelAdapter {
     if (headers !== undefined) providerOptions.headers = { ...headers };
     providerOptions.includeUsage = true;
     providerOptions.fetch = safariSafeFetcher(endpointFetcher);
-    this.provider = createOpenAICompatible(providerOptions);
+    this.providerOptions = providerOptions;
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelEvent> {
@@ -281,16 +281,36 @@ export class AiSdkAdapter implements ModelAdapter {
     const prompt = request.messages.length === 0
       ? { prompt: "" as const }
       : { messages: request.messages.map((message) => toAiMessage(message, names)) };
-    const result = streamText({
-      model: this.provider(this.model),
-      ...prompt,
-      ...(request.tools.length === 0 ? {} : { tools: aiTools(request.tools, names) }),
-      maxRetries: 0,
-      abortSignal: request.signal,
-      onError: () => {
-        // The full stream below carries the provider error with its details.
-      },
-    });
+    const providerAbortController = new AbortController();
+    const relayAbort = () => providerAbortController.abort();
+    request.signal.addEventListener("abort", relayAbort, { once: true });
+    if (request.signal.aborted) relayAbort();
+    const fetcher = this.providerOptions.fetch;
+    if (fetcher === undefined) {
+      request.signal.removeEventListener("abort", relayAbort);
+      throw new Error("A model fetcher is required.");
+    }
+    let result: ReturnType<typeof streamText>;
+    try {
+      const requestProviderOptions = Object.create(null) as Parameters<typeof createOpenAICompatible>[0];
+      Object.assign(requestProviderOptions, this.providerOptions);
+      // Keep the SDK unaware of this signal; its browser stream abort path reports cancellation as an error.
+      requestProviderOptions.fetch = (input, init) => fetcher(input, { ...init, signal: providerAbortController.signal });
+      const provider = createOpenAICompatible(requestProviderOptions);
+      result = streamText({
+        model: provider(this.model),
+        ...prompt,
+        ...(request.tools.length === 0 ? {} : { tools: aiTools(request.tools, names) }),
+        maxRetries: 0,
+        onError: ({ error }) => {
+          // Stop the SDK transform before its no-output flush creates an unhandled rejection.
+          throw error;
+        },
+      });
+    } catch (error) {
+      request.signal.removeEventListener("abort", relayAbort);
+      throw error;
+    }
 
     const content: string[] = [];
     let finalUsage: ModelUsage | undefined;
@@ -345,6 +365,8 @@ export class AiSdkAdapter implements ModelAdapter {
     } catch (error) {
       if (isAbortError(error) || request.signal.aborted) throw error;
       throw modelError(error);
+    } finally {
+      request.signal.removeEventListener("abort", relayAbort);
     }
 
     if (!sawFinish) throw new ModelAdapterError("Model stream ended before completion.", undefined, "MODEL_SSE_INCOMPLETE");

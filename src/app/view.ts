@@ -32,7 +32,7 @@ export function renderShell(root: HTMLElement): AppElements {
             <p class="eyebrow">Browser Agent Harness</p>
             <h1>Chat with your agent</h1>
           </div>
-          <button class="secondary-button settings-button" id="open-settings" type="button">Connection</button>
+          <button class="secondary-button settings-button" id="open-settings" type="button" aria-controls="connection-card" aria-expanded="false">Connection</button>
         </header>
         <section class="chat-scroll" id="chat-log" tabindex="0" aria-label="Conversation" aria-busy="false">
           <section class="connection-card" id="connection-card" aria-labelledby="connection-title">
@@ -152,6 +152,7 @@ function traceSection(label: string, value: string, code: boolean): HTMLElement 
 function messageElement(message: ModelMessage, index: number, results: ReadonlyMap<ToolCall, Extract<ModelMessage, { readonly role: "tool" }>>, editingIndex: number | undefined): HTMLElement | null {
   if (message.role === "system") return null;
   if (message.role === "tool") return toolElement(undefined, undefined, undefined, message, "finished");
+  if (message.role === "assistant" && message.content.length === 0 && (message.toolCalls?.length ?? 0) === 0) return null;
 
   const article = document.createElement("article");
   article.className = `message ${message.role}`;
@@ -199,7 +200,7 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
   copy.dataset.action = "copy-message";
   copy.dataset.messageIndex = String(index);
   copy.textContent = "Copy";
-  actions.append(copy);
+  if (message.content.length > 0) actions.append(copy);
   if (message.role === "user") {
     const edit = document.createElement("button");
     edit.className = "message-action";

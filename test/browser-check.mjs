@@ -147,12 +147,19 @@ class CdpPage {
     this.socket = new WebSocket(url);
     this.nextId = 0;
     this.pending = new Map();
+    this.consoleErrors = [];
     this.opened = new Promise((resolve, reject) => {
       this.socket.addEventListener("open", resolve, { once: true });
       this.socket.addEventListener("error", reject, { once: true });
     });
     this.socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
+      if (message.method === "Runtime.consoleAPICalled" && message.params?.type === "error") {
+        this.consoleErrors.push(`[console.error] ${message.params.args?.map((argument) => argument.description ?? argument.value ?? "").join(" ") ?? "console.error"}`);
+      }
+      if (message.method === "Runtime.exceptionThrown") {
+        this.consoleErrors.push(`[uncaught] ${message.params.exceptionDetails?.exception?.description ?? message.params.exceptionDetails?.text ?? "Uncaught browser exception"}`);
+      }
       const pending = this.pending.get(message.id);
       if (pending === undefined) return;
       this.pending.delete(message.id);
@@ -239,6 +246,7 @@ try {
     oneToolName: document.querySelector('#connection-card') !== null,
   })`);
   assert.deepEqual(initial, { connectionVisible: true, sendVisible: true, sendDisabled: true, chatNotBusy: true, noAttachments: true, noThinking: true, noPluginUi: true, oneToolName: true });
+  assert.equal(await page.evaluate("document.activeElement?.id"), "model-endpoint", "the first connection field should receive initial focus");
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = 'http://127.0.0.1:${port}/v1';
@@ -249,6 +257,28 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
   assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test. Ask the agent to do something.");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  assert.deepEqual(await page.evaluate(`({
+    text: document.querySelector('#open-settings')?.textContent,
+    label: document.querySelector('#open-settings')?.getAttribute('aria-label'),
+    expanded: document.querySelector('#open-settings')?.getAttribute('aria-expanded'),
+  })`), { text: "Close", label: "Close connection settings", expanded: "true" });
+  await page.evaluate(`(() => {
+    document.querySelector('#model-endpoint').value = 'bad';
+    document.querySelector('#model-name').value = '';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#model-endpoint')?.getAttribute('aria-invalid') === 'true' && document.querySelector('#model-name')?.getAttribute('aria-invalid') === 'true'");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "model-endpoint", "validation should focus the first invalid field");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.deepEqual(await page.evaluate(`({
+    endpoint: document.querySelector('#model-endpoint')?.value,
+    model: document.querySelector('#model-name')?.value,
+    endpointError: document.querySelector('#endpoint-error')?.textContent,
+    modelError: document.querySelector('#model-error')?.textContent,
+  })`), { endpoint: `http://127.0.0.1:${port}/v1`, model: "browser-test", endpointError: "", modelError: "" });
   await page.evaluate(`(() => {
     document.querySelector('#open-settings').click();
     document.querySelector('#model-name').value = 'browser-test-switched';
@@ -296,6 +326,7 @@ try {
   assert.match(toolTrace.result, /42/);
   assert.equal(toolTrace.requestCount, 2);
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.getAttribute('aria-busy')"), "false");
+  assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant')].find((node) => node.querySelector('.tool-trace') !== null && node.querySelector('.message-body') === null)?.querySelectorAll('.message-action').length"), 0, "tool-only assistant messages should not show an empty Copy action");
 
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
@@ -384,6 +415,7 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('.stream-error') !== null");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Run failed. See the error above.");
   const tracesAfterModelFailure = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => ({
     summary: trace.querySelector('summary')?.textContent,
     code: trace.querySelector('.trace-code')?.textContent,
@@ -424,6 +456,66 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('.stream-error') !== null");
   assert.match(await page.evaluate("document.querySelector('.stream-error')?.textContent"), /Not Found|failed|error/i);
+
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 280, height: 300, deviceScaleFactor: 1, mobile: false });
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  const compactSettings = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const card = document.querySelector('#connection-card');
+    const endpoint = document.querySelector('#model-endpoint');
+    return {
+      pageWidth: document.documentElement.scrollWidth,
+      card: card?.getBoundingClientRect().toJSON(),
+      endpoint: endpoint?.getBoundingClientRect().toJSON(),
+      chat: chat?.getBoundingClientRect().toJSON(),
+      focused: document.activeElement?.id,
+    };
+  })()`);
+  assert.equal(compactSettings.pageWidth, 280);
+  assert.ok(compactSettings.endpoint.top >= compactSettings.card.top && compactSettings.endpoint.bottom <= compactSettings.chat.bottom, "the required endpoint stays visible in a short settings card");
+  assert.equal(compactSettings.focused, "model-endpoint");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  await page.evaluate(`(() => {
+    const edits = [...document.querySelectorAll('[data-action="edit-message"]')];
+    edits.at(-1)?.click();
+  })()`);
+  await waitFor(page, "document.querySelector('.message-edit') !== null");
+  const compactEditor = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const edit = document.querySelector('.message-edit');
+    return {
+      chat: chat?.getBoundingClientRect().toJSON(),
+      edit: edit?.getBoundingClientRect().toJSON(),
+      buttons: [...(edit?.querySelectorAll('button') ?? [])].map((node) => node.getBoundingClientRect().toJSON()),
+    };
+  })()`);
+  assert.ok(compactEditor.edit.top >= compactEditor.chat.top && compactEditor.edit.bottom <= compactEditor.chat.bottom, "the compact editor stays inside the short chat viewport");
+  assert.ok(compactEditor.buttons.every((button) => button.top >= compactEditor.chat.top && button.bottom <= compactEditor.chat.bottom), "compact edit actions stay reachable");
+  await page.evaluate("document.querySelector('[data-action=\"cancel-edit\"]')?.click()");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = Array.from({ length: 20 }, (_, index) => 'line ' + (index + 1)).join('\\n');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  const compactComposer = await page.evaluate(`(() => ({
+    chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
+    composer: document.querySelector('.composer-wrap')?.getBoundingClientRect().toJSON(),
+    input: document.querySelector('#message-input')?.getBoundingClientRect().toJSON(),
+    send: document.querySelector('#send-button')?.getBoundingClientRect().toJSON(),
+    status: document.querySelector('#run-status')?.getBoundingClientRect().toJSON(),
+    pageHeight: document.documentElement.scrollHeight,
+  }))()`);
+  assert.ok(compactComposer.composer.top >= compactComposer.chat.bottom - 1, "a long short-screen composer must not overlap the chat");
+  assert.ok(compactComposer.composer.bottom <= 300 && compactComposer.send.bottom <= 300 && compactComposer.status.bottom <= 300, "short-screen composer controls stay inside the viewport");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await page.send("Emulation.clearDeviceMetricsOverride");
+  assert.deepEqual(page.consoleErrors, [], `browser console errors: ${page.consoleErrors.join(" | ")}`);
   console.log("Browser smoke passed.");
 } finally {
   page?.close();

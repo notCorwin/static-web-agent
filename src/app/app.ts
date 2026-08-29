@@ -50,6 +50,7 @@ export class AgentApp {
   private connecting = false;
   private editingIndex: number | undefined;
   private connectionEditing = false;
+  private connectedSettings: ConnectionSettings | undefined;
   private connectedModelName: string | undefined;
   private lifecycleGeneration = 0;
   private renderScheduled = false;
@@ -95,7 +96,8 @@ export class AgentApp {
     this.applyConnectionSettings(settings);
     this.ready = true;
     this.render();
-    this.focusComposer();
+    if (settings === undefined) this.element<HTMLInputElement>("model-endpoint").focus();
+    else this.focusComposer();
     if (this.options.autoConnect !== false && settings !== undefined) void this.connectSettings(settings, true, generation);
   }
 
@@ -119,6 +121,7 @@ export class AgentApp {
     this.connecting = false;
     this.editingIndex = undefined;
     this.connectionEditing = false;
+    this.connectedSettings = undefined;
     this.connectedModelName = undefined;
     this.runStatus = "";
     this.runStatusKind = "normal";
@@ -171,6 +174,10 @@ export class AgentApp {
       if (this.harness?.modelId === undefined) return;
       if (this.connectionEditing) {
         this.connectionEditing = false;
+        this.applyConnectionSettings(this.connectedSettings);
+        this.clearFieldError("model-endpoint");
+        this.clearFieldError("model-name");
+        this.setConnectionStatus("");
         this.render();
         this.restoreConnectionScroll();
         this.focusComposer();
@@ -182,8 +189,11 @@ export class AgentApp {
       this.connectionEditing = true;
       this.render();
       this.element("chat-log").scrollTop = 0;
-      this.element("connection-card").scrollTop = 0;
-      this.element<HTMLInputElement>("model-endpoint").focus({ preventScroll: true });
+      const card = this.element("connection-card");
+      const endpoint = this.element<HTMLInputElement>("model-endpoint");
+      card.scrollTop = 0;
+      endpoint.focus({ preventScroll: true });
+      endpoint.scrollIntoView({ block: "nearest" });
     }, { signal });
 
     for (const id of ["model-endpoint", "model-name"]) {
@@ -253,6 +263,7 @@ export class AgentApp {
     if (validation.errors.model !== undefined) this.setFieldError("model-name", validation.errors.model);
     if (validation.settings === undefined) {
       this.setStatus("Check the highlighted connection fields.", "error");
+      this.element<HTMLInputElement>(validation.errors.endpoint !== undefined ? "model-endpoint" : "model-name").focus();
       return undefined;
     }
     return validation.settings;
@@ -273,6 +284,7 @@ export class AgentApp {
     try {
       await connection.connect(settings);
       if (generation !== this.lifecycleGeneration) return;
+      this.connectedSettings = settings;
       this.connectedModelName = settings.model;
       this.connectionEditing = false;
       this.setConnectionStatus("");
@@ -356,12 +368,12 @@ export class AgentApp {
       } else {
         const stream = this.stream ?? { text: "", tools: [] };
         this.stream = { ...stream, tools: retainPendingTools(stream), stopped: true, error: result.error?.message ?? "The model request failed." };
-        this.setStatus(result.error?.message ?? "The model request failed.", "error");
+        this.setStatus("Run failed. See the error above.", "error");
       }
     } catch (error) {
       if (generation === this.lifecycleGeneration) {
         this.stream = { ...(this.stream ?? { text: "", tools: [] }), stopped: true, error: asErrorMessage(error) };
-        this.setStatus(asErrorMessage(error), "error");
+        this.setStatus("Run failed. See the error above.", "error");
       }
     } finally {
       if (generation === this.lifecycleGeneration) {
@@ -445,6 +457,9 @@ export class AgentApp {
     card.hidden = connected && !this.connectionEditing;
     const openSettings = this.element("open-settings");
     openSettings.hidden = !connected;
+    openSettings.textContent = this.connectionEditing ? "Close" : "Connection";
+    openSettings.setAttribute("aria-label", this.connectionEditing ? "Close connection settings" : "Open connection settings");
+    openSettings.setAttribute("aria-expanded", String(this.connectionEditing));
     const submit = this.element<HTMLButtonElement>("connection-submit");
     submit.disabled = this.connecting;
     submit.textContent = this.connecting ? "Connecting…" : "Connect";
@@ -514,7 +529,9 @@ export class AgentApp {
     if (this.busy || this.messages[index]?.role !== "user") return;
     this.editingIndex = index;
     this.renderConversation();
-    this.element("conversation-content").querySelector<HTMLTextAreaElement>(`.message[data-message-index="${index}"] textarea`)?.focus();
+    const edit = this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${index}"] .message-edit`);
+    edit?.scrollIntoView({ block: "nearest" });
+    edit?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
   }
 
   private async resendEditedMessage(index: number, value: string): Promise<void> {
