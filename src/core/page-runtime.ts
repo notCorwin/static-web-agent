@@ -15,35 +15,38 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
   if (typeof value !== "object") return String(value);
   if (seen.has(value)) return "[Circular]";
   seen.add(value);
-
-  if (typeof Node !== "undefined" && value instanceof Node) {
-    return {
-      type: value.constructor.name,
-      nodeName: value.nodeName,
-      ...(value instanceof Element && value.id ? { id: value.id } : {}),
-      textContent: value.textContent ?? "",
-    };
-  }
-  if (typeof URL !== "undefined" && value instanceof URL) return value.toString();
-  if (typeof Response !== "undefined" && value instanceof Response) {
-    return { type: "Response", url: value.url, status: value.status, ok: value.ok, redirected: value.redirected };
-  }
-  if (typeof Headers !== "undefined" && value instanceof Headers) return Object.fromEntries(value.entries());
-  if (typeof Map !== "undefined" && value instanceof Map) {
-    return { type: "Map", entries: [...value.entries()].map(([key, entry]) => [serialize(key, seen), serialize(entry, seen)]) };
-  }
-  if (typeof Set !== "undefined" && value instanceof Set) return { type: "Set", values: [...value].map((entry) => serialize(entry, seen)) };
-  if (Array.isArray(value)) return value.map((entry) => serialize(entry, seen));
-
-  const output: Record<string, JsonValue> = {};
-  for (const key of Object.keys(value)) {
-    try {
-      output[key] = serialize((value as Record<string, unknown>)[key], seen);
-    } catch {
-      output[key] = "[Unreadable]";
+  try {
+    if (typeof Node !== "undefined" && value instanceof Node) {
+      return {
+        type: value.constructor.name,
+        nodeName: value.nodeName,
+        ...(value instanceof Element && value.id ? { id: value.id } : {}),
+        textContent: value.textContent ?? "",
+      };
     }
+    if (typeof URL !== "undefined" && value instanceof URL) return value.toString();
+    if (typeof Response !== "undefined" && value instanceof Response) {
+      return { type: "Response", url: value.url, status: value.status, ok: value.ok, redirected: value.redirected };
+    }
+    if (typeof Headers !== "undefined" && value instanceof Headers) return Object.fromEntries(value.entries());
+    if (typeof Map !== "undefined" && value instanceof Map) {
+      return { type: "Map", entries: [...value.entries()].map(([key, entry]) => [serialize(key, seen), serialize(entry, seen)]) };
+    }
+    if (typeof Set !== "undefined" && value instanceof Set) return { type: "Set", values: [...value].map((entry) => serialize(entry, seen)) };
+    if (Array.isArray(value)) return value.map((entry) => serialize(entry, seen));
+
+    const output: Record<string, JsonValue> = {};
+    for (const key of Object.keys(value)) {
+      try {
+        output[key] = serialize((value as Record<string, unknown>)[key], seen);
+      } catch {
+        output[key] = "[Unreadable]";
+      }
+    }
+    return output;
+  } finally {
+    seen.delete(value);
   }
-  return output;
 }
 
 function abortError(): Error {
