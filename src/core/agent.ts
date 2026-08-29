@@ -434,7 +434,7 @@ export class Agent {
 
       const consume = (async () => {
         throwIfAborted(modelController.signal);
-        const iterable = this.model.stream({ messages: Object.freeze([...messages]), tools: [PAGE_TOOL_DESCRIPTOR], signal: modelController.signal });
+        const iterable = this.model.stream({ messages: Object.freeze([...messages]), tools: Object.freeze([PAGE_TOOL_DESCRIPTOR]), signal: modelController.signal });
         const currentIterator = iterable[Symbol.asyncIterator]();
         iterator = currentIterator;
         let eventsSinceYield = 0;

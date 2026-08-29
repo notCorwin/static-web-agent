@@ -35,6 +35,7 @@ test("the Harness exposes one page tool and executes formal calls sequentially",
   assert.equal(harness.snapshot().tools.length, 1);
   assert.equal(harness.snapshot().tools[0].name, "page.run");
   assert.equal(Object.isFrozen(harness.snapshot().tools[0].inputSchema.properties), true);
+  assert.equal(Object.isFrozen(requests[0].tools), true);
   assert.deepEqual(requests[0].tools.map((tool) => tool.name), ["page.run"]);
   assert.equal(result.status, "completed");
   assert.equal(result.response.content, "finished");
