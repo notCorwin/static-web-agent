@@ -25,3 +25,15 @@ test("page runtime preserves an abort reason", async () => {
   controller.abort(reason);
   await assert.rejects(new BrowserPageRuntime().execute("return 1", null, { signal: controller.signal }), (error) => error === reason);
 });
+
+test("page runtime catches an abort between the initial check and listener registration", async () => {
+  const reason = new HarnessError("MODEL_CLEARED", "connection cleared");
+  let aborted = false;
+  const signal = {
+    reason,
+    get aborted() { return aborted; },
+    addEventListener() { aborted = true; },
+    removeEventListener() {},
+  };
+  await assert.rejects(new BrowserPageRuntime().execute("return 1", null, { signal }), (error) => error === reason);
+});

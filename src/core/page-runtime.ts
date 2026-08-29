@@ -95,6 +95,7 @@ export class BrowserPageRuntime implements PageRuntime {
         reject(abortError(signal));
       };
       signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
       void Promise.resolve()
         .then(() => execute(input, pageConsole, signal))
         .then((value) => {

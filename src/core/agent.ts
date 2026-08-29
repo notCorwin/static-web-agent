@@ -273,6 +273,7 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
   const controller = new AbortController();
   const relayAbort = () => controller.abort(parentSignal.reason);
   parentSignal.addEventListener("abort", relayAbort, { once: true });
+  if (parentSignal.aborted) relayAbort();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const execution = executePageTool(runtime, call, controller.signal);
   try {
@@ -352,6 +353,7 @@ export class Agent {
       const modelController = new AbortController();
       const relayModelAbort = () => modelController.abort(signal.reason);
       signal.addEventListener("abort", relayModelAbort, { once: true });
+      if (signal.aborted) relayModelAbort();
       let modelTimer: ReturnType<typeof setTimeout> | undefined;
 
       const consume = (async () => {

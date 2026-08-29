@@ -291,6 +291,37 @@ test("page tool cancellation prefers the parent signal reason", async () => {
   await harness.dispose();
 });
 
+test("tool execution catches an abort between the parent check and relay registration", async () => {
+  const reason = new HarnessError("MODEL_CLEARED", "connection cleared");
+  let abortListeners = 0;
+  let executed = 0;
+  const signal = {
+    aborted: false,
+    reason,
+    addEventListener() {
+      abortListeners += 1;
+      if (abortListeners === 3) this.aborted = true;
+    },
+    removeEventListener() {},
+  };
+  const agent = new Agent({
+    id: "tool-relay-race",
+    async *stream() {
+      yield completed("", [{ id: "tool-1", name: "page.run", arguments: { code: "return 1" } }]);
+    },
+  }, {
+    execute() {
+      executed += 1;
+      return Promise.resolve({ value: 1, logs: [], durationMs: 0 });
+    },
+  });
+  const result = await agent.run({ messages: [{ role: "user", content: "wait" }], signal });
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.error.code, "MODEL_CLEARED");
+  assert.equal(executed, 0);
+  assert.equal(JSON.parse(result.messages.at(-1).content).code, "MODEL_CLEARED");
+});
+
 test("malformed tool history is rejected at the run boundary", async () => {
   const harness = await createHarness({ model: { id: "history-validation", async *stream() { yield completed("unused"); } } });
   const result = await harness.run({ messages: [{ role: "tool", callId: "call-1", name: "page.run", content: "{}", isError: "true" }] });
