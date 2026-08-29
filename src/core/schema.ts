@@ -15,9 +15,13 @@ function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
       if (prototype !== Object.prototype && prototype !== null) return false;
     }
     ancestors.add(value);
-    return Array.isArray(value)
-      ? value.every((item) => isJsonValueAt(item, ancestors))
-      : Object.entries(value).every(([key, item]) => key !== "__proto__" && isJsonValueAt(item, ancestors));
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index) || !isJsonValueAt(value[index], ancestors)) return false;
+      }
+      return true;
+    }
+    return Object.entries(value).every(([key, item]) => key !== "__proto__" && isJsonValueAt(item, ancestors));
   } catch {
     return false;
   } finally {
@@ -126,7 +130,7 @@ function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], iss
         if (!validateAt(value[index], schema.items, path, issues)) json = false;
         path.pop();
       }
-    } else if (!value.every(isJsonValue)) {
+    } else if (!isJsonValue(value)) {
       json = false;
     }
   }

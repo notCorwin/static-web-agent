@@ -35,7 +35,7 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
       return { type: "Map", entries: [...value.entries()].map(([key, entry]) => [serialize(key, seen), serialize(entry, seen)]) };
     }
     if (typeof Set !== "undefined" && value instanceof Set) return { type: "Set", values: [...value].map((entry) => serialize(entry, seen)) };
-    if (Array.isArray(value)) return value.map((entry) => serialize(entry, seen));
+    if (Array.isArray(value)) return Array.from({ length: value.length }, (_, index) => serialize(value[index], seen));
 
     const output: Record<string, JsonValue> = {};
     for (const key of Object.keys(value)) {

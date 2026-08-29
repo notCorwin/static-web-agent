@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BrowserPageRuntime, HarnessError } from "../dist/index.js";
+import { BrowserPageRuntime, HarnessError, isJsonValue, validate } from "../dist/index.js";
 
 test("the page runtime evaluates code and serializes values and logs", async () => {
   const runtime = new BrowserPageRuntime();
@@ -29,6 +29,16 @@ test("repeated page references are not mistaken for cycles", async () => {
 test("common built-in values keep a readable serialized form", async () => {
   const result = await new BrowserPageRuntime().execute("return { date: new Date(0), pattern: /agent/gi };", null);
   assert.deepEqual(result.value, { date: "1970-01-01T00:00:00.000Z", pattern: "/agent/gi" });
+});
+
+test("sparse arrays stay within the JSON boundary", async () => {
+  const sparse = [];
+  sparse.length = 1;
+  assert.equal(isJsonValue(sparse), false);
+  assert.equal(validate({ type: "array" }, sparse).valid, false);
+  const result = await new BrowserPageRuntime().execute("return input", sparse);
+  assert.deepEqual(result.value, [null]);
+  assert.equal(Object.hasOwn(result.value, 0), true);
 });
 
 test("empty page code is rejected at the boundary", async () => {
