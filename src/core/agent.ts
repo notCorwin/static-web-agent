@@ -121,6 +121,25 @@ function now(): number {
   return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function scheduleTimeout(callback: () => void, delayMs: number): () => void {
+  const deadline = now() + delayMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const schedule = (): void => {
+    const remaining = deadline - now();
+    if (remaining <= 0) {
+      callback();
+      return;
+    }
+    timer = setTimeout(schedule, Math.min(remaining, MAX_TIMER_DELAY_MS));
+  };
+  schedule();
+  return () => {
+    if (timer !== undefined) clearTimeout(timer);
+  };
+}
+
 function errorResult(code: string, message: string, durationMs = 0): Extract<ToolExecutionResult, { readonly ok: false }> {
   return { ok: false, error: { code, message }, durationMs };
 }
@@ -314,7 +333,7 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
   const relayAbort = () => controller.abort(abortReason(parentSignal));
   parentSignal.addEventListener("abort", relayAbort, { once: true });
   if (parentSignal.aborted) relayAbort();
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelTimer: (() => void) | undefined;
   const execution = executePageTool(runtime, call, controller.signal);
   let abortListener: (() => void) | undefined;
   const abort = new Promise<never>((_, reject) => {
@@ -333,7 +352,7 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
     const races: Array<Promise<ToolExecutionResult>> = [execution, abort];
     if (timeoutMs === undefined || timeoutMs === Number.POSITIVE_INFINITY) return await Promise.race(races);
     const timeout = new Promise<ToolExecutionResult>((resolve) => {
-      timer = setTimeout(() => {
+      cancelTimer = scheduleTimeout(() => {
         controller.abort(new HarnessError("TOOL_TIMEOUT", "Page tool execution timed out."));
         resolve(errorResult("TOOL_TIMEOUT", `Page tool execution exceeded ${timeoutMs} ms.`, duration()));
       }, timeoutMs);
@@ -343,7 +362,7 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
   } finally {
     parentSignal.removeEventListener("abort", relayAbort);
     if (abortListener !== undefined) parentSignal.removeEventListener("abort", abortListener);
-    if (timer !== undefined) clearTimeout(timer);
+    cancelTimer?.();
   }
 }
 
@@ -411,7 +430,7 @@ export class Agent {
       const relayModelAbort = () => modelController.abort(abortReason(signal));
       signal.addEventListener("abort", relayModelAbort, { once: true });
       if (signal.aborted) relayModelAbort();
-      let modelTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancelModelTimer: (() => void) | undefined;
 
       const consume = (async () => {
         throwIfAborted(modelController.signal);
@@ -515,15 +534,16 @@ export class Agent {
           if (signal.aborted) onAbort();
           abortListener = onAbort;
         });
-        const timeout = request.modelTimeoutMs === undefined || request.modelTimeoutMs === Number.POSITIVE_INFINITY
+        const modelTimeoutMs = request.modelTimeoutMs;
+        const timeout = modelTimeoutMs === undefined || modelTimeoutMs === Number.POSITIVE_INFINITY
           ? undefined
           : new Promise<never>((_, reject) => {
-              modelTimer = setTimeout(() => {
+              cancelModelTimer = scheduleTimeout(() => {
                 timedOut = true;
                 modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
                 void Promise.resolve().then(() => iterator?.return?.()).catch(() => undefined);
-                reject(new HarnessError("MODEL_TIMEOUT", `Model request exceeded ${request.modelTimeoutMs} ms.`));
-              }, request.modelTimeoutMs);
+                reject(new HarnessError("MODEL_TIMEOUT", `Model request exceeded ${modelTimeoutMs} ms.`));
+              }, modelTimeoutMs);
             });
         const races: Array<Promise<unknown>> = [consume, abort];
         if (timeout !== undefined) races.push(timeout);
@@ -536,7 +556,7 @@ export class Agent {
       } finally {
         signal.removeEventListener("abort", relayModelAbort);
         if (abortListener !== undefined) signal.removeEventListener("abort", abortListener);
-        if (modelTimer !== undefined) clearTimeout(modelTimer);
+        cancelModelTimer?.();
         if (timedOut) modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
       }
 

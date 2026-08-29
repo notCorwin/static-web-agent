@@ -74,6 +74,42 @@ test("completed assistant content is emitted before its tools", async () => {
   }
 });
 
+test("large model and tool timeouts do not overflow host timers", async () => {
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "large-timeout",
+      async *stream({ messages }) {
+        if (messages.some((message) => message.role === "tool")) {
+          yield completed("done");
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        turn += 1;
+        yield completed("", [{ id: "slow-tool", name: "page.run", arguments: { code: "return 1" } }]);
+      },
+    },
+    pageRuntime: {
+      async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { value: 1, logs: [], durationMs: 0 };
+      },
+    },
+  });
+  try {
+    const result = await harness.run({
+      messages: [{ role: "user", content: "go" }],
+      modelTimeoutMs: Number.MAX_SAFE_INTEGER,
+      toolTimeoutMs: Number.MAX_SAFE_INTEGER,
+    });
+    assert.equal(turn, 1);
+    assert.equal(result.status, "completed");
+    assert.equal(JSON.parse(result.messages.at(-2).content).value, 1);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("page tool failures return to the model instead of becoming hidden control flow", async () => {
   let turn = 0;
   const model = {
