@@ -125,6 +125,36 @@ test("cancellation returns streamed partial output", async () => {
   await harness.dispose();
 });
 
+test("cancellation closes every pending tool call in the returned history", async () => {
+  const controller = new AbortController();
+  const harness = await createHarness({
+    model: {
+      id: "cancel-tools",
+      async *stream() {
+        yield completed("", [
+          { id: "first", name: "page.run", arguments: { code: "return 1" } },
+          { id: "second", name: "page.run", arguments: { code: "return 2" } },
+        ]);
+      },
+    },
+    pageRuntime: {
+      execute(_code, _input, { signal }) {
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      },
+    },
+  });
+  const running = harness.run({ messages: [{ role: "user", content: "stop" }], signal: controller.signal });
+  setTimeout(() => controller.abort(), 10);
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.deepEqual(result.messages.map((message) => message.role), ["user", "assistant", "tool", "tool"]);
+  assert.deepEqual(result.messages.slice(-2).map((message) => [message.callId, message.isError, JSON.parse(message.content).code]), [
+    ["first", true, "ABORTED"],
+    ["second", true, "ABORTED"],
+  ]);
+  await harness.dispose();
+});
+
 test("completed model turns remove their cancellation listeners", async () => {
   class TrackingSignal {
     aborted = false;

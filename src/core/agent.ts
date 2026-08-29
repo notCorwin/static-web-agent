@@ -106,6 +106,10 @@ function errorResult(code: string, message: string, durationMs = 0): Extract<Too
   return { ok: false, error: { code, message }, durationMs };
 }
 
+function abortedToolResult(error: unknown): Extract<ToolExecutionResult, { readonly ok: false }> {
+  return { ok: false, error: errorInfo(error, "ABORTED"), durationMs: 0 };
+}
+
 function assertToolCall(call: ToolCall): void {
   const candidate: unknown = call;
   if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
@@ -456,25 +460,39 @@ export class Agent {
       if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
       if (request.maxTurns !== undefined && turns >= request.maxTurns) return finish({ status: "max-turns", response: immutableAssistant });
 
-      for (const call of calls) {
+      const appendToolResult = (call: ToolCall, result: ToolExecutionResult): void => {
+        this.emit(request.onEvent, { type: "tool-finished", call, result });
+        const toolMessage: ToolMessage = result.ok
+          ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value as JsonObject), durationMs: result.durationMs }
+          : { role: "tool", callId: call.id, name: call.name, content: jsonString(jsonError(result.error)), isError: true, durationMs: result.durationMs };
+        messages.push(Object.freeze(toolMessage));
+      };
+      const cancelTools = (startIndex: number, error: unknown, firstStarted = false): AgentRunResult => {
+        for (let index = startIndex; index < calls.length; index += 1) {
+          const call = calls[index];
+          if (call === undefined) break;
+          if (!(firstStarted && index === startIndex)) this.emit(request.onEvent, { type: "tool-started", call });
+          appendToolResult(call, abortedToolResult(error));
+        }
+        return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
+      };
+      for (let index = 0; index < calls.length; index += 1) {
+        const call = calls[index];
+        if (call === undefined) break;
         try {
           throwIfAborted(signal);
         } catch (error) {
-          return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
+          return cancelTools(index, error);
         }
         this.emit(request.onEvent, { type: "tool-started", call });
         let result: ToolExecutionResult;
         try {
           result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
         } catch (error) {
-          if (signal.aborted || isAbortError(error)) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
+          if (signal.aborted || isAbortError(error)) return cancelTools(index, error, true);
           result = errorResult("PAGE_TOOL_ERROR", error instanceof Error ? error.message : "Page tool execution failed.");
         }
-        this.emit(request.onEvent, { type: "tool-finished", call, result });
-        const toolMessage: ToolMessage = result.ok
-          ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value as JsonObject), durationMs: result.durationMs }
-          : { role: "tool", callId: call.id, name: call.name, content: jsonString(jsonError(result.error)), isError: true, durationMs: result.durationMs };
-        messages.push(Object.freeze(toolMessage));
+        appendToolResult(call, result);
       }
     }
   }

@@ -55,11 +55,15 @@ async function startServer() {
       let body = {};
       try { body = JSON.parse(await readBody(request)); } catch { /* The adapter will report malformed provider input. */ }
       const messages = Array.isArray(body.messages) ? body.messages : [];
+      const lastUser = [...messages].reverse().find((message) => message?.role === "user");
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      if (messages.some((message) => message?.role === "tool")) {
+      if (messages.at(-1)?.role === "tool") {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "done from browser" } }] })}\n\n`);
       } else {
-        response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code: "return { title: document.title, answer: 40 + 2 }" }) } }] } }] })}\n\n`);
+        const code = lastUser?.content === "Cancel this run"
+          ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
+          : "return { title: document.title, answer: 40 + 2 }";
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser-" + requests, type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
         response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
       }
       response.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
@@ -229,6 +233,22 @@ try {
   assert.match(toolTrace.result, /42/);
   assert.equal(toolTrace.requestCount, 2);
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.getAttribute('aria-busy')"), "false");
+
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'Cancel this run';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelectorAll('.tool-trace summary').item(document.querySelectorAll('.tool-trace summary').length - 1)?.textContent.includes('running') === true");
+  await page.evaluate("document.querySelector('#send-button').click()");
+  await waitFor(page, "document.querySelector('.stream-status')?.textContent === 'Stopped' && document.querySelector('#send-button')?.textContent === 'Send'");
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2);
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Continue after stopping';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelectorAll('.message.assistant .message-body').length === 2");
+  assert.equal(await page.evaluate("document.querySelector('.message.assistant:last-of-type .message-body')?.textContent"), "done from browser");
 
   await page.evaluate(`(() => {
     document.querySelector('[data-action="edit-message"]').click();

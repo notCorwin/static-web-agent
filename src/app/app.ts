@@ -292,7 +292,16 @@ export class AgentApp {
         this.stream = undefined;
         this.setStatus("Response complete.", "success");
       } else if (result.status === "cancelled") {
-        this.stream = { ...(this.stream ?? { text: "", tools: [] }), stopped: true };
+        const stream = this.stream ?? { text: "", tools: [] };
+        const finishedToolIds = new Set(result.messages.filter((message) => message.role === "tool").map((message) => message.callId));
+        this.stream = {
+          ...stream,
+          tools: stream.tools.filter((item) => {
+            const id = item.call?.id ?? item.delta?.id;
+            return id === undefined || !finishedToolIds.has(id);
+          }),
+          stopped: true,
+        };
         this.setStatus("Stopped. The produced content was retained above.", "error");
       } else if (result.status === "max-turns") {
         this.stream = undefined;

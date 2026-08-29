@@ -223,7 +223,7 @@ export function messageElements(messages: readonly ModelMessage[], editingIndex?
 }
 
 export function streamingElement(stream: StreamView): HTMLElement | undefined {
-  if (stream.text.length === 0 && stream.tools.length === 0 && stream.error === undefined) return undefined;
+  if (stream.text.length === 0 && stream.tools.length === 0 && stream.error === undefined && stream.stopped !== true) return undefined;
   const wrapper = document.createElement("div");
   wrapper.className = `streaming-run${stream.stopped === true ? " stopped" : ""}`;
   if (stream.text.length > 0) wrapper.append(textElement("div", stream.text, "message-body"));
