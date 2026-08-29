@@ -58,6 +58,7 @@ export class AgentApp {
   private renderTimer: number | undefined;
   private runStatus = "";
   private runStatusKind: "normal" | "success" | "error" = "normal";
+  private connectionRunStatusBeforeEdit: { message: string; kind: "normal" | "success" | "error" } | undefined;
   private followChat = true;
   private renderedMessages: readonly ModelMessage[] | undefined;
   private renderedConnected: boolean | undefined;
@@ -83,6 +84,7 @@ export class AgentApp {
     this.messages = [];
     this.stream = undefined;
     this.runStatus = "";
+    this.connectionRunStatusBeforeEdit = undefined;
     this.bindEvents();
 
     const harness = await createHarness();
@@ -125,6 +127,7 @@ export class AgentApp {
     this.connectedModelName = undefined;
     this.runStatus = "";
     this.runStatusKind = "normal";
+    this.connectionRunStatusBeforeEdit = undefined;
     this.followChat = true;
     this.renderedMessages = undefined;
     this.renderedConnected = undefined;
@@ -173,11 +176,14 @@ export class AgentApp {
     this.element("open-settings").addEventListener("click", () => {
       if (this.harness?.modelId === undefined) return;
       if (this.connectionEditing) {
+        const previousStatus = this.connectionRunStatusBeforeEdit;
+        this.connectionRunStatusBeforeEdit = undefined;
         this.connectionEditing = false;
         this.applyConnectionSettings(this.connectedSettings);
         this.clearFieldError("model-endpoint");
         this.clearFieldError("model-name");
         this.setConnectionStatus("");
+        if (previousStatus !== undefined) this.setStatus(previousStatus.message, previousStatus.kind);
         this.render();
         this.restoreConnectionScroll();
         this.focusComposer();
@@ -186,6 +192,7 @@ export class AgentApp {
       const chat = this.element("chat-log");
       this.connectionScrollTop = chat.scrollTop;
       this.connectionFollowChat = this.followChat;
+      this.connectionRunStatusBeforeEdit = { message: this.runStatus, kind: this.runStatusKind };
       this.connectionEditing = true;
       this.render();
       this.element("chat-log").scrollTop = 0;
@@ -286,6 +293,7 @@ export class AgentApp {
       if (generation !== this.lifecycleGeneration) return;
       this.connectedSettings = settings;
       this.connectedModelName = settings.model;
+      this.connectionRunStatusBeforeEdit = undefined;
       this.connectionEditing = false;
       this.setConnectionStatus("");
       this.setStatus(`Connected to ${displayModelName(settings.model)}.`, "success");

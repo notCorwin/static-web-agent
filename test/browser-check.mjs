@@ -284,6 +284,7 @@ try {
     endpointError: document.querySelector('#endpoint-error')?.textContent,
     modelError: document.querySelector('#model-error')?.textContent,
   })`), { endpoint: `http://127.0.0.1:${port}/v1`, model: "browser-test", endpointError: "", modelError: "" });
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Connected to Browser Test.", "closing invalid connection edits should restore the prior run status");
   await page.evaluate(`(() => {
     document.querySelector('#open-settings').click();
     document.querySelector('#model-name').value = 'browser-test-switched';
