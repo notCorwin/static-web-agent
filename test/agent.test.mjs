@@ -239,6 +239,58 @@ test("model cancellation preserves the signal reason", async () => {
   await harness.dispose();
 });
 
+test("page tool cancellation preserves the signal reason", async () => {
+  let started;
+  const toolStarted = new Promise((resolve) => { started = resolve; });
+  const runtime = new BrowserPageRuntime();
+  const harness = await createHarness({
+    model: {
+      id: "page-tool-reason-preserving-cancel",
+      async *stream() {
+        yield completed("", [{ id: "tool-1", name: "page.run", arguments: { code: "await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true })); return 1" } }]);
+      },
+    },
+    pageRuntime: { execute(code, input, options) { started(); return runtime.execute(code, input, options); } },
+  });
+  const controller = new AbortController();
+  const running = harness.run({ messages: [{ role: "user", content: "wait" }], signal: controller.signal });
+  await toolStarted;
+  controller.abort(new HarnessError("MODEL_REPLACED", "connection changed"));
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.error.code, "MODEL_REPLACED");
+  assert.equal(JSON.parse(result.messages.at(-1).content).code, "MODEL_REPLACED");
+  await harness.dispose();
+});
+
+test("page tool cancellation prefers the parent signal reason", async () => {
+  let started;
+  const toolStarted = new Promise((resolve) => { started = resolve; });
+  const harness = await createHarness({
+    model: {
+      id: "page-tool-parent-reason",
+      async *stream() {
+        yield completed("", [{ id: "tool-1", name: "page.run", arguments: { code: "return 1" } }]);
+      },
+    },
+    pageRuntime: {
+      execute(_code, _input, { signal }) {
+        started();
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("different abort failure")), { once: true }));
+      },
+    },
+  });
+  const controller = new AbortController();
+  const running = harness.run({ messages: [{ role: "user", content: "wait" }], signal: controller.signal });
+  await toolStarted;
+  controller.abort(new HarnessError("MODEL_REPLACED", "connection changed"));
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.error.code, "MODEL_REPLACED");
+  assert.equal(JSON.parse(result.messages.at(-1).content).code, "MODEL_REPLACED");
+  await harness.dispose();
+});
+
 test("malformed tool history is rejected at the run boundary", async () => {
   const harness = await createHarness({ model: { id: "history-validation", async *stream() { yield completed("unused"); } } });
   const result = await harness.run({ messages: [{ role: "tool", callId: "call-1", name: "page.run", content: "{}", isError: "true" }] });

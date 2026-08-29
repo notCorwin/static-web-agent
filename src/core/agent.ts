@@ -459,7 +459,7 @@ export class Agent {
       } catch (error) {
         const partial = partialMessage(streamedText.join(""), streamedCalls);
         if (timedOut) return fail(errorInfo(error, "MODEL_TIMEOUT"), partial);
-        if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
+        if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(signal.reason ?? error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
         return fail(errorInfo(error, "MODEL_ERROR"), partial);
       } finally {
         signal.removeEventListener("abort", relayModelAbort);
@@ -528,7 +528,7 @@ export class Agent {
         try {
           result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
         } catch (error) {
-          if (signal.aborted) return cancelTools(index, error, true);
+          if (signal.aborted) return cancelTools(index, signal.reason ?? error, true);
           result = errorResult("PAGE_TOOL_ERROR", error instanceof Error ? error.message : "Page tool execution failed.");
         }
         appendToolResult(call, result);

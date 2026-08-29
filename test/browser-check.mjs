@@ -93,7 +93,7 @@ async function startServer() {
 function waitForOutput(child) {
   return new Promise((resolve, reject) => {
     let output = "";
-    const timer = setTimeout(() => reject(new Error("Timed out waiting for Chromium.")), 30_000);
+    const timer = setTimeout(() => reject(new Error("Timed out waiting for Chromium.")), 60_000);
     const onData = (chunk) => {
       output += chunk.toString();
       const match = output.match(/DevTools listening on (ws:\/\/\S+)/);
@@ -245,12 +245,26 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelectorAll('.tool-trace summary').item(document.querySelectorAll('.tool-trace summary').length - 1)?.textContent.includes('running') === true");
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send' && document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Connected to Browser Test.");
+
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'Cancel this run';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelectorAll('.tool-trace summary').item(document.querySelectorAll('.tool-trace summary').length - 1)?.textContent.includes('running') === true");
   await page.evaluate("document.querySelector('#send-button').click()");
   await waitFor(page, "document.querySelector('.stream-status')?.textContent === 'Stopped' && document.querySelector('#send-button')?.textContent === 'Send'");
-  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2);
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 3);
   const tracesAfterStop = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => [...trace.querySelectorAll('.trace-section')].map((section) => [section.querySelector('h3')?.textContent, section.querySelector('pre')?.textContent])))()`);
   assert.match(JSON.stringify(tracesAfterStop[0]), /42/);
-  assert.match(JSON.stringify(tracesAfterStop[1]), /ABORTED/);
+  assert.match(JSON.stringify(tracesAfterStop[1]), /MODEL_REPLACED/);
+  assert.match(JSON.stringify(tracesAfterStop[2]), /ABORTED/);
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Continue after stopping';
     document.querySelector('#composer-form').requestSubmit();

@@ -303,7 +303,9 @@ export class AgentApp {
           tools: retainPendingTools(stream),
           stopped: true,
         };
-        this.setStatus("Stopped. The produced content was retained above.", "error");
+        if (result.error?.code !== "MODEL_REPLACED" && result.error?.code !== "MODEL_CLEARED") {
+          this.setStatus("Stopped. The produced content was retained above.", "error");
+        }
       } else if (result.status === "max-turns") {
         this.stream = undefined;
         this.setStatus("Run stopped by the host limit.", "error");
@@ -348,7 +350,8 @@ export class AgentApp {
   }
 
   private mergeToolDelta(stream: StreamState, delta: ToolCallDelta): void {
-    const current = stream.tools[delta.index];
+    const index = stream.tools.findIndex((item) => item.delta?.index === delta.index || (delta.id !== undefined && (item.call?.id === delta.id || item.delta?.id === delta.id)));
+    const current = index < 0 ? undefined : stream.tools[index];
     const previous = current?.delta;
     const merged: ToolCallDelta = {
       index: delta.index,
@@ -356,7 +359,9 @@ export class AgentApp {
       ...(delta.name === undefined ? previous?.name === undefined ? {} : { name: previous.name } : { name: `${previous?.name ?? ""}${delta.name}` }),
       ...(delta.arguments === undefined ? previous?.arguments === undefined ? {} : { arguments: previous.arguments } : { arguments: `${previous?.arguments ?? ""}${delta.arguments}` }),
     };
-    stream.tools[delta.index] = { ...current, status: current?.status ?? "preparing", delta: merged };
+    const next: StreamTool = { ...current, status: current?.status ?? "preparing", delta: merged };
+    if (index < 0) stream.tools.push(next);
+    else stream.tools[index] = next;
   }
 
   private updateTool(stream: StreamState, call: ToolCall, result: ToolExecutionResult | undefined, status: StreamTool["status"]): void {

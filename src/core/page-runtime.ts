@@ -49,7 +49,8 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
   }
 }
 
-function abortError(): Error {
+function abortError(signal?: AbortSignal): Error {
+  if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error("Operation cancelled.");
   error.name = "AbortError";
   return error;
@@ -59,7 +60,7 @@ export class BrowserPageRuntime implements PageRuntime {
   async execute(code: string, input: JsonValue, options: { readonly signal?: AbortSignal } = {}): Promise<PageExecutionResult> {
     const source = code.trim();
     if (!source) throw new HarnessError("INVALID_PAGE_RUNTIME_INPUT", "Page JavaScript code cannot be empty.");
-    if (options.signal?.aborted) throw abortError();
+    if (options.signal?.aborted) throw abortError(options.signal);
 
     const started = typeof performance === "undefined" ? Date.now() : performance.now();
     const logs: string[] = [];
@@ -91,7 +92,7 @@ export class BrowserPageRuntime implements PageRuntime {
         if (settled) return;
         settled = true;
         cleanup();
-        reject(abortError());
+        reject(abortError(signal));
       };
       signal.addEventListener("abort", onAbort, { once: true });
       void Promise.resolve()

@@ -18,3 +18,10 @@ test("repeated page references are not mistaken for cycles", async () => {
 test("empty page code is rejected at the boundary", async () => {
   await assert.rejects(new BrowserPageRuntime().execute("  ", null), (error) => error instanceof HarnessError && error.code === "INVALID_PAGE_RUNTIME_INPUT");
 });
+
+test("page runtime preserves an abort reason", async () => {
+  const reason = new HarnessError("MODEL_REPLACED", "connection changed");
+  const controller = new AbortController();
+  controller.abort(reason);
+  await assert.rejects(new BrowserPageRuntime().execute("return 1", null, { signal: controller.signal }), (error) => error === reason);
+});
