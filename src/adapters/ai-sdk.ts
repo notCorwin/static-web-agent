@@ -300,7 +300,7 @@ export class AiSdkAdapter implements ModelAdapter {
     let nextIndex = 0;
 
     try {
-      for await (const part of result.fullStream) {
+      for await (const part of result.stream) {
         throwIfAborted(request.signal);
         switch (part.type) {
           case "text-delta":
