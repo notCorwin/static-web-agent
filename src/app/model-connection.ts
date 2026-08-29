@@ -22,13 +22,15 @@ export interface ModelConnectionOptions {
 }
 
 export function createModelConnection(options: ModelConnectionOptions): ModelConnection {
+  const harness = Object.hasOwn(options, "harness") ? options.harness : undefined;
+  const configuredFetcher = Object.hasOwn(options, "fetcher") ? options.fetcher : undefined;
   return {
     restore: () => {
       const settings = loadConnectionSettings();
       return settings === undefined ? { source: "none" } : { settings, source: "local" };
     },
     connect: async (settings) => {
-      const fetcher = options.fetcher ?? (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) as BrowserFetcher : undefined);
+      const fetcher = configuredFetcher ?? (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) as BrowserFetcher : undefined);
       if (fetcher === undefined) throw new Error("This browser does not provide fetch.");
       const model = new AiSdkAdapter({
         id: "openai-compatible",
@@ -37,7 +39,8 @@ export function createModelConnection(options: ModelConnectionOptions): ModelCon
         ...(settings.apiKey.length === 0 ? {} : { apiKey: settings.apiKey }),
         fetcher,
       });
-      options.harness.setModel(model);
+      if (harness === undefined) throw new Error("A Harness is required.");
+      harness.setModel(model);
       saveConnectionSettings(settings);
       return { saved: true };
     },
