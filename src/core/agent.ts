@@ -179,22 +179,35 @@ function assertAssistant(message: AssistantMessage): void {
 
 function assertMessages(messages: readonly ModelMessage[]): void {
   if (!Array.isArray(messages)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be an array.");
+  const pendingToolCalls = new Map<string, string>();
   for (const message of messages) {
     if (!isJsonValue(message) || typeof message !== "object" || Array.isArray(message)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be JSON objects.");
     const record = message as Record<string, unknown>;
     if (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool") throw new HarnessError("INVALID_MESSAGES", "Model messages have an invalid role.");
     if (typeof record.content !== "string") throw new HarnessError("INVALID_MESSAGES", "Every model message needs string content.");
-    if (record.role === "assistant") assertAssistant(message as unknown as AssistantMessage);
-    if (record.role === "tool" && (typeof record.callId !== "string" || record.callId.length === 0 || typeof record.name !== "string" || record.name.length === 0)) {
-      throw new HarnessError("INVALID_MESSAGES", "Tool messages need a call ID and name.");
-    }
-    if (record.role === "tool" && record.isError !== undefined && typeof record.isError !== "boolean") {
-      throw new HarnessError("INVALID_MESSAGES", "Tool message error status must be boolean.");
-    }
-    if (record.role === "tool" && record.durationMs !== undefined && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0)) {
-      throw new HarnessError("INVALID_MESSAGES", "Tool message timing must be a non-negative number.");
+    if (record.role === "assistant") {
+      assertAssistant(message as unknown as AssistantMessage);
+      if (pendingToolCalls.size > 0) throw new HarnessError("INVALID_MESSAGES", `Tool call “${pendingToolCalls.keys().next().value}” has no result before the next assistant message.`);
+      for (const call of (message as unknown as AssistantMessage).toolCalls ?? []) pendingToolCalls.set(call.id, call.name);
+    } else if (record.role === "tool") {
+      if (typeof record.callId !== "string" || record.callId.length === 0 || typeof record.name !== "string" || record.name.length === 0) {
+        throw new HarnessError("INVALID_MESSAGES", "Tool messages need a call ID and name.");
+      }
+      if (record.isError !== undefined && typeof record.isError !== "boolean") {
+        throw new HarnessError("INVALID_MESSAGES", "Tool message error status must be boolean.");
+      }
+      if (record.durationMs !== undefined && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0)) {
+        throw new HarnessError("INVALID_MESSAGES", "Tool message timing must be a non-negative number.");
+      }
+      const expectedName = pendingToolCalls.get(record.callId);
+      if (expectedName === undefined) throw new HarnessError("INVALID_MESSAGES", `Tool result “${record.callId}” has no preceding assistant call.`);
+      if (expectedName !== record.name) throw new HarnessError("INVALID_MESSAGES", `Tool result “${record.callId}” names “${record.name}”, expected “${expectedName}”.`);
+      pendingToolCalls.delete(record.callId);
+    } else if (pendingToolCalls.size > 0) {
+      throw new HarnessError("INVALID_MESSAGES", `Tool call “${pendingToolCalls.keys().next().value}” has no result before the next message.`);
     }
   }
+  if (pendingToolCalls.size > 0) throw new HarnessError("INVALID_MESSAGES", `Tool call “${pendingToolCalls.keys().next().value}” has no result.`);
 }
 
 function assertUsage(usage: ModelUsage): void {

@@ -220,6 +220,22 @@ test("malformed tool history is rejected at the run boundary", async () => {
   await harness.dispose();
 });
 
+test("tool history requires matching preceding calls", async () => {
+  for (const messages of [
+    [{ role: "user", content: "go" }, { role: "tool", callId: "missing", name: "page.run", content: "{}" }],
+    [{ role: "user", content: "go" }, { role: "assistant", content: "", toolCalls: [{ id: "unfinished", name: "page.run", arguments: { code: "return 1" } }] }],
+    [{ role: "user", content: "go" }, { role: "assistant", content: "", toolCalls: [{ id: "named", name: "page.run", arguments: { code: "return 1" } }] }, { role: "tool", callId: "named", name: "other", content: "{}" }],
+  ]) {
+    let modelCalls = 0;
+    const harness = await createHarness({ model: { id: "history-sequence", async *stream() { modelCalls += 1; yield completed("unused"); } } });
+    const result = await harness.run({ messages });
+    assert.equal(result.status, "failed");
+    assert.equal(result.error.code, "INVALID_MESSAGES");
+    assert.equal(modelCalls, 0);
+    await harness.dispose();
+  }
+});
+
 test("cancellation returns streamed partial output", async () => {
   const harness = await createHarness({
     model: {
