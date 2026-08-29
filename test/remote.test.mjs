@@ -31,6 +31,8 @@ test("the OpenAI-compatible adapter preserves exact completion endpoints", async
     ["http://example.test/v1?tenant=one", "http://example.test/v1/chat/completions?tenant=one"],
     ["http://example.test/v1?tenant=one&tenant=two&flag", "http://example.test/v1/chat/completions?tenant=one&tenant=two&flag"],
     ["http://example.test/v1/chat/completions", "http://example.test/v1/chat/completions"],
+    ["http://example.test/v1/chat/completions/", "http://example.test/v1/chat/completions/"],
+    ["http://example.test/v1/chat/completions/#ignored", "http://example.test/v1/chat/completions/"],
     ["http://example.test/chat/completions", "http://example.test/chat/completions"],
     ["http://example.test/chat/completions?tenant=one", "http://example.test/chat/completions?tenant=one"],
     ["http://example.test/custom/gateway", "http://example.test/custom/gateway"],

@@ -78,7 +78,11 @@ function resolveEndpoint(endpoint: string): ResolvedEndpoint {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Model endpoint must use http:// or https://.");
 
   const originalPath = url.pathname.replace(/\/+$/, "");
-  if (originalPath === "/chat/completions") return { baseURL: url.origin, directURL: new URL(endpoint).toString() };
+  if (originalPath === "/chat/completions" || url.pathname.endsWith("/chat/completions/")) {
+    const directURL = new URL(endpoint);
+    directURL.hash = "";
+    return { baseURL: url.origin, directURL: directURL.toString() };
+  }
   const search = url.search || undefined;
   let path = originalPath;
   if (path.endsWith("/chat/completions")) path = path.slice(0, -"/chat/completions".length);
