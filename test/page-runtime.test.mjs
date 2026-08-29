@@ -15,6 +15,19 @@ test("page runtime keeps non-string console values readable", async () => {
   assert.deepEqual(result.logs, ['{"answer":42} [1,2] null']);
 });
 
+test("page runtime console capture ignores inherited properties", async () => {
+  const key = "log";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: "blocked", writable: false });
+  try {
+    const result = await new BrowserPageRuntime().execute("console.log('captured'); return 1", null);
+    assert.deepEqual(result.logs, ["captured"]);
+  } finally {
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
+
 test("page runtime snapshots logs when execution completes", async () => {
   const result = await new BrowserPageRuntime().execute("setTimeout(() => console.log('late'), 0); return 1", null);
   await new Promise((resolve) => setTimeout(resolve, 20));

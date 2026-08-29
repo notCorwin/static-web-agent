@@ -97,7 +97,7 @@ export class BrowserPageRuntime implements PageRuntime {
 
     const started = typeof performance === "undefined" ? Date.now() : performance.now();
     const logs: string[] = [];
-    const pageConsole: PageConsole = {};
+    const pageConsole: PageConsole = Object.create(null);
     for (const method of ["log", "info", "warn", "error", "debug"]) {
       pageConsole[method] = (...values) => {
         const line = values.map((value) => {
