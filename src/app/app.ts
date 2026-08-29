@@ -208,7 +208,6 @@ export class AgentApp {
       const endpoint = this.element<HTMLInputElement>("model-endpoint");
       card.scrollTop = 0;
       endpoint.focus({ preventScroll: true });
-      endpoint.scrollIntoView({ block: "nearest" });
     }, { signal });
 
     for (const id of ["model-endpoint", "model-name"]) {
@@ -383,12 +382,12 @@ export class AgentApp {
         this.setStatus("Run stopped by the host limit.", "error");
       } else {
         const stream = this.stream ?? { text: "", tools: [] };
-        this.stream = { ...stream, tools: retainPendingTools(stream), stopped: true, error: result.error?.message ?? "The model request failed." };
+        this.stream = { ...stream, tools: retainPendingTools(stream), error: result.error?.message ?? "The model request failed." };
         this.setStatus("Run failed. See the error above.", "error");
       }
     } catch (error) {
       if (generation === this.lifecycleGeneration) {
-        this.stream = { ...(this.stream ?? { text: "", tools: [] }), stopped: true, error: asErrorMessage(error) };
+        this.stream = { ...(this.stream ?? { text: "", tools: [] }), error: asErrorMessage(error) };
         this.setStatus("Run failed. See the error above.", "error");
       }
     } finally {
