@@ -1,6 +1,6 @@
 import type { Harness } from "../harness.js";
 import { AiSdkAdapter, type BrowserFetcher } from "../adapters/ai-sdk.js";
-import { loadConnectionSettings, saveConnectionSettings, type ConnectionSettings } from "./connection-settings.js";
+import { loadConnectionSettings, saveConnectionSettings, validateConnectionDraft, type ConnectionSettings } from "./connection-settings.js";
 
 export interface RestoredConnection {
   readonly settings?: ConnectionSettings;
@@ -30,18 +30,25 @@ export function createModelConnection(options: ModelConnectionOptions): ModelCon
       return settings === undefined ? { source: "none" } : { settings, source: "local" };
     },
     connect: async (settings) => {
+      const endpoint = Object.hasOwn(settings, "endpoint") ? settings.endpoint : undefined;
+      const modelName = Object.hasOwn(settings, "model") ? settings.model : undefined;
+      const apiKey = Object.hasOwn(settings, "apiKey") ? settings.apiKey : undefined;
+      if (typeof endpoint !== "string" || typeof modelName !== "string" || typeof apiKey !== "string") throw new Error("Invalid connection settings.");
+      const validation = validateConnectionDraft({ endpoint, model: modelName, apiKey });
+      if (validation.settings === undefined) throw new Error("Invalid connection settings.");
+      const normalized = validation.settings;
       const fetcher = configuredFetcher ?? (typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) as BrowserFetcher : undefined);
       if (fetcher === undefined) throw new Error("This browser does not provide fetch.");
       const model = new AiSdkAdapter({
         id: "openai-compatible",
-        endpoint: settings.endpoint,
-        model: settings.model,
-        ...(settings.apiKey.length === 0 ? {} : { apiKey: settings.apiKey }),
+        endpoint: normalized.endpoint,
+        model: normalized.model,
+        ...(normalized.apiKey.length === 0 ? {} : { apiKey: normalized.apiKey }),
         fetcher,
       });
       if (harness === undefined) throw new Error("A Harness is required.");
       harness.setModel(model);
-      saveConnectionSettings(settings);
+      saveConnectionSettings(normalized);
       return { saved: true };
     },
   };

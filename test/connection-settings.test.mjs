@@ -67,3 +67,21 @@ test("model connection does not inherit an optional fetcher", async () => {
     else Object.defineProperty(globalThis, "fetch", previousFetch);
   }
 });
+
+test("model connection does not inherit connection fields", async () => {
+  const settings = Object.create({ apiKey: "polluted-key" });
+  settings.endpoint = "https://example.test/v1";
+  settings.model = "demo";
+  let setModelCalls = 0;
+  let fetchCalls = 0;
+  const connection = createModelConnection({
+    harness: { setModel() { setModelCalls += 1; } },
+    fetcher: async () => {
+      fetchCalls += 1;
+      return new Response();
+    },
+  });
+  await assert.rejects(connection.connect(settings), /Invalid connection settings/);
+  assert.equal(setModelCalls, 0);
+  assert.equal(fetchCalls, 0);
+});
