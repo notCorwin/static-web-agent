@@ -101,6 +101,25 @@ test("duplicate tool call IDs are rejected before page execution", async () => {
   await harness.dispose();
 });
 
+test("streamed tool protocol failures end the run visibly", async () => {
+  const events = [];
+  const harness = await createHarness({
+    model: {
+      id: "malformed-streamed-tool",
+      async *stream() {
+        yield { type: "tool-call-delta", delta: { index: 0, id: "bad", name: "page.run", arguments: "{" } };
+        yield completed("done");
+      },
+    },
+    pageRuntime: { async execute() { throw new Error("must not execute"); } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }], onEvent: (event) => events.push(event.type) });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  assert.deepEqual(events.slice(-2), ["run-error", "run-finished"]);
+  await harness.dispose();
+});
+
 test("model transport failures end the run with a visible error", async () => {
   const events = [];
   const harness = await createHarness({

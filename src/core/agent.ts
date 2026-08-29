@@ -450,12 +450,17 @@ export class Agent {
       }
 
       if (!sawCompleted || completed === undefined) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned no completed response." }, partialMessage(streamedText.join(""), streamedCalls));
-      const calls = completed.toolCalls !== undefined && completed.toolCalls.length > 0
-        ? [...completed.toolCalls]
-        : streamedCalls.length > 0
-          ? streamedCalls
-          : completeStreamedToolCalls(streamedCallDeltas);
-      assertToolCalls(calls);
+      let calls: ToolCall[];
+      try {
+        calls = completed.toolCalls !== undefined && completed.toolCalls.length > 0
+          ? [...completed.toolCalls]
+          : streamedCalls.length > 0
+            ? streamedCalls
+            : completeStreamedToolCalls(streamedCallDeltas);
+        assertToolCalls(calls);
+      } catch (error) {
+        return fail(errorInfo(error, "MODEL_ERROR"), partialMessage(streamedText.join(""), streamedCalls));
+      }
       const content = completed.content.length > 0 ? completed.content : streamedText.join("");
       const assistant: AssistantMessage = {
         role: "assistant",
