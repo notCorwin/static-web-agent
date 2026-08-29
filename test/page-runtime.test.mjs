@@ -50,6 +50,23 @@ test("sparse arrays stay within the JSON boundary", async () => {
   assert.equal(Object.hasOwn(result.value, 0), true);
 });
 
+test("JSON validation rejects array extras and custom JSON hooks", () => {
+  const extra = [1];
+  extra.meta = true;
+  const hiddenIndex = [];
+  Object.defineProperty(hiddenIndex, "0", { value: 1, writable: true, configurable: true });
+  const arrayHook = [1];
+  Object.defineProperty(arrayHook, "toJSON", { value: () => ({ leaked: true }) });
+  const objectHook = { answer: 1 };
+  Object.defineProperty(objectHook, "toJSON", { value: () => ({ leaked: true }) });
+  assert.equal(isJsonValue(extra), false);
+  assert.equal(isJsonValue(hiddenIndex), false);
+  assert.equal(isJsonValue(arrayHook), false);
+  assert.equal(isJsonValue(objectHook), false);
+  assert.equal(validate({ type: "array", items: { type: "number" } }, extra).valid, false);
+  assert.equal(validate({ type: "object" }, objectHook).valid, false);
+});
+
 test("JSON validation treats prototype-named keys as data", () => {
   const value = JSON.parse('{"__proto__":{"ok":true}}');
   assert.equal(isJsonValue(value), true);

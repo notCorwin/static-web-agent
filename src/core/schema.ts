@@ -14,6 +14,7 @@ function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
       const prototype = Object.getPrototypeOf(value);
       if (prototype !== Object.prototype && prototype !== null) return false;
     }
+    if (hasJsonBoundaryProblem(value)) return false;
     ancestors.add(value);
     if (Array.isArray(value)) {
       for (let index = 0; index < value.length; index += 1) {
@@ -26,6 +27,15 @@ function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
     return false;
   } finally {
     ancestors.delete(value);
+  }
+}
+
+function hasJsonBoundaryProblem(value: object): boolean {
+  try {
+    return typeof (value as { readonly toJSON?: unknown }).toJSON === "function"
+      || (Array.isArray(value) && Object.keys(value).length !== value.length);
+  } catch {
+    return true;
   }
 }
 
@@ -124,7 +134,7 @@ function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], iss
     }
   }
 
-  let json = true;
+  let json = !(value !== null && typeof value === "object" && hasJsonBoundaryProblem(value));
   if (Array.isArray(value)) {
     if (schema.minItems !== undefined && value.length < schema.minItems) {
       push(issues, path, `Must contain at least ${schema.minItems} items.`, "minItems");
