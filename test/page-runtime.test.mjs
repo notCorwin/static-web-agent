@@ -15,6 +15,12 @@ test("page runtime keeps non-string console values readable", async () => {
   assert.deepEqual(result.logs, ['{"answer":42} [1,2] null']);
 });
 
+test("page runtime snapshots logs when execution completes", async () => {
+  const result = await new BrowserPageRuntime().execute("setTimeout(() => console.log('late'), 0); return 1", null);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(result.logs, []);
+});
+
 test("page runtime contains object serialization failures", async () => {
   const result = await new BrowserPageRuntime().execute("const unreadable = new Proxy({}, { ownKeys() { throw new Error('blocked') } }); console.log(unreadable); return unreadable", null);
   assert.equal(result.value, "[Unserializable]");

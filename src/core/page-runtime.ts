@@ -111,7 +111,7 @@ export class BrowserPageRuntime implements PageRuntime {
           const serialized = serialize(value);
           settled = true;
           cleanup();
-          resolve({ value: serialized, logs, durationMs: Math.round((typeof performance === "undefined" ? Date.now() : performance.now()) - started) });
+          resolve({ value: serialized, logs: [...logs], durationMs: Math.round((typeof performance === "undefined" ? Date.now() : performance.now()) - started) });
         })
         .catch((error: unknown) => {
           if (settled) return;
