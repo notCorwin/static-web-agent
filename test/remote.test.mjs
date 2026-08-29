@@ -36,6 +36,7 @@ test("the OpenAI-compatible adapter preserves exact completion endpoints", async
     ["http://example.test/chat/completions", "http://example.test/chat/completions"],
     ["http://example.test/chat/completions?tenant=one", "http://example.test/chat/completions?tenant=one"],
     ["http://example.test/custom/gateway", "http://example.test/custom/gateway"],
+    ["http://example.test/custom/gateway?tenant=one#ignored", "http://example.test/custom/gateway?tenant=one"],
   ]) {
     const { request, events } = await requestFor(endpoint);
     assert.equal(request.url, expected);

@@ -92,7 +92,10 @@ function resolveEndpoint(endpoint: string): ResolvedEndpoint {
   url.hash = "";
   const baseURL = url.toString().replace(/\/$/, "");
   const isKnownBase = originalPath === "" || originalPath === "/" || originalPath.endsWith("/v1") || originalPath.endsWith("/chat/completions");
-  return isKnownBase ? { baseURL, ...(search === undefined ? {} : { search }) } : { baseURL, directURL: new URL(endpoint).toString() };
+  if (isKnownBase) return { baseURL, ...(search === undefined ? {} : { search }) };
+  const directURL = new URL(endpoint);
+  directURL.hash = "";
+  return { baseURL, directURL: directURL.toString() };
 }
 
 function providerToolNames(tools: readonly ToolDescriptor[]): ReadonlyMap<string, string> {
