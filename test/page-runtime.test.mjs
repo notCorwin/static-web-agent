@@ -33,6 +33,20 @@ test("page runtime contains hostile Error serialization", async () => {
   assert.deepEqual(result.logs, ["[Unserializable]"]);
 });
 
+test("page runtime contains hostile thrown errors", async () => {
+  await assert.rejects(
+    new BrowserPageRuntime().execute("const error = new Error('bad'); Object.defineProperty(error, 'message', { get() { throw new Error('blocked'); } }); throw error", null),
+    (error) => error instanceof HarnessError && error.code === "PAGE_RUNTIME_EXECUTION_ERROR" && error.message === "Page JavaScript execution failed.",
+  );
+});
+
+test("page runtime contains hostile error prototypes", async () => {
+  await assert.rejects(
+    new BrowserPageRuntime().execute("const source = new Error('bad'); const error = new Proxy(source, { getPrototypeOf() { throw new Error('blocked prototype'); } }); throw error", null),
+    (error) => error instanceof HarnessError && error.code === "PAGE_RUNTIME_EXECUTION_ERROR" && error.message === "Page JavaScript execution failed.",
+  );
+});
+
 test("repeated page references are not mistaken for cycles", async () => {
   const result = await new BrowserPageRuntime().execute("const shared = { answer: 42 }; return { first: shared, second: shared };", null);
   assert.deepEqual(result.value, { first: { answer: 42 }, second: { answer: 42 } });
@@ -115,6 +129,15 @@ test("page runtime preserves an abort reason", async () => {
   const controller = new AbortController();
   controller.abort(reason);
   await assert.rejects(new BrowserPageRuntime().execute("return 1", null, { signal: controller.signal }), (error) => error === reason);
+});
+
+test("page runtime contains hostile abort reasons", async () => {
+  const source = new Error("cancel");
+  const reason = new Proxy(source, { getPrototypeOf() { throw new Error("blocked prototype"); } });
+  const controller = new AbortController();
+  const running = new BrowserPageRuntime().execute("await new Promise(() => {}); return 1", null, { signal: controller.signal });
+  controller.abort(reason);
+  await assert.rejects(running, (error) => error instanceof Error && error.name === "AbortError");
 });
 
 test("page runtime catches an abort between the initial check and listener registration", async () => {

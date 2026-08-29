@@ -4,6 +4,23 @@ import type { JsonValue, PageExecutionResult, PageRuntime } from "./types.js";
 type PageConsole = Record<string, (...values: readonly unknown[]) => void>;
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 
+function safeErrorMessage(value: unknown, fallback: string): string {
+  try {
+    const message = value instanceof Error ? value.message : undefined;
+    return typeof message === "string" && message.length > 0 ? message : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function isHarnessError(value: unknown): value is HarnessError {
+  try {
+    return value instanceof HarnessError;
+  } catch {
+    return false;
+  }
+}
+
 function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
@@ -55,7 +72,10 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
 }
 
 function abortError(signal?: AbortSignal): Error {
-  if (signal?.reason instanceof Error) return signal.reason;
+  try {
+    if (signal?.reason instanceof Error) return signal.reason;
+  } catch {
+  }
   const error = new Error("Operation cancelled.");
   error.name = "AbortError";
   return error;
@@ -89,7 +109,7 @@ export class BrowserPageRuntime implements PageRuntime {
         `"use strict"; return (async () => {\n${source}\n})()`,
       ) as typeof execute;
     } catch (error) {
-      throw new HarnessError("INVALID_PAGE_RUNTIME_INPUT", error instanceof Error ? error.message : "Page JavaScript could not be compiled.");
+      throw new HarnessError("INVALID_PAGE_RUNTIME_INPUT", safeErrorMessage(error, "Page JavaScript could not be compiled."));
     }
 
     const signal = options.signal ?? NEVER_ABORTED_SIGNAL;
@@ -117,7 +137,7 @@ export class BrowserPageRuntime implements PageRuntime {
           if (settled) return;
           settled = true;
           cleanup();
-          reject(error instanceof HarnessError ? error : new HarnessError("PAGE_RUNTIME_EXECUTION_ERROR", error instanceof Error ? error.message : "Page JavaScript execution failed."));
+          reject(isHarnessError(error) ? error : new HarnessError("PAGE_RUNTIME_EXECUTION_ERROR", safeErrorMessage(error, "Page JavaScript execution failed.")));
         });
     });
   }
