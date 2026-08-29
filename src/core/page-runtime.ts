@@ -46,6 +46,8 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
       }
     }
     return output;
+  } catch {
+    return "[Unserializable]";
   } finally {
     seen.delete(value);
   }

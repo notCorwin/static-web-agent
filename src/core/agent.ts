@@ -151,7 +151,7 @@ function assertToolCallDelta(delta: ToolCallDelta): void {
   const candidate: unknown = delta;
   if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
   const record = candidate;
-  if (!Number.isInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
+  if (!Number.isSafeInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   if (
     (record.id !== undefined && (typeof record.id !== "string" || record.id.length === 0)) ||
     (record.name !== undefined && typeof record.name !== "string") ||

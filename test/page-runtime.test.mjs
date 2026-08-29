@@ -15,6 +15,12 @@ test("page runtime keeps non-string console values readable", async () => {
   assert.deepEqual(result.logs, ['{"answer":42} [1,2] null']);
 });
 
+test("page runtime contains object serialization failures", async () => {
+  const result = await new BrowserPageRuntime().execute("const unreadable = new Proxy({}, { ownKeys() { throw new Error('blocked') } }); console.log(unreadable); return unreadable", null);
+  assert.equal(result.value, "[Unserializable]");
+  assert.deepEqual(result.logs, ["[Unserializable]"]);
+});
+
 test("repeated page references are not mistaken for cycles", async () => {
   const result = await new BrowserPageRuntime().execute("const shared = { answer: 42 }; return { first: shared, second: shared };", null);
   assert.deepEqual(result.value, { first: { answer: 42 }, second: { answer: 42 } });

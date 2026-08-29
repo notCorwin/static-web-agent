@@ -342,6 +342,24 @@ test("streamed tool calls reject changing IDs", async () => {
   await harness.dispose();
 });
 
+test("streamed tool calls reject unsafe indexes", async () => {
+  let executed = 0;
+  const harness = await createHarness({
+    model: {
+      id: "unsafe-streamed-tool-index",
+      async *stream() {
+        yield { type: "tool-call-delta", delta: { index: Number.MAX_SAFE_INTEGER + 1, name: "page.run", arguments: "{}" } };
+      },
+    },
+    pageRuntime: { async execute() { executed += 1; return { value: executed, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  assert.equal(executed, 0);
+  await harness.dispose();
+});
+
 test("max-turn limits close unexecuted tool calls for continuation", async () => {
   let executed = 0;
   const harness = await createHarness({
