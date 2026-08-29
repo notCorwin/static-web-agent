@@ -11,11 +11,11 @@ function serialize(value: unknown, seen = new WeakSet<object>()): JsonValue {
   if (typeof value === "bigint") return value.toString();
   if (typeof value === "function") return "[Function]";
   if (typeof value === "symbol") return value.toString();
-  if (value instanceof Error) return { name: value.name, message: value.message };
   if (typeof value !== "object") return String(value);
   if (seen.has(value)) return "[Circular]";
   seen.add(value);
   try {
+    if (value instanceof Error) return { name: serialize(value.name, seen), message: serialize(value.message, seen) };
     if (typeof Node !== "undefined" && value instanceof Node) {
       return {
         type: value.constructor.name,

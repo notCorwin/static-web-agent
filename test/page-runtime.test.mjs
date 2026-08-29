@@ -27,6 +27,12 @@ test("page runtime contains object serialization failures", async () => {
   assert.deepEqual(result.logs, ["[Unserializable]"]);
 });
 
+test("page runtime contains hostile Error serialization", async () => {
+  const result = await new BrowserPageRuntime().execute("const error = new Error('bad'); Object.defineProperty(error, 'message', { get() { throw new Error('blocked'); } }); console.log(error); return error", null);
+  assert.equal(result.value, "[Unserializable]");
+  assert.deepEqual(result.logs, ["[Unserializable]"]);
+});
+
 test("repeated page references are not mistaken for cycles", async () => {
   const result = await new BrowserPageRuntime().execute("const shared = { answer: 42 }; return { first: shared, second: shared };", null);
   assert.deepEqual(result.value, { first: { answer: 42 }, second: { answer: 42 } });
