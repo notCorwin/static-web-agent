@@ -287,6 +287,7 @@ try {
       empty: empty?.getBoundingClientRect().toJSON(),
       heading: heading?.getBoundingClientRect().toJSON(),
       paragraph: paragraph?.getBoundingClientRect().toJSON(),
+      paragraphText: paragraph?.textContent,
       status: status?.getBoundingClientRect().toJSON(),
       statusOverflow: status !== null && getComputedStyle(status).overflow,
     };
@@ -294,6 +295,7 @@ try {
   assert.equal(longModelLayout.pageWidth, 320);
   assert.ok(longModelLayout.empty.width <= longModelLayout.chat.width, `long model empty state must stay inside the chat width: ${JSON.stringify(longModelLayout)}`);
   assert.ok(longModelLayout.paragraph.width <= longModelLayout.chat.width, `long model copy must stay inside the chat width: ${JSON.stringify(longModelLayout)}`);
+  assert.match(longModelLayout.paragraphText, /…/, `long model copy should use a compact display label: ${JSON.stringify(longModelLayout)}`);
   assert.ok(longModelLayout.heading.top >= longModelLayout.chat.top - 1, `long model must not push the empty-state heading behind the header: ${JSON.stringify(longModelLayout)}`);
   assert.ok(longModelLayout.status.height <= 20 && longModelLayout.statusOverflow === "hidden", `long model success status must not expand the composer: ${JSON.stringify(longModelLayout)}`);
   await page.evaluate(`(() => {

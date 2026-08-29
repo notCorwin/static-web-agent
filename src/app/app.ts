@@ -15,7 +15,9 @@ interface StreamState {
 
 function displayModelName(value: string): string {
   const name = value.trim().replace(/^.*\//, "").replace(/:.*$/, "").replace(/-/g, " ");
-  return name.split(/\s+/).filter(Boolean).map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(" ") || "Connected model";
+  const display = name.split(/\s+/).filter(Boolean).map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(" ");
+  if (!display) return "Connected model";
+  return display.length > 48 ? `${display.slice(0, 47).trimEnd()}…` : display;
 }
 
 function copyable(message: ModelMessage): string | undefined {
