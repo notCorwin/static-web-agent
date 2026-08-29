@@ -293,17 +293,33 @@ async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSi
   if (parentSignal.aborted) relayAbort();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const execution = executePageTool(runtime, call, controller.signal);
+  let abortListener: (() => void) | undefined;
+  const abort = new Promise<never>((_, reject) => {
+    const onAbort = () => {
+      try {
+        throwIfAborted(parentSignal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+    parentSignal.addEventListener("abort", onAbort, { once: true });
+    if (parentSignal.aborted) onAbort();
+    abortListener = onAbort;
+  });
   try {
-    if (timeoutMs === undefined || timeoutMs === Number.POSITIVE_INFINITY) return await execution;
+    const races: Array<Promise<ToolExecutionResult>> = [execution, abort];
+    if (timeoutMs === undefined || timeoutMs === Number.POSITIVE_INFINITY) return await Promise.race(races);
     const timeout = new Promise<ToolExecutionResult>((resolve) => {
       timer = setTimeout(() => {
         controller.abort(new HarnessError("TOOL_TIMEOUT", "Page tool execution timed out."));
         resolve(errorResult("TOOL_TIMEOUT", `Page tool execution exceeded ${timeoutMs} ms.`, duration()));
       }, timeoutMs);
     });
-    return await Promise.race([execution, timeout]);
+    races.push(timeout);
+    return await Promise.race(races);
   } finally {
     parentSignal.removeEventListener("abort", relayAbort);
+    if (abortListener !== undefined) parentSignal.removeEventListener("abort", abortListener);
     if (timer !== undefined) clearTimeout(timer);
   }
 }

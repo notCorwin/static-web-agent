@@ -765,6 +765,39 @@ test("cancellation closes a tool that resolves after abort", async () => {
   await harness.dispose();
 });
 
+test("cancellation preempts an uncooperative page runtime", async () => {
+  const controller = new AbortController();
+  let resolveStarted;
+  const started = new Promise((resolve) => { resolveStarted = resolve; });
+  const harness = await createHarness({
+    model: {
+      id: "never-ending-tool",
+      async *stream() {
+        yield completed("", [{ id: "never", name: "page.run", arguments: { code: "return 1" } }]);
+      },
+    },
+    pageRuntime: {
+      execute() {
+        resolveStarted();
+        return new Promise(() => {});
+      },
+    },
+  });
+  try {
+    const running = harness.run({ messages: [{ role: "user", content: "stop" }], signal: controller.signal });
+    await started;
+    controller.abort(new Error("stop"));
+    const result = await Promise.race([
+      running,
+      new Promise((resolve) => setTimeout(() => resolve({ status: "probe-timeout" }), 50)),
+    ]);
+    assert.equal(result.status, "cancelled");
+    assert.equal(JSON.parse(result.messages.at(-1).content).code, "ABORTED");
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("completed model turns remove their cancellation listeners", async () => {
   class TrackingSignal {
     aborted = false;
