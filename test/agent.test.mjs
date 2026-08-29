@@ -1347,6 +1347,20 @@ test("a Harness without a model fails explicitly and disposal is final", async (
   await assert.rejects(harness.run({ messages: [] }), (error) => error instanceof HarnessError && error.code === "HARNESS_DISPOSED");
 });
 
+test("optional Harness settings cannot come from the prototype chain", async () => {
+  const key = "model";
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, key);
+  Object.defineProperty(Object.prototype, key, { configurable: true, value: { id: "polluted", stream: async function* () {} } });
+  try {
+    const harness = await createHarness();
+    assert.equal(harness.modelId, undefined);
+    await harness.dispose();
+  } finally {
+    if (previous === undefined) delete Object.prototype[key];
+    else Object.defineProperty(Object.prototype, key, previous);
+  }
+});
+
 test("a disposed Harness does not retain late subscribers", async () => {
   const harness = await createHarness();
   await harness.dispose();

@@ -51,11 +51,12 @@ export class Harness {
   private disposed = false;
 
   private constructor(options: HarnessOptions) {
-    if (options.model !== undefined) {
-      assertModel(options.model);
-      this.model = options.model;
+    const model = Object.hasOwn(options, "model") ? options.model : undefined;
+    if (model !== undefined) {
+      assertModel(model);
+      this.model = model;
     }
-    this.pageRuntime = options.pageRuntime ?? new BrowserPageRuntime();
+    this.pageRuntime = (Object.hasOwn(options, "pageRuntime") ? options.pageRuntime : undefined) ?? new BrowserPageRuntime();
   }
 
   private ensureActive(): void {
