@@ -160,7 +160,11 @@ export class AgentApp {
     chat.addEventListener("scroll", () => {
       this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
     }, { signal, passive: true });
-    window.addEventListener("resize", () => this.keepMessageEditVisible(), { signal });
+    window.addEventListener("resize", () => {
+      const chat = this.element("chat-log");
+      if (this.followChat) chat.scrollTop = chat.scrollHeight;
+      this.keepMessageEditVisible();
+    }, { signal });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && this.busy && !event.isComposing) {
         event.preventDefault();

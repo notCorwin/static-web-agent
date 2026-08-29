@@ -95,6 +95,8 @@ button:disabled { cursor: default; opacity: .58; }
 .trace-section h3 { margin: 0 0 5px; color: var(--faint); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .trace-section pre { max-height: 320px; margin: 0; overflow: auto; border: 1px solid var(--border); border-radius: 7px; padding: 9px 10px; background: var(--surface); color: var(--text); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .trace-code { min-height: 36px; }
+.tool-error { border-color: var(--danger); }
+.tool-error > summary, .tool-error[open] > summary { color: var(--danger); }
 .tool-error .tool-trace-body { color: var(--danger); }
 .tool-timing { margin: 0; color: var(--faint); font-size: 10px; text-align: right; }
 .streaming-run { display: grid; gap: 11px; align-self: flex-start; width: 100%; min-width: 0; }

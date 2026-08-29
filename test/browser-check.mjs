@@ -90,7 +90,9 @@ async function startServer() {
       } else {
         const code = lastUser?.content === "Cancel this run"
           ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
-          : "return { title: document.title, answer: 40 + 2 }";
+          : lastUser?.content === "Fail after tool"
+            ? "throw new Error('intentional page failure')"
+            : "return { title: document.title, answer: 40 + 2 }";
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
         response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
       }
@@ -448,6 +450,22 @@ try {
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.scrollTop"), 0, "streaming must respect a manual scroll-up");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.open"), true, "expanded tool details must survive later streaming");
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+  const scrollBeforeResize = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = chat.scrollHeight;
+    chat.dispatchEvent(new Event('scroll'));
+    return { top: chat.scrollTop, max: chat.scrollHeight - chat.clientHeight };
+  })()`);
+  assert.ok(Math.abs(scrollBeforeResize.top - scrollBeforeResize.max) < 2);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 280, height: 300, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const compactBottom = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    return { top: chat.scrollTop, max: chat.scrollHeight - chat.clientHeight };
+  })()`);
+  assert.ok(Math.abs(compactBottom.top - compactBottom.max) < 2, `a following chat should stay at the bottom after shrinking the window: ${JSON.stringify(compactBottom)}`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
   const scrollBeforeSettings = await page.evaluate(`(() => {
     const chat = document.querySelector('#chat-log');
     chat.scrollTop = chat.scrollHeight;
@@ -484,6 +502,10 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('.stream-error') !== null");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2, "failed runs should not duplicate committed tool traces");
+  await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
+  assert.equal(await page.evaluate("getComputedStyle(document.querySelector('.tool-error > summary')).color"), "rgb(180, 35, 24)", "failed tool summaries should be visibly distinct");
+  assert.equal(await page.evaluate("getComputedStyle(document.querySelector('.tool-error')).borderColor"), "rgb(180, 35, 24)", "failed tool cards should expose their error state in the border");
+  await page.send("Emulation.setEmulatedMedia", { features: [] });
 
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Use the page tool';
