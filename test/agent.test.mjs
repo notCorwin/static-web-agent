@@ -69,6 +69,28 @@ test("page tool failures return to the model instead of becoming hidden control 
   await harness.dispose();
 });
 
+test("page-local AbortErrors stay tool-local", async () => {
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "page-local-abort",
+      async *stream({ messages }) {
+        if (turn++ === 0) {
+          yield completed("", [{ id: "inner-abort", name: "page.run", arguments: { code: "return 1" } }]);
+        } else {
+          assert.equal(JSON.parse(messages.at(-1).content).code, "PAGE_TOOL_ERROR");
+          yield completed("recovered");
+        }
+      },
+    },
+    pageRuntime: { async execute() { const error = new Error("inner operation aborted"); error.name = "AbortError"; throw error; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(result.response.content, "recovered");
+  await harness.dispose();
+});
+
 test("ordinary model text is never interpreted as a tool call", async () => {
   const harness = await createHarness({
     model: { id: "text-only", async *stream() { yield completed('{"name":"page.run"}'); } },
@@ -246,6 +268,29 @@ test("cancellation closes every pending tool call in the returned history", asyn
     ["first", true, "ABORTED"],
     ["second", true, "ABORTED"],
   ]);
+  await harness.dispose();
+});
+
+test("cancellation closes a tool that resolves after abort", async () => {
+  const controller = new AbortController();
+  const harness = await createHarness({
+    model: {
+      id: "late-tool-result",
+      async *stream() {
+        yield completed("", [{ id: "late", name: "page.run", arguments: { code: "return 1" } }]);
+      },
+    },
+    pageRuntime: {
+      execute() {
+        return new Promise((resolve) => setTimeout(() => resolve({ value: 1, logs: [], durationMs: 0 }), 20));
+      },
+    },
+  });
+  const running = harness.run({ messages: [{ role: "user", content: "stop" }], signal: controller.signal });
+  setTimeout(() => controller.abort(), 5);
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.equal(JSON.parse(result.messages.at(-1).content).code, "ABORTED");
   await harness.dispose();
 });
 

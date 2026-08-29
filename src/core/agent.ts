@@ -241,11 +241,15 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
   try {
     throwIfAborted(signal);
     const result = await runtime.execute(input.code as string, input.input ?? null, { signal });
+    throwIfAborted(signal);
     if (!isPageExecutionResult(result)) return errorResult("INVALID_PAGE_RUNTIME_RESULT", "Page runtime returned an invalid result.", duration());
     return { ok: true, value: { value: result.value, logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
   } catch (error) {
-    if (signal.aborted || isAbortError(error)) throw error;
-    return { ok: false, error: errorInfo(error, "PAGE_TOOL_ERROR"), durationMs: duration() };
+    if (signal.aborted) throw error;
+    const toolError = isAbortError(error)
+      ? { code: "PAGE_TOOL_ERROR", message: error instanceof Error ? error.message || "Page tool execution failed." : "Page tool execution failed." }
+      : errorInfo(error, "PAGE_TOOL_ERROR");
+    return { ok: false, error: toolError, durationMs: duration() };
   }
 }
 
@@ -509,7 +513,7 @@ export class Agent {
         try {
           result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
         } catch (error) {
-          if (signal.aborted || isAbortError(error)) return cancelTools(index, error, true);
+          if (signal.aborted) return cancelTools(index, error, true);
           result = errorResult("PAGE_TOOL_ERROR", error instanceof Error ? error.message : "Page tool execution failed.");
         }
         appendToolResult(call, result);
