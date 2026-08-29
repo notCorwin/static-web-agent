@@ -1,260 +1,155 @@
-## Project
+# Project Charter
 
-This project is a browser-native, extensible agent runtime.
+## Identity
 
-The LLM may be remote, but all agent execution, tool orchestration, state management, storage, plugins, and runtime capabilities must execute directly inside the browser.
+This project is a minimal, browser-native Agent Harness for general
+non-programming work. It should feel like Codex or Claude Code at the runtime
+level: a user gives an Agent a goal, and the Agent can decide how to complete
+it. The browser is the execution environment, not a thin client for a hidden
+server.
 
-The long-term goal is to make the runtime maximally extensible without coupling the agent core to individual tools or providers.
+The primary product is the reusable Harness. The reference UI exists to make
+the Harness usable and observable; it must not define the core architecture.
 
-## Core Principles
+## Core contract
 
-1. **Browser-native first**
-   - Do not introduce a backend server.
-   - Do not require localhost services.
-   - Do not require browser extensions.
-   - Do not require native applications.
-   - Use standard browser capabilities whenever possible.
-2. **Keep the kernel minimal**
-   - The core should provide orchestration, tool dispatch, capability management, state, permissions, and lifecycle management.
-   - Domain-specific functionality must not be hard-coded into the kernel.
-3. **Everything is a capability**
-   - Expose functionality through explicit, typed capability interfaces.
-   - Prefer composable primitives over large specialized APIs.
-   - New browser APIs should be introducible as capabilities without changing the agent architecture.
-4. **Tools are plugins**
-   - Tools must be dynamically registerable and removable.
-   - Tool implementations must remain independent from the LLM provider.
-   - Plugins must declare the capabilities and permissions they require.
-   - Avoid adding built-in tools when the same functionality can exist as a plugin.
-5. **Runtime over tool proliferation**
-   - Prefer general execution primitives over hundreds of narrowly scoped tools.
-   - JavaScript and WebAssembly should be first-class execution targets.
-   - Sandboxed code execution must not implicitly gain privileged capabilities.
-6. **Provider independence**
-   - The agent runtime must not depend on OpenAI-, Anthropic-, Google-, or other provider-specific semantics.
-   - Normalize model messages, tool calls, streaming, errors, and usage at the provider boundary.
-   - Provider-specific features belong in adapters.
-7. **Local-first state**
-   - Persistent application state belongs in browser storage such as IndexedDB or OPFS.
-   - Do not introduce remote persistence as a requirement.
-   - Users should retain control over locally stored data.
-8. **Explicit security boundaries**
-   - Treat LLM output, tool arguments, web content, plugin code, and external data as untrusted.
-   - Privileged operations must pass through explicit capability and permission checks.
-   - Never bypass browser security mechanisms.
-   - Do not simulate capabilities that the browser does not actually provide.
+The core does only the following:
 
-## Architecture
+- accepts a provider-neutral model through one simple recommended entry point;
+- runs the model/tool loop;
+- exposes one general page-JavaScript Meta Tool by default;
+- executes formal tool calls in order;
+- streams model and tool events;
+- returns tool failures to the model as results;
+- supports cooperative cancellation and returns the final result.
 
-Prefer this dependency direction:
+The model decides its own plan, steps, and completion condition. The Harness
+must not impose a planning mode, task template, role, workflow, or domain
+prompt.
 
-```
-UI
-↓
-Agent
-↓
-Kernel
-├── Model Adapter
-├── Tool Registry
-├── Capability Manager
-├── Runtime
-├── State
-└── Plugin System
-      ↓
-Browser APIs
-```
+Only formal tool calls are executable. Never guess commands from ordinary
+model text.
 
-Dependencies should point toward abstractions rather than concrete providers or tools.
+The Meta Tool lets the model write JavaScript that runs in the Harness page
+and can use the Web APIs actually available there. It is the general extension
+mechanism for browser work; do not create one maintained wrapper or tool for
+each Web API.
 
-The kernel must not import domain-specific plugins.
+The Meta Tool returns readable text or JSON. Common non-JSON values may be
+represented by a compact summary. Do not create a hidden resource-handle,
+temporary-object, or private-workspace protocol. If the Agent needs state, it
+can use the page's own Web APIs such as `sessionStorage`, `IndexedDB`, or page
+objects.
 
-## Tool Model
+Tool failures are information for the model. The model may retry, change
+approach, or explain the failure. A model transport failure or invalid model
+response ends the run and is shown to the user.
 
-Every tool should expose a machine-readable contract containing at least:
+There are no default limits on turns, tool calls, or execution time. A host
+may add its own resource limits for its deployment, but the reference UI must
+not impose them. A synchronous infinite loop in page code may freeze the page;
+manual cancellation is not a guaranteed recovery mechanism for blocked page
+JavaScript.
 
-- name
-- description
-- input schema
-- output contract
-- required capabilities
-- execution handler
+## Trust and browser boundary
 
-Tool discovery and registration must be runtime-driven rather than based on hard-coded switch statements.
+This is a personal, trusted work environment. The page Meta Tool has the same
+page-level access as the Harness and may read or change the Harness DOM,
+browser storage, network state, and other page state. The application does
+not provide a permission manager, per-call approval, sandbox for generated
+page code, or first-run warning.
 
-Prefer:
+The project remains a static web application:
 
-```
-registry.register(tool)
-```
+- no application backend, localhost service, daemon, native helper, or browser
+  extension;
+- no remote plugin loader or online plugin marketplace;
+- no access to arbitrary host files, native processes, or other browser tabs;
+- no bypass of same-origin policy, CORS, browser permissions, user-gesture
+  requirements, CSP, or unavailable Web APIs;
+- no promise that different browsers expose the same capabilities;
+- no promise that a deployment with a strict ban on runtime-generated
+  JavaScript can provide the full Meta Tool.
 
-over:
+Remote models are requested directly from the browser. CORS, authentication,
+provider behavior, context limits, browser resources, and native permission
+prompts remain real external constraints. Page navigation is not intercepted
+by the core; the embedding host decides how navigation should affect its UI.
 
-```
-if (toolName === "foo") ...
-else if (toolName === "bar") ...
-```
+## Model and state boundaries
 
-## Capability Model
+The core remains provider-neutral. The reference UI may provide one
+OpenAI-compatible Endpoint connection, but provider-specific fields and
+behavior belong outside the core model contract.
 
-Capabilities represent privileged access to browser functionality.
+The reference UI has one active connection. It stores the Endpoint, model
+name, and key in browser-local storage and restores them automatically. This
+is convenience storage, not server-grade secret protection.
 
-Examples:
+The host or reference UI owns the current in-memory conversation. Chat
+messages are not restored after refresh or page close. The core does not own
+conversation history, branching, multi-session storage, or remote persistence.
 
-```
-network
-storage
-filesystem
-clipboard
-media
-notifications
-workers
-wasm
-ui
-```
+## Reference UI
 
-Plugins request capabilities; they do not own unrestricted access to the environment.
+Keep the UI chat-first and small. It includes:
 
-Keep policy separate from mechanism:
+- multi-turn input and output;
+- streamed model output;
+- expandable Meta Tool cards showing the complete raw code, input, result,
+  error, and timing;
+- stop/cancel with already-produced content retained and marked stopped;
+- editing a message by replacing everything after it and running again;
+- one OpenAI-compatible Endpoint, model name, and key configuration.
 
-```
-Plugin
-  ↓ requests
-Capability Manager
-  ↓ authorizes
-Capability Implementation
-  ↓
-Browser API
-```
+Do not add attachments, files, PDF, OCR, vision settings, model thinking
+controls, conversation history, multiple sessions, plugin panels, extra
+tools, separate raw-debug views, result export, or background scheduling.
 
-## Agent Loop
+## Architecture rules
 
-Keep the agent loop model-agnostic and tool-agnostic.
+Keep the public API small and make the simple Harness entry point the only
+recommended integration path. Do not expose or grow a second public platform
+around Kernel, Plugin, Capability, Processor, UI-slot, or generic tool
+registration APIs.
 
-Conceptually:
+The page executor may be a built-in/default module, but it is not a general
+plugin system. Do not add domain-specific tools, API catalogs, provider logic,
+permission layers, hidden state managers, or alternate execution runtimes to
+the core.
 
-```
-model()
-  ↓
-tool calls
-  ↓
-validate
-  ↓
-authorize
-  ↓
-execute
-  ↓
-tool results
-  ↓
-model()
-```
+Prefer Web Platform APIs and the existing standard library over dependencies.
+Delete code and abstractions before adding new ones. Do not add speculative
+configuration, compatibility layers, frameworks, or wrappers. Measure before
+keeping a performance optimization.
 
-Do not place business logic inside the loop.
+Breaking old public APIs is allowed when they conflict with this charter.
 
-The loop should support cancellation, timeouts, streaming, multiple tool calls, structured errors, and deterministic termination conditions.
+## Transitional code
 
-## Plugins
+The current repository contains transitional platform and reference-app
+features that do not define the target architecture. Do not expand them.
+Remove them progressively when implementation work resumes, including the
+old plugin/capability/permission platform, Worker runtime, attachment and
+PDF/OCR pipeline, transcript persistence, extra tools, extension UI, and
+provider-specific advanced settings.
 
-Design plugins so that third-party functionality can be added without modifying the core.
+## Validation
 
-A plugin should be able to contribute:
+Changes to the runtime must be tested at the boundary, not only by inspecting
+internal functions. At minimum, verify:
 
-- tools
-- capabilities adapters
-- model adapters
-- UI components
-- data processors
-- runtime modules
+- a formal model tool call reaches the page Meta Tool;
+- real page JavaScript can use an available Web API and return a readable
+  result;
+- multiple calls execute in order;
+- tool errors return to the model;
+- model transport errors end the run visibly;
+- streaming, manual cancellation, retained partial output, and edit/rerun
+  behavior work;
+- connection settings restore while chat history does not;
+- the static build and a real browser smoke test pass.
 
-Plugin APIs must be versioned.
-
-Do not expose internal kernel implementation details as public plugin APIs.
-
-## Interoperability
-
-Prefer open and portable interfaces.
-
-Where useful, adapters may support protocols or schemas such as:
-
-- MCP
-- OpenAPI
-- JSON Schema
-- standard HTTP APIs
-
-These are interoperability layers, not architectural foundations.
-
-The core must remain usable without them.
-
-## Browser Constraints
-
-The browser sandbox is an intentional architectural boundary.
-
-Do not design features that silently assume access to:
-
-- arbitrary shell commands
-- arbitrary host filesystem paths
-- native processes
-- unrestricted cross-origin resources
-- other browser tabs or origins
-- privileged browser APIs unavailable to normal web pages
-
-If a requested feature cannot be implemented faithfully within the browser, expose the limitation explicitly instead of introducing hidden infrastructure.
-
-## Engineering Rules
-
-- Use TypeScript for core runtime code.
-- Prefer Web Platform APIs over dependencies.
-- Add dependencies only when they provide substantial functionality that would be costly or risky to reproduce.
-- Keep public APIs small and typed.
-- Avoid global mutable state.
-- Separate interfaces from implementations.
-- Prefer dependency injection at system boundaries.
-- Keep modules independently testable.
-- Do not optimize by weakening architectural boundaries.
-
-## Testing
-
-Changes to the kernel, tool protocol, capability system, plugin API, persistence layer, or agent loop require tests.
-
-Test behavior at architectural boundaries rather than implementation details.
-
-At minimum, verify:
-
-```
-tool registration
-schema validation
-permission enforcement
-tool execution
-tool errors
-agent cancellation
-agent termination
-provider normalization
-plugin isolation
-state persistence
-```
-
-Browser-specific behavior should be tested in an actual browser environment when practical.
-
-## Before Making Architectural Changes
-
-Before introducing a new subsystem, dependency, abstraction, or privileged API, determine:
-
-1. Can this be implemented as a plugin?
-2. Can an existing capability express it?
-3. Is this browser-native?
-4. Does it couple the kernel to a provider or domain?
-5. Does it expand the trusted computing base?
-6. Is the abstraction necessary now?
-
-Prefer extending existing primitives over introducing parallel systems.
-
-## Definition of Done
-
-A change is complete only when:
-
-- the implementation works,
-- architectural boundaries remain intact,
-- relevant tests pass,
-- public types remain coherent,
-- no unnecessary dependency was introduced,
-- security implications were considered,
-- documentation is updated when a public contract changes.
+Do not add a cross-browser compatibility matrix or API-by-API test suite.
+When a requested capability is unavailable, test and report the real browser
+failure instead of simulating it.
