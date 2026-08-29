@@ -56,6 +56,11 @@ async function startServer() {
       try { body = JSON.parse(await readBody(request)); } catch { /* The adapter will report malformed provider input. */ }
       const messages = Array.isArray(body.messages) ? body.messages : [];
       const lastUser = [...messages].reverse().find((message) => message?.role === "user");
+      if (lastUser?.content === "Fail before model") {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "intentional provider failure before stream" } }));
+        return;
+      }
       if (lastUser?.content === "Fail after tool" && messages.at(-1)?.role === "tool") {
         response.writeHead(500, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: { message: "intentional provider failure" } }));
@@ -304,6 +309,22 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
   assert.deepEqual(await page.evaluate(`({ text: document.querySelector('#send-button')?.textContent, disabled: document.querySelector('#send-button')?.disabled, busy: document.querySelector('#chat-log')?.getAttribute('aria-busy') })`), { text: "Send", disabled: false, busy: "false" });
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.focus();
+    input.value = 'line with shortcut';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", modifiers: 8, windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await page.send("Input.insertText", { text: "\n" });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", modifiers: 8, windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  assert.equal(await page.evaluate("document.querySelector('#message-input')?.value"), "line with shortcut\n", "Shift+Enter should insert a newline without sending");
+  assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "Shift+Enter should not submit the message");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
   await page.evaluate("document.querySelector('#open-settings').click()");
@@ -442,6 +463,15 @@ try {
   })()`);
   assert.equal(reusedToolCall.firstOpen, true, "the original expanded tool must stay open");
   assert.equal(reusedToolCall.lastOpen, false, "a reused call ID must not expand the new tool card");
+
+  const consoleErrorsBeforeInitialFailure = page.consoleErrors.length;
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Fail before model';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.stream-error')?.textContent.includes('before stream') === true");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Run failed. See the error above.");
+  assert.deepEqual(page.consoleErrors.slice(consoleErrorsBeforeInitialFailure), [], "provider errors before the first stream must not leak to the browser console");
 
   await page.evaluate(`document.querySelector('#open-settings').click()`);
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");

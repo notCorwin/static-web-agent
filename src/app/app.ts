@@ -159,7 +159,7 @@ export class AgentApp {
         event.preventDefault();
         this.runController?.abort();
       } else if (event.key === "Enter" && !event.isComposing) {
-        if (event.metaKey || event.ctrlKey) return;
+        if (event.shiftKey || event.metaKey || event.ctrlKey) return;
         event.preventDefault();
         if (this.busy) this.runController?.abort();
         else void this.sendMessage();
