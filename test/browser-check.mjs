@@ -244,5 +244,5 @@ try {
   child.kill();
   await new Promise((resolve) => child.once("exit", resolve));
   await server.close();
-  await rm(profile, { recursive: true, force: true });
+  await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
