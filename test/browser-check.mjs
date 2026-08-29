@@ -320,6 +320,13 @@ try {
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
 
   await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Use the page tool';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
+  await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1).open = true");
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.open"), true);
+  await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Keep my place';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
@@ -331,16 +338,11 @@ try {
     return { top: chat.scrollTop, overflow: chat.scrollHeight - chat.clientHeight };
   })()`);
   assert.equal(scrollBefore.top, 0);
-  assert.ok(scrollBefore.overflow > 0);
+  assert.ok(scrollBefore.overflow > 80);
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.scrollTop"), 0, "streaming must respect a manual scroll-up");
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.open"), true, "expanded tool details must survive later streaming");
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
-
-  await page.evaluate(`(() => {
-    document.querySelector('#message-input').value = 'Use the page tool';
-    document.querySelector('#composer-form').requestSubmit();
-  })()`);
-  await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Fail during model';
     document.querySelector('#composer-form').requestSubmit();

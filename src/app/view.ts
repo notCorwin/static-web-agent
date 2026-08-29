@@ -118,6 +118,7 @@ function toolElement(
 ): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = `tool-trace${status === "finished" && (result?.ok === false || message?.isError === true) ? " tool-error" : ""}`;
+  if (call !== undefined) details.dataset.toolCallId = call.id;
   details.open = status !== "finished";
   const summary = document.createElement("summary");
   const name = call?.name ?? delta?.name?.trim() ?? "page.run";

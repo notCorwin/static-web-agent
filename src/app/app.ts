@@ -57,6 +57,10 @@ export class AgentApp {
   private runStatus = "";
   private runStatusKind: "normal" | "success" | "error" = "normal";
   private followChat = true;
+  private renderedMessages: readonly ModelMessage[] | undefined;
+  private renderedConnected: boolean | undefined;
+  private renderedEditingIndex: number | undefined;
+  private liveElement: HTMLElement | undefined;
 
   constructor(root: HTMLElement, options: AgentAppOptions = {}) {
     this.root = root;
@@ -114,6 +118,10 @@ export class AgentApp {
     this.runStatus = "";
     this.runStatusKind = "normal";
     this.followChat = true;
+    this.renderedMessages = undefined;
+    this.renderedConnected = undefined;
+    this.renderedEditingIndex = undefined;
+    this.liveElement = undefined;
     this.ready = false;
     this.root.replaceChildren();
     for (const key of Object.keys(this.elements)) Reflect.deleteProperty(this.elements, key);
@@ -444,22 +452,44 @@ export class AgentApp {
   private renderConversation(): void {
     const conversation = this.element("conversation-content");
     const chat = this.element("chat-log");
-    const shouldFollow = this.followChat;
-    conversation.replaceChildren();
     const connected = this.harness?.modelId !== undefined;
-    if (!connected) {
-      conversation.append(textElement("div", "Connect a model to start a conversation.", "empty-state"));
-    } else if (this.messages.length === 0 && this.stream === undefined) {
-      const empty = document.createElement("div");
-      empty.className = "empty-state";
-      empty.append(textElement("h2", "Ready when you are"), textElement("p", `Connected to ${displayModelName(this.harness?.modelId ?? "model")}. Ask the agent to do something.`));
-      conversation.append(empty);
-    } else {
-      conversation.append(...messageElements(this.messages, this.editingIndex));
-      const live = this.stream === undefined ? undefined : streamingElement(this.stream as StreamView);
-      if (live !== undefined) conversation.append(live);
+    const historyChanged = this.renderedMessages !== this.messages
+      || this.renderedConnected !== connected
+      || this.renderedEditingIndex !== this.editingIndex;
+
+    if (historyChanged) {
+      const openToolCallIds = new Set(
+        [...conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-id][open]")].map((details) => details.dataset.toolCallId),
+      );
+      conversation.replaceChildren();
+      if (!connected) {
+        conversation.append(textElement("div", "Connect a model to start a conversation.", "empty-state"));
+      } else if (this.messages.length === 0 && this.stream === undefined) {
+        const empty = document.createElement("div");
+        empty.className = "empty-state";
+        empty.append(textElement("h2", "Ready when you are"), textElement("p", `Connected to ${displayModelName(this.harness?.modelId ?? "model")}. Ask the agent to do something.`));
+        conversation.append(empty);
+      } else {
+        conversation.append(...messageElements(this.messages, this.editingIndex));
+      }
+      for (const details of conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-id]")) {
+        if (details.dataset.toolCallId !== undefined && openToolCallIds.has(details.dataset.toolCallId)) details.open = true;
+      }
+      this.renderedMessages = this.messages;
+      this.renderedConnected = connected;
+      this.renderedEditingIndex = this.editingIndex;
     }
-    if (shouldFollow) chat.scrollTop = chat.scrollHeight;
+
+    this.liveElement?.remove();
+    this.liveElement = undefined;
+    if (connected && this.stream !== undefined) {
+      const live = streamingElement(this.stream as StreamView);
+      if (live !== undefined) {
+        conversation.append(live);
+        this.liveElement = live;
+      }
+    }
+    if (this.followChat) chat.scrollTop = chat.scrollHeight;
   }
 
   private startMessageEdit(index: number): void {
