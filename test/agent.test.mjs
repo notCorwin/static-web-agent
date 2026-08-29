@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Agent, BrowserPageRuntime, HarnessError, createHarness, isJsonValue } from "../dist/index.js";
+import { Agent, BrowserPageRuntime, HarnessError, createHarness, errorInfo, isJsonValue, validate } from "../dist/index.js";
 
 function completed(content, toolCalls) {
   return { type: "completed", message: { role: "assistant", content, ...(toolCalls === undefined ? {} : { toolCalls }) } };
@@ -94,6 +94,14 @@ test("cyclic error details stay serializable tool results", async () => {
   await harness.dispose();
 });
 
+test("error details are copied before exposure", () => {
+  const details = { nested: { reason: "keep mutable" } };
+  const result = errorInfo(new HarnessError("PAGE_FAILURE", "bad page", details));
+  assert.deepEqual(result.details, details);
+  assert.notEqual(result.details, details);
+  assert.notEqual(result.details.nested, details.nested);
+});
+
 test("page-local AbortErrors stay tool-local", async () => {
   let turn = 0;
   const harness = await createHarness({
@@ -134,6 +142,23 @@ test("JSON validation rejects cycles without confusing repeated values", () => {
   cyclic.self = cyclic;
   assert.equal(isJsonValue(repeated), true);
   assert.equal(isJsonValue(cyclic), false);
+});
+
+test("schema validation reports hostile values instead of throwing", () => {
+  const value = new Proxy({}, { getPrototypeOf() { throw new Error("prototype probe"); } });
+  const result = validate({ type: "object" }, value);
+  assert.equal(result.valid, false);
+  assert.equal(result.issues[0].keyword, "json");
+});
+
+test("model usage records cannot be arrays", async () => {
+  const harness = await createHarness({
+    model: { id: "array-usage", async *stream() { yield { type: "usage", usage: [] }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+  await harness.dispose();
 });
 
 test("completed model events end an otherwise open stream", async () => {
@@ -444,6 +469,53 @@ test("event observers cannot mutate calls or final results", async () => {
   await harness.dispose();
 });
 
+test("async observers cannot create unhandled rejections", async () => {
+  const unhandled = [];
+  const onUnhandledRejection = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandledRejection);
+  const harness = await createHarness({
+    model: { id: "async-observers", async *stream() { yield completed("done"); } },
+  });
+  const unsubscribe = harness.subscribe(async () => { throw new Error("listener failed"); });
+  try {
+    const result = await harness.run({
+      messages: [{ role: "user", content: "go" }],
+      onEvent: async () => { throw new Error("event failed"); },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(result.status, "completed");
+    assert.deepEqual(unhandled, []);
+  } finally {
+    unsubscribe();
+    process.off("unhandledRejection", onUnhandledRejection);
+    await harness.dispose();
+  }
+});
+
+test("immutable event snapshots do not freeze caller-owned values", async () => {
+  const value = { answer: 42 };
+  const usage = { inputTokens: 1 };
+  let turn = 0;
+  const harness = await createHarness({
+    model: {
+      id: "snapshot-ownership",
+      async *stream() {
+        if (turn++ === 0) {
+          yield { type: "completed", message: { role: "assistant", content: "", toolCalls: [{ id: "value", name: "page.run", arguments: { code: "return 1" } }] }, usage };
+        } else {
+          yield { type: "completed", message: { role: "assistant", content: "done" } };
+        }
+      },
+    },
+    pageRuntime: { async execute() { return { value, logs: [], durationMs: 0 }; } },
+  });
+  const result = await harness.run({ messages: [{ role: "user", content: "run" }] });
+  assert.equal(result.status, "completed");
+  assert.equal(Object.isFrozen(value), false);
+  assert.equal(Object.isFrozen(usage), false);
+  await harness.dispose();
+});
+
 test("malformed tool history is rejected at the run boundary", async () => {
   const harness = await createHarness({ model: { id: "history-validation", async *stream() { yield completed("unused"); } } });
   const result = await harness.run({ messages: [{ role: "tool", callId: "call-1", name: "page.run", content: "{}", isError: "true" }] });
@@ -486,6 +558,26 @@ test("cancellation returns streamed partial output", async () => {
   const result = await running;
   assert.equal(result.status, "cancelled");
   assert.equal(result.partial.content, "partial");
+  await harness.dispose();
+});
+
+test("cancellation can preempt a burst without an event observer", async () => {
+  let emitted = 0;
+  const harness = await createHarness({
+    model: {
+      id: "burst-without-observer",
+      async *stream() {
+        for (; emitted < 100000; emitted += 1) yield { type: "text-delta", delta: "x" };
+        yield completed("done");
+      },
+    },
+  });
+  const controller = new AbortController();
+  const running = harness.run({ messages: [{ role: "user", content: "stop" }], signal: controller.signal });
+  setTimeout(() => controller.abort(new Error("stop")), 0);
+  const result = await running;
+  assert.equal(result.status, "cancelled");
+  assert.ok(emitted < 100000);
   await harness.dispose();
 });
 

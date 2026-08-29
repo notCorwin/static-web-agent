@@ -171,12 +171,18 @@ function validateAt(value: unknown, schema: JsonSchema, path: PathSegment[], iss
   return json;
 }
 
+function invalidJsonResult(): ValidationResult {
+  const issues: ValidationIssue[] = [];
+  push(issues, [], "Value must be valid JSON (no undefined, functions, symbols, or non-finite numbers).", "json");
+  return { valid: false, issues };
+}
+
 export function validate(schema: JsonSchema, value: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
-  if (!validateAt(value, schema, [], issues)) {
-    const jsonIssues: ValidationIssue[] = [];
-    push(jsonIssues, [], "Value must be valid JSON (no undefined, functions, symbols, or non-finite numbers).", "json");
-    return { valid: false, issues: jsonIssues };
+  try {
+    if (!validateAt(value, schema, [], issues)) return invalidJsonResult();
+  } catch {
+    return invalidJsonResult();
   }
   return { valid: issues.length === 0, issues };
 }

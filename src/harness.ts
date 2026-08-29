@@ -49,7 +49,8 @@ export class Harness {
     const snapshot = this.snapshot();
     for (const listener of this.listeners) {
       try {
-        listener(snapshot);
+        const observed = listener(snapshot) as unknown;
+        if (observed !== undefined) void Promise.resolve(observed).catch(() => undefined);
       } catch {
         // A view observer cannot change runtime lifecycle.
       }
@@ -104,7 +105,8 @@ export class Harness {
   subscribe(listener: HarnessListener): () => void {
     this.listeners.add(listener);
     try {
-      listener(this.snapshot());
+      const observed = listener(this.snapshot()) as unknown;
+      if (observed !== undefined) void Promise.resolve(observed).catch(() => undefined);
     } catch {
       // Initial observer errors are isolated just like later observer errors.
     }

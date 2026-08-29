@@ -86,7 +86,7 @@ function yieldToHost(signal: AbortSignal): Promise<void> {
 }
 
 function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined): ModelUsage | undefined {
-  if (current === undefined) return next;
+  if (current === undefined) return next === undefined ? undefined : { ...next };
   if (next === undefined) return current;
   return {
     ...(current.inputTokens !== undefined || next.inputTokens !== undefined ? { inputTokens: (current.inputTokens ?? 0) + (next.inputTokens ?? 0) } : {}),
@@ -97,6 +97,10 @@ function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined)
 
 function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function now(): number {
@@ -113,8 +117,8 @@ function abortedToolResult(error: unknown): Extract<ToolExecutionResult, { reado
 
 function assertToolCall(call: ToolCall): void {
   const candidate: unknown = call;
-  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
-  const record = candidate as Record<string, unknown>;
+  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
+  const record = candidate;
   if (
     typeof record.id !== "string" || record.id.length === 0 ||
     typeof record.name !== "string" || record.name.length === 0 ||
@@ -133,8 +137,8 @@ function assertToolCalls(calls: readonly ToolCall[]): void {
 
 function assertToolCallDelta(delta: ToolCallDelta): void {
   const candidate: unknown = delta;
-  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
-  const record = candidate as Record<string, unknown>;
+  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
+  const record = candidate;
   if (!Number.isInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   if (
     (record.id !== undefined && typeof record.id !== "string") ||
@@ -169,8 +173,8 @@ function completeStreamedToolCalls(drafts: ReadonlyMap<number, StreamedToolCallD
 
 function assertAssistant(message: AssistantMessage): void {
   const candidate: unknown = message;
-  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
-  const record = candidate as Record<string, unknown>;
+  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
+  const record = candidate;
   if (record.role !== "assistant" || typeof record.content !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   if (record.toolCalls !== undefined) {
     if (!Array.isArray(record.toolCalls)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
@@ -213,8 +217,8 @@ function assertMessages(messages: readonly ModelMessage[]): void {
 
 function assertUsage(usage: ModelUsage): void {
   const candidate: unknown = usage;
-  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
-  const record = candidate as Record<string, unknown>;
+  if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
+  const record = candidate;
   for (const key of ["inputTokens", "outputTokens", "totalTokens"]) {
     const value = record[key];
     if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
@@ -257,7 +261,7 @@ async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: Abo
     const result = await runtime.execute(input.code as string, input.input ?? null, { signal });
     throwIfAborted(signal);
     if (!isPageExecutionResult(result)) return errorResult("INVALID_PAGE_RUNTIME_RESULT", "Page runtime returned an invalid result.", duration());
-    return { ok: true, value: { value: result.value, logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
+    return { ok: true, value: { value: clone(result.value), logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
   } catch (error) {
     if (signal.aborted) throw error;
     const toolError = isAbortError(error)
@@ -425,7 +429,7 @@ export class Agent {
                 throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
             }
             if (sawCompleted) break;
-            if (request.onEvent !== undefined && ++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
+            if (++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
               eventsSinceYield = 0;
               await yieldToHost(modelController.signal);
             }
@@ -545,7 +549,8 @@ export class Agent {
 
   private emit(onEvent: AgentRunRequest["onEvent"], event: AgentEvent): void {
     try {
-      onEvent?.(event);
+      const observed = onEvent?.(event) as unknown;
+      if (observed !== undefined) void Promise.resolve(observed).catch(() => undefined);
     } catch {
       // Observers are outside the runtime contract and cannot break a run.
     }

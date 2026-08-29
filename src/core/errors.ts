@@ -28,7 +28,14 @@ export function isAbortError(value: unknown): boolean {
 }
 
 function safeDetails(value: unknown): JsonValue | undefined {
-  return isJsonValue(value) ? value : undefined;
+  if (!isJsonValue(value)) return undefined;
+  try {
+    return typeof structuredClone === "function"
+      ? structuredClone(value)
+      : JSON.parse(JSON.stringify(value)) as JsonValue;
+  } catch {
+    return undefined;
+  }
 }
 
 export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): ToolError {
