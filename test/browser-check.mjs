@@ -442,6 +442,10 @@ try {
   assert.match(JSON.stringify(tracesAfterStop[0]), /42/);
   assert.match(JSON.stringify(tracesAfterStop[1]), /MODEL_REPLACED/);
   assert.match(JSON.stringify(tracesAfterStop[2]), /ABORTED/);
+  assert.deepEqual(await page.evaluate(`(() => {
+    const trace = document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1);
+    return { summary: trace?.querySelector('summary')?.textContent, stopped: trace?.classList.contains('tool-stopped'), error: trace?.classList.contains('tool-error'), section: trace?.querySelector('.trace-section:last-of-type h3')?.textContent };
+  })()`), { summary: "page.run · stopped", stopped: true, error: false, section: "Stopped" });
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Continue after stopping';
     document.querySelector('#composer-form').requestSubmit();

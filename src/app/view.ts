@@ -109,20 +109,34 @@ function resultText(result: ToolExecutionResult | undefined, message: Extract<Mo
   return message?.content;
 }
 
+function isStoppedToolMessage(message: Extract<ModelMessage, { readonly role: "tool" }> | undefined): boolean {
+  if (message?.isError !== true) return false;
+  try {
+    const value: unknown = JSON.parse(message.content);
+    const code = typeof value === "object" && value !== null ? (value as { readonly code?: unknown }).code : undefined;
+    return code === "ABORTED" || code === "MODEL_REPLACED" || code === "MODEL_CLEARED";
+  } catch {
+    return false;
+  }
+}
+
 function toolElement(
   call: ToolCall | undefined,
   delta: ToolCallDelta | undefined,
   result: ToolExecutionResult | undefined,
   message: Extract<ModelMessage, { readonly role: "tool" }> | undefined,
   status: "preparing" | "running" | "finished",
+  stopped = false,
 ): HTMLDetailsElement {
+  const failed = result?.ok === false || message?.isError === true;
+  const isStopped = isStoppedToolMessage(message) || (stopped && result?.ok === false);
   const details = document.createElement("details");
-  details.className = `tool-trace${status === "finished" && (result?.ok === false || message?.isError === true) ? " tool-error" : ""}`;
+  details.className = `tool-trace${status === "finished" && failed && !isStopped ? " tool-error" : ""}${isStopped ? " tool-stopped" : ""}`;
   if (call !== undefined) details.dataset.toolCallId = call.id;
   details.open = status !== "finished";
   const summary = document.createElement("summary");
   const name = call?.name ?? delta?.name?.trim() ?? "page.run";
-  summary.textContent = `${name} · ${status === "preparing" ? "preparing" : status === "running" ? "running" : result?.ok === false || message?.isError === true ? "error" : "complete"}`;
+  summary.textContent = `${name} · ${status === "preparing" ? "preparing" : status === "running" ? "running" : isStopped ? "stopped" : failed ? "error" : "complete"}`;
   details.append(summary);
 
   const body = document.createElement("div");
@@ -131,7 +145,7 @@ function toolElement(
   body.append(traceSection("Code", code || "(not available yet)", true));
   body.append(traceSection("Input", call === undefined ? (delta?.arguments ?? "(preparing)") : jsonText(callInput(call)), false));
   const output = resultText(result, message);
-  if (output !== undefined) body.append(traceSection(result?.ok === false || message?.isError === true ? "Error" : "Result", output, false));
+  if (output !== undefined) body.append(traceSection(isStopped ? "Stopped" : failed ? "Error" : "Result", output, false));
   const duration = result?.durationMs ?? message?.durationMs;
   if (duration !== undefined) body.append(textElement("p", `${duration} ms`, "tool-timing"));
   details.append(body);
@@ -244,7 +258,7 @@ export function streamingElement(stream: StreamView): HTMLElement | undefined {
   const wrapper = document.createElement("div");
   wrapper.className = `streaming-run${stream.stopped === true ? " stopped" : ""}`;
   if (stream.text.length > 0) wrapper.append(textElement("div", stream.text, "message-body"));
-  for (const item of stream.tools) wrapper.append(toolElement(item.call, item.delta, item.result, undefined, item.status));
+  for (const item of stream.tools) wrapper.append(toolElement(item.call, item.delta, item.result, undefined, item.status, stream.stopped === true));
   if (stream.stopped === true) wrapper.append(textElement("p", "Stopped", "stream-status"));
   if (stream.error !== undefined) wrapper.append(textElement("p", stream.error, "stream-error"));
   return wrapper;
