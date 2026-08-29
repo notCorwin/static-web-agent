@@ -106,7 +106,15 @@ export class Harness {
     if (requestSignal?.aborted) relayAbort();
     this.activeRuns.add(controller);
     try {
-      return await new Agent(model, this.pageRuntime).run({ ...request, signal: controller.signal });
+      const forwardedRequest = {
+        ...(Object.hasOwn(request, "messages") ? { messages: request.messages } : {}),
+        ...(Object.hasOwn(request, "maxTurns") ? { maxTurns: request.maxTurns } : {}),
+        ...(Object.hasOwn(request, "modelTimeoutMs") ? { modelTimeoutMs: request.modelTimeoutMs } : {}),
+        ...(Object.hasOwn(request, "toolTimeoutMs") ? { toolTimeoutMs: request.toolTimeoutMs } : {}),
+        ...(Object.hasOwn(request, "onEvent") ? { onEvent: request.onEvent } : {}),
+        signal: controller.signal,
+      };
+      return await new Agent(model, this.pageRuntime).run(forwardedRequest as AgentRunRequest);
     } finally {
       removeAbortListener(requestSignal, relayAbort);
       this.activeRuns.delete(controller);

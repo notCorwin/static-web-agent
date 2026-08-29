@@ -965,6 +965,25 @@ test("message fields must survive the JSON clone boundary", async () => {
   await harness.dispose();
 });
 
+test("Harness preserves non-enumerable own run fields", async () => {
+  let received;
+  const harness = await createHarness({
+    model: {
+      id: "non-enumerable-request",
+      async *stream({ messages }) {
+        received = messages;
+        yield completed("done");
+      },
+    },
+  });
+  const request = {};
+  Object.defineProperty(request, "messages", { value: [{ role: "user", content: "go" }] });
+  const result = await harness.run(request);
+  assert.equal(result.status, "completed");
+  assert.equal(received[0].content, "go");
+  await harness.dispose();
+});
+
 test("message fields cannot come from the prototype chain", async () => {
   const keys = ["role", "content"];
   const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(Object.prototype, key)]));
