@@ -56,6 +56,11 @@ async function startServer() {
       try { body = JSON.parse(await readBody(request)); } catch { /* The adapter will report malformed provider input. */ }
       const messages = Array.isArray(body.messages) ? body.messages : [];
       const lastUser = [...messages].reverse().find((message) => message?.role === "user");
+      if (lastUser?.content === "Fail after tool" && messages.at(-1)?.role === "tool") {
+        response.writeHead(500, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "intentional provider failure" } }));
+        return;
+      }
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
       if (messages.at(-1)?.role === "tool") {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "done from browser" } }] })}\n\n`);
@@ -263,6 +268,13 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
+
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Fail after tool';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.stream-error') !== null");
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 1, "failed runs should not duplicate committed tool traces");
 
   await page.evaluate(`document.querySelector('#open-settings').click()`);
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");

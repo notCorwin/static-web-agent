@@ -288,18 +288,19 @@ export class AgentApp {
       });
       if (generation !== this.lifecycleGeneration) return;
       this.messages = [...result.messages];
+      const finishedToolIds = new Set(result.messages.filter((message) => message.role === "tool").map((message) => message.callId));
+      const retainPendingTools = (stream: StreamState): StreamTool[] => stream.tools.filter((item) => {
+        const id = item.call?.id ?? item.delta?.id;
+        return id === undefined || !finishedToolIds.has(id);
+      });
       if (result.status === "completed") {
         this.stream = undefined;
         this.setStatus("Response complete.", "success");
       } else if (result.status === "cancelled") {
         const stream = this.stream ?? { text: "", tools: [] };
-        const finishedToolIds = new Set(result.messages.filter((message) => message.role === "tool").map((message) => message.callId));
         this.stream = {
           ...stream,
-          tools: stream.tools.filter((item) => {
-            const id = item.call?.id ?? item.delta?.id;
-            return id === undefined || !finishedToolIds.has(id);
-          }),
+          tools: retainPendingTools(stream),
           stopped: true,
         };
         this.setStatus("Stopped. The produced content was retained above.", "error");
@@ -307,7 +308,8 @@ export class AgentApp {
         this.stream = undefined;
         this.setStatus("Run stopped by the host limit.", "error");
       } else {
-        this.stream = { ...(this.stream ?? { text: "", tools: [] }), stopped: true, error: result.error?.message ?? "The model request failed." };
+        const stream = this.stream ?? { text: "", tools: [] };
+        this.stream = { ...stream, tools: retainPendingTools(stream), stopped: true, error: result.error?.message ?? "The model request failed." };
         this.setStatus(result.error?.message ?? "The model request failed.", "error");
       }
     } catch (error) {
