@@ -474,6 +474,23 @@ test("hostile model errors still end the run visibly", async () => {
   }
 });
 
+test("hostile cancellation reasons use a safe abort error", async () => {
+  const source = new Error("cancel");
+  const reason = new Proxy(source, { getPrototypeOf() { throw new Error("blocked prototype"); } });
+  const controller = new AbortController();
+  controller.abort(reason);
+  let streamed = false;
+  const harness = await createHarness({ model: { id: "hostile-abort", async *stream() { streamed = true; yield completed("unexpected"); } } });
+  try {
+    const result = await harness.run({ messages: [{ role: "user", content: "go" }], signal: controller.signal });
+    assert.equal(result.status, "cancelled");
+    assert.deepEqual(result.error, { code: "ABORTED", message: "Operation cancelled." });
+    assert.equal(streamed, false);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("non-string error messages stay out of public run results", async () => {
   const error = new Error("provider failed");
   error.message = { unsafe: true };

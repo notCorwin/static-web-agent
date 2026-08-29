@@ -63,7 +63,17 @@ function cloneMessages(messages: readonly ModelMessage[]): ModelMessage[] {
 
 function throwIfAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
-  if (signal.reason instanceof Error) throw signal.reason;
+  let reason: unknown;
+  try {
+    reason = signal.reason;
+  } catch {
+  }
+  let isError = false;
+  try {
+    isError = reason instanceof Error;
+  } catch {
+  }
+  if (isError) throw reason as Error;
   const error = new Error("Operation cancelled.");
   error.name = "AbortError";
   throw error;

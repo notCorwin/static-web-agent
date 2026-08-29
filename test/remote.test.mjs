@@ -134,3 +134,26 @@ test("duplicate local tool names fail before the provider request", async () => 
   );
   assert.equal(called, false);
 });
+
+test("the adapter contains hostile cancellation reasons", async () => {
+  const source = new Error("cancel");
+  const reason = new Proxy(source, { getPrototypeOf() { throw new Error("blocked prototype"); } });
+  const controller = new AbortController();
+  controller.abort(reason);
+  let called = false;
+  const adapter = new AiSdkAdapter({
+    endpoint: "http://example.test/v1",
+    model: "demo",
+    fetcher: async () => {
+      called = true;
+      return response();
+    },
+  });
+  await assert.rejects(
+    (async () => {
+      for await (const _event of adapter.stream({ messages: [], tools: [], signal: controller.signal })) {}
+    })(),
+    (error) => error instanceof Error && error.name === "AbortError" && error.message === "Operation cancelled.",
+  );
+  assert.equal(called, false);
+});
