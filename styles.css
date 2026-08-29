@@ -113,6 +113,9 @@ button:disabled { cursor: default; opacity: .58; }
 .primary-button, .secondary-button { min-height: 36px; border-radius: 9px; padding: 7px 12px; font-size: 12px; font-weight: 750; }
 .primary-button { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
 .primary-button:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+@media (prefers-color-scheme: dark) {
+  .primary-button { color: #171717; }
+}
 .secondary-button { border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted); }
 .secondary-button:hover { border-color: var(--accent); color: var(--text); }
 .skip-link { position: fixed; z-index: 10; top: 8px; left: 8px; transform: translateY(-150%); border-radius: 6px; padding: 7px 10px; background: var(--text); color: var(--bg); }

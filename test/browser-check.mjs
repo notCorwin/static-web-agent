@@ -262,6 +262,9 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
   assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test. Ask the agent to do something.");
+  await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
+  assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#send-button')).color"), "rgb(23, 23, 23)", "dark theme primary buttons should use readable text");
+  await page.send("Emulation.setEmulatedMedia", { features: [] });
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
   assert.deepEqual(await page.evaluate(`({
@@ -398,6 +401,16 @@ try {
   })()`);
   await waitFor(page, "document.querySelectorAll('.message.user').length === 1 && document.querySelectorAll('.message.assistant .message-body').length === 1");
   assert.equal(await page.evaluate("document.querySelector('.message.assistant .message-body')?.textContent"), "done from browser");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "editing and rerunning should return focus to the composer");
+  await page.evaluate(`(() => {
+    document.querySelector('[data-action="edit-message"]').click();
+    document.querySelector('.message-edit textarea').value = '';
+    document.querySelector('[data-action="save-edit"]').click();
+  })()`);
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "The edited message cannot be empty.");
+  await page.evaluate("document.querySelector('[data-action=cancel-edit]').click()");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "canceling an invalid edit should restore the prior run status");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "canceling an edit should return focus to the composer");
 
   await page.send("Page.reload", { ignoreCache: true });
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
@@ -541,6 +554,16 @@ try {
   })()`);
   assert.ok(compactEditor.edit.top >= compactEditor.chat.top - 1 && compactEditor.edit.bottom <= compactEditor.chat.bottom + 1, `the compact editor stays inside the short chat viewport: ${JSON.stringify(compactEditor)}`);
   assert.ok(compactEditor.buttons.every((button) => button.top >= compactEditor.chat.top - 1 && button.bottom <= compactEditor.chat.bottom + 1), `compact edit actions stay reachable: ${JSON.stringify(compactEditor)}`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 280, height: 300, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const resizedCompactEditor = await page.evaluate(`(() => ({
+    chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
+    edit: document.querySelector('.message-edit')?.getBoundingClientRect().toJSON(),
+    buttons: [...(document.querySelector('.message-edit')?.querySelectorAll('button') ?? [])].map((node) => node.getBoundingClientRect().toJSON()),
+  }))()`);
+  assert.ok(resizedCompactEditor.edit.top >= resizedCompactEditor.chat.top - 1 && resizedCompactEditor.edit.bottom <= resizedCompactEditor.chat.bottom + 1, `the editor stays visible after shrinking the window: ${JSON.stringify(resizedCompactEditor)}`);
+  assert.ok(resizedCompactEditor.buttons.every((button) => button.top >= resizedCompactEditor.chat.top - 1 && button.bottom <= resizedCompactEditor.chat.bottom + 1), `edit actions stay reachable after shrinking the window: ${JSON.stringify(resizedCompactEditor)}`);
   await page.evaluate("document.querySelector('[data-action=\"cancel-edit\"]')?.click()");
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');

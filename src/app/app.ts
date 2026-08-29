@@ -59,6 +59,7 @@ export class AgentApp {
   private runStatus = "";
   private runStatusKind: "normal" | "success" | "error" = "normal";
   private connectionRunStatusBeforeEdit: { message: string; kind: "normal" | "success" | "error" } | undefined;
+  private messageEditRunStatusBefore: { message: string; kind: "normal" | "success" | "error" } | undefined;
   private followChat = true;
   private renderedMessages: readonly ModelMessage[] | undefined;
   private renderedConnected: boolean | undefined;
@@ -85,6 +86,7 @@ export class AgentApp {
     this.stream = undefined;
     this.runStatus = "";
     this.connectionRunStatusBeforeEdit = undefined;
+    this.messageEditRunStatusBefore = undefined;
     this.bindEvents();
 
     const harness = await createHarness();
@@ -128,6 +130,7 @@ export class AgentApp {
     this.runStatus = "";
     this.runStatusKind = "normal";
     this.connectionRunStatusBeforeEdit = undefined;
+    this.messageEditRunStatusBefore = undefined;
     this.followChat = true;
     this.renderedMessages = undefined;
     this.renderedConnected = undefined;
@@ -157,6 +160,7 @@ export class AgentApp {
     chat.addEventListener("scroll", () => {
       this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
     }, { signal, passive: true });
+    window.addEventListener("resize", () => this.keepMessageEditVisible(), { signal });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && this.busy && !event.isComposing) {
         event.preventDefault();
@@ -235,8 +239,11 @@ export class AgentApp {
           this.startMessageEdit(index);
           break;
         case "cancel-edit":
+          if (this.messageEditRunStatusBefore !== undefined) this.setStatus(this.messageEditRunStatusBefore.message, this.messageEditRunStatusBefore.kind);
+          this.messageEditRunStatusBefore = undefined;
           this.editingIndex = undefined;
           this.render();
+          this.focusComposer();
           break;
         case "save-edit": {
           const editor = button.closest<HTMLElement>(".message-edit");
@@ -546,11 +553,16 @@ export class AgentApp {
 
   private startMessageEdit(index: number): void {
     if (this.busy || this.messages[index]?.role !== "user") return;
+    this.messageEditRunStatusBefore = { message: this.runStatus, kind: this.runStatusKind };
     this.editingIndex = index;
     this.renderConversation();
-    const edit = this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${index}"] .message-edit`);
-    edit?.scrollIntoView({ block: "nearest" });
-    edit?.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
+    this.keepMessageEditVisible();
+    this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${index}"] .message-edit textarea`)?.focus({ preventScroll: true });
+  }
+
+  private keepMessageEditVisible(): void {
+    if (this.editingIndex === undefined) return;
+    this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${this.editingIndex}"] .message-edit`)?.scrollIntoView({ block: "nearest" });
   }
 
   private async resendEditedMessage(index: number, value: string): Promise<void> {
@@ -562,8 +574,10 @@ export class AgentApp {
     if (this.busy || this.messages[index]?.role !== "user") return;
     this.messages = [...this.messages.slice(0, index), { role: "user", content }];
     this.followChat = true;
+    this.messageEditRunStatusBefore = undefined;
     this.editingIndex = undefined;
     await this.runAgent();
+    this.focusComposer();
   }
 
   private setConnectionStatus(message: string): void {
