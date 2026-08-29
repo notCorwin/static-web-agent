@@ -1,14 +1,28 @@
 import type { JsonSchema, JsonValue, ValidationIssue, ValidationResult } from "./types.js";
 
 export function isJsonValue(value: unknown): value is JsonValue {
+  return isJsonValueAt(value, new WeakSet<object>());
+}
+
+function isJsonValueAt(value: unknown, ancestors: WeakSet<object>): boolean {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonValue);
   if (typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) return false;
-
-  return Object.entries(value).every(([key, item]) => key !== "__proto__" && isJsonValue(item));
+  if (ancestors.has(value)) return false;
+  try {
+    if (!Array.isArray(value)) {
+      const prototype = Object.getPrototypeOf(value);
+      if (prototype !== Object.prototype && prototype !== null) return false;
+    }
+    ancestors.add(value);
+    return Array.isArray(value)
+      ? value.every((item) => isJsonValueAt(item, ancestors))
+      : Object.entries(value).every(([key, item]) => key !== "__proto__" && isJsonValueAt(item, ancestors));
+  } catch {
+    return false;
+  } finally {
+    ancestors.delete(value);
+  }
 }
 
 function sameJson(left: unknown, right: unknown): boolean {

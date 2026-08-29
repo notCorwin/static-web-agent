@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Agent, BrowserPageRuntime, HarnessError, createHarness } from "../dist/index.js";
+import { Agent, BrowserPageRuntime, HarnessError, createHarness, isJsonValue } from "../dist/index.js";
 
 function completed(content, toolCalls) {
   return { type: "completed", message: { role: "assistant", content, ...(toolCalls === undefined ? {} : { toolCalls }) } };
@@ -100,6 +100,15 @@ test("ordinary model text is never interpreted as a tool call", async () => {
   assert.equal(result.status, "completed");
   assert.equal(events.includes("tool-started"), false);
   await harness.dispose();
+});
+
+test("JSON validation rejects cycles without confusing repeated values", () => {
+  const shared = { value: 1 };
+  const repeated = { left: shared, right: shared };
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assert.equal(isJsonValue(repeated), true);
+  assert.equal(isJsonValue(cyclic), false);
 });
 
 test("completed model events end an otherwise open stream", async () => {
