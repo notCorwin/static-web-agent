@@ -1,5 +1,5 @@
-import { KernelError } from "./errors.js";
-import type { JsonValue, JavaScriptRuntimeResult, PageRuntime } from "./types.js";
+import { HarnessError } from "./errors.js";
+import type { JsonValue, PageExecutionResult, PageRuntime } from "./types.js";
 
 type PageConsole = Record<string, (...values: readonly unknown[]) => void>;
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
@@ -53,9 +53,9 @@ function abortError(): Error {
 }
 
 export class BrowserPageRuntime implements PageRuntime {
-  async execute(code: string, input: JsonValue, options: { readonly signal?: AbortSignal } = {}): Promise<JavaScriptRuntimeResult> {
+  async execute(code: string, input: JsonValue, options: { readonly signal?: AbortSignal } = {}): Promise<PageExecutionResult> {
     const source = code.trim();
-    if (!source) throw new KernelError("INVALID_PAGE_RUNTIME_INPUT", "Page JavaScript code cannot be empty.");
+    if (!source) throw new HarnessError("INVALID_PAGE_RUNTIME_INPUT", "Page JavaScript code cannot be empty.");
     if (options.signal?.aborted) throw abortError();
 
     const started = typeof performance === "undefined" ? Date.now() : performance.now();
@@ -77,11 +77,11 @@ export class BrowserPageRuntime implements PageRuntime {
         `"use strict"; return (async () => {\n${source}\n})()`,
       ) as typeof execute;
     } catch (error) {
-      throw new KernelError("INVALID_PAGE_RUNTIME_INPUT", error instanceof Error ? error.message : "Page JavaScript could not be compiled.");
+      throw new HarnessError("INVALID_PAGE_RUNTIME_INPUT", error instanceof Error ? error.message : "Page JavaScript could not be compiled.");
     }
 
     const signal = options.signal ?? NEVER_ABORTED_SIGNAL;
-    return new Promise<JavaScriptRuntimeResult>((resolve, reject) => {
+    return new Promise<PageExecutionResult>((resolve, reject) => {
       let settled = false;
       const cleanup = () => signal.removeEventListener("abort", onAbort);
       const onAbort = () => {
@@ -104,7 +104,7 @@ export class BrowserPageRuntime implements PageRuntime {
           if (settled) return;
           settled = true;
           cleanup();
-          reject(error instanceof KernelError ? error : new KernelError("PAGE_RUNTIME_EXECUTION_ERROR", error instanceof Error ? error.message : "Page JavaScript execution failed."));
+          reject(error instanceof HarnessError ? error : new HarnessError("PAGE_RUNTIME_EXECUTION_ERROR", error instanceof Error ? error.message : "Page JavaScript execution failed."));
         });
     });
   }

@@ -1,45 +1,18 @@
 import type { JsonValue, ToolError } from "./types.js";
 
-export class KernelError extends Error {
+export class HarnessError extends Error {
   readonly code: string;
   readonly details?: JsonValue;
 
   constructor(code: string, message: string, details?: JsonValue) {
     super(message);
-    this.name = "KernelError";
+    this.name = "HarnessError";
     this.code = code;
     if (details !== undefined) this.details = details;
   }
 }
 
-export class CapabilityUnavailableError extends KernelError {
-  constructor(capability: string) {
-    super("CAPABILITY_UNAVAILABLE", `No implementation is registered for the “${capability}” capability.`, {
-      capability,
-    });
-    this.name = "CapabilityUnavailableError";
-  }
-}
-
-export class PermissionDeniedError extends KernelError {
-  constructor(pluginId: string, capability: string, reason?: string) {
-    super(
-      "CAPABILITY_DENIED",
-      `Plugin “${pluginId}” is not authorized to use the “${capability}” capability${reason ? `: ${reason}` : "."}`,
-      { pluginId, capability },
-    );
-    this.name = "PermissionDeniedError";
-  }
-}
-
-export class PluginError extends KernelError {
-  constructor(code: string, message: string, details?: JsonValue) {
-    super(code, message, details);
-    this.name = "PluginError";
-  }
-}
-
-export class ModelAdapterError extends KernelError {
+export class ModelAdapterError extends HarnessError {
   constructor(message: string, details?: JsonValue, code = "MODEL_ERROR") {
     super(code, message, details);
     this.name = "ModelAdapterError";
@@ -54,21 +27,19 @@ export function isAbortError(value: unknown): boolean {
 }
 
 export function errorInfo(value: unknown, fallbackCode = "INTERNAL_ERROR"): ToolError {
-  if (value instanceof KernelError) {
+  if (value instanceof HarnessError) {
     const result: ToolError = { code: value.code, message: value.message };
     return value.details === undefined ? result : { ...result, details: value.details };
   }
-
   if (isAbortError(value)) return { code: "ABORTED", message: "Operation cancelled." };
   if (value instanceof Error) return { code: fallbackCode, message: value.message || "Operation failed." };
   return { code: fallbackCode, message: "Operation failed." };
 }
 
 export function jsonError(error: ToolError): JsonValue {
-  const result: Record<string, JsonValue> = {
+  return {
     code: error.code,
     message: error.message,
+    ...(error.details === undefined ? {} : { details: error.details }),
   };
-  if (error.details !== undefined) result.details = error.details;
-  return result;
 }

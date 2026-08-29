@@ -30,10 +30,11 @@ prompt.
 Only formal tool calls are executable. Never guess commands from ordinary
 model text.
 
-The Meta Tool lets the model write JavaScript that runs in the Harness page
-and can use the Web APIs actually available there. It is the general extension
-mechanism for browser work; do not create one maintained wrapper or tool for
-each Web API.
+The `page.run` Meta Tool lets the model provide JavaScript that runs in the
+Harness page and can use the Web APIs actually available there. Its input is
+`{ code, input? }`; its result contains the returned JSON value, captured
+console lines, and elapsed time. It is the general extension mechanism for
+browser work; do not create one maintained wrapper or tool for each Web API.
 
 The Meta Tool returns readable text or JSON. Common non-JSON values may be
 represented by a compact summary. Do not create a hidden resource-handle,
@@ -127,12 +128,10 @@ Breaking old public APIs is allowed when they conflict with this charter.
 
 ## Transitional code
 
-The current repository contains transitional platform and reference-app
-features that do not define the target architecture. Do not expand them.
-Remove them progressively when implementation work resumes, including the
-old plugin/capability/permission platform, Worker runtime, attachment and
+The old plugin/capability/permission platform, Worker runtime, attachment and
 PDF/OCR pipeline, transcript persistence, extra tools, extension UI, and
-provider-specific advanced settings.
+provider-specific advanced settings have been removed. Do not reintroduce
+them under a new name; a future need must first fit the core contract above.
 
 ## Validation
 

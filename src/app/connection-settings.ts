@@ -1,46 +1,86 @@
-import type { JsonObject, ReasoningLevel, StateStore } from "../core/types.js";
+export const CONNECTION_SETTINGS_KEY = "static-web-agent.connection";
 
-export const CONNECTION_SETTINGS_KEY = "app:connection-settings";
-export const DEFAULT_THINKING_LEVEL: ReasoningLevel = "provider-default";
-export const THINKING_LEVELS: readonly ReasoningLevel[] = ["provider-default", "none", "minimal", "low", "medium", "high", "xhigh"];
-
-export interface ConnectionSettings extends JsonObject {
+export interface ConnectionSettings {
   readonly endpoint: string;
   readonly model: string;
   readonly apiKey: string;
-  readonly thinkingLevel: ReasoningLevel;
-  readonly supportsVision: boolean;
+}
+
+export interface ConnectionDraft {
+  readonly endpoint: string;
+  readonly model: string;
+  readonly apiKey: string;
+}
+
+export interface ConnectionFieldErrors {
+  readonly endpoint?: string;
+  readonly model?: string;
+}
+
+export interface ConnectionValidation {
+  readonly settings?: ConnectionSettings;
+  readonly errors: ConnectionFieldErrors;
+}
+
+interface StorageLike {
+  readonly getItem: (key: string) => string | null;
+  readonly setItem: (key: string, value: string) => void;
+}
+
+function localStorageOrUndefined(): StorageLike | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isThinkingLevel(value: unknown): value is ReasoningLevel {
-  return typeof value === "string" && THINKING_LEVELS.includes(value as ReasoningLevel);
-}
-
 export function isConnectionSettings(value: unknown): value is ConnectionSettings {
   return isRecord(value)
     && typeof value.endpoint === "string"
     && typeof value.model === "string"
-    && typeof value.apiKey === "string"
-    && (value.supportsVision === undefined || typeof value.supportsVision === "boolean")
-    && (value.thinkingLevel === undefined || isThinkingLevel(value.thinkingLevel));
+    && typeof value.apiKey === "string";
 }
 
-export async function loadConnectionSettings(store: StateStore): Promise<ConnectionSettings | undefined> {
-  const value = await store.get(CONNECTION_SETTINGS_KEY);
-  if (!isConnectionSettings(value)) return undefined;
-  return { ...value, thinkingLevel: value.thinkingLevel ?? DEFAULT_THINKING_LEVEL, supportsVision: value.supportsVision ?? false };
+export function loadConnectionSettings(storage: StorageLike | undefined = localStorageOrUndefined()): ConnectionSettings | undefined {
+  if (storage === undefined) return undefined;
+  try {
+    const raw = storage.getItem(CONNECTION_SETTINGS_KEY);
+    if (raw === null) return undefined;
+    const value: unknown = JSON.parse(raw);
+    return isConnectionSettings(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-export async function saveConnectionSettings(store: StateStore, settings: ConnectionSettings): Promise<void> {
-  await store.set(CONNECTION_SETTINGS_KEY, {
-    endpoint: settings.endpoint,
-    model: settings.model,
-    apiKey: settings.apiKey,
-    supportsVision: settings.supportsVision,
-    ...(isThinkingLevel(settings.thinkingLevel) ? { thinkingLevel: settings.thinkingLevel } : {}),
-  });
+export function saveConnectionSettings(settings: ConnectionSettings, storage: StorageLike | undefined = localStorageOrUndefined()): void {
+  if (storage === undefined) return;
+  try {
+    storage.setItem(CONNECTION_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Chat remains usable when browser storage is unavailable or full.
+  }
+}
+
+export function validateConnectionDraft(draft: ConnectionDraft): ConnectionValidation {
+  const endpoint = draft.endpoint.trim();
+  const model = draft.model.trim();
+  const errors: { endpoint?: string; model?: string } = {};
+  if (!endpoint) errors.endpoint = "Enter the model endpoint.";
+  else {
+    try {
+      const url = new URL(endpoint);
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
+    } catch {
+      errors.endpoint = "Use an http:// or https:// endpoint.";
+    }
+  }
+  if (!model) errors.model = "Enter a model name.";
+  if (errors.endpoint !== undefined || errors.model !== undefined) return { errors };
+  return { errors: {}, settings: { endpoint, model, apiKey: draft.apiKey } };
 }

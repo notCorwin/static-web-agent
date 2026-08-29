@@ -1,31 +1,39 @@
-import { errorInfo, isAbortError, jsonError, KernelError } from "./errors.js";
-import { isJsonValue } from "./schema.js";
-import { AgentKernel } from "./kernel.js";
+import { errorInfo, isAbortError, jsonError, HarnessError } from "./errors.js";
+import { formatIssues, isJsonValue, validate } from "./schema.js";
 import type {
   AgentEvent,
-  AgentLimits,
   AgentRunRequest,
   AgentRunResult,
   AssistantMessage,
+  JsonObject,
   JsonValue,
-  ModelAttachment,
   ModelAdapter,
   ModelEvent,
   ModelMessage,
   ModelUsage,
+  PageRuntime,
   ToolCall,
   ToolCallDelta,
-  ToolExecutionResult,
   ToolError,
+  ToolExecutionResult,
   ToolMessage,
+  ToolDescriptor,
 } from "./types.js";
 
-const DEFAULT_AGENT_LIMITS: AgentLimits = Object.freeze({
-  maxMessages: Number.POSITIVE_INFINITY,
-  maxMessageChars: Number.POSITIVE_INFINITY,
-  maxRequestChars: Number.POSITIVE_INFINITY,
-  maxToolOutputChars: Number.POSITIVE_INFINITY,
-  maxToolCallsPerTurn: Number.POSITIVE_INFINITY,
+export const PAGE_TOOL_NAME = "page.run";
+
+export const PAGE_TOOL_DESCRIPTOR: ToolDescriptor = Object.freeze({
+  name: PAGE_TOOL_NAME,
+  description: "Run JavaScript in the current Harness page. Use the real Web APIs available to this page and return a JSON-serializable value. The page is trusted, not sandboxed; no shell, native process, host filesystem, or other-tab access is provided.",
+  inputSchema: Object.freeze({
+    type: "object" as const,
+    properties: {
+      code: { type: "string" as const, minLength: 1 },
+      input: {},
+    },
+    required: ["code"],
+    additionalProperties: false,
+  }),
 });
 
 const NEVER_ABORTED_SIGNAL = new AbortController().signal;
@@ -42,7 +50,7 @@ function clone<T>(value: T): T {
 }
 
 function freeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null) return value;
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
   for (const child of Object.values(value)) freeze(child);
   return Object.freeze(value);
 }
@@ -60,7 +68,7 @@ function throwIfAborted(signal: AbortSignal): void {
 }
 
 function yieldToHost(signal: AbortSignal): Promise<void> {
-  // ponytail: MessageChannel yields without nested-timer clamping; setTimeout is the legacy fallback.
+  // ponytail: one task yield per burst keeps streaming responsive without a render scheduler in the core.
   const task = typeof MessageChannel === "function"
     ? new Promise<void>((resolve) => {
         const channel = new MessageChannel();
@@ -72,59 +80,48 @@ function yieldToHost(signal: AbortSignal): Promise<void> {
         channel.port2.postMessage(0);
       })
     : new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
-  return task.then(() => {
-    throwIfAborted(signal);
-  });
+  return task.then(() => throwIfAborted(signal));
 }
 
 function addUsage(current: ModelUsage | undefined, next: ModelUsage | undefined): ModelUsage | undefined {
   if (current === undefined) return next;
   if (next === undefined) return current;
-  const result: ModelUsage = {};
-  if (current.inputTokens !== undefined || next.inputTokens !== undefined) result.inputTokens = (current.inputTokens ?? 0) + (next.inputTokens ?? 0);
-  if (current.outputTokens !== undefined || next.outputTokens !== undefined) result.outputTokens = (current.outputTokens ?? 0) + (next.outputTokens ?? 0);
-  if (current.totalTokens !== undefined || next.totalTokens !== undefined) result.totalTokens = (current.totalTokens ?? 0) + (next.totalTokens ?? 0);
-  return result;
+  return {
+    ...(current.inputTokens !== undefined || next.inputTokens !== undefined ? { inputTokens: (current.inputTokens ?? 0) + (next.inputTokens ?? 0) } : {}),
+    ...(current.outputTokens !== undefined || next.outputTokens !== undefined ? { outputTokens: (current.outputTokens ?? 0) + (next.outputTokens ?? 0) } : {}),
+    ...(current.totalTokens !== undefined || next.totalTokens !== undefined ? { totalTokens: (current.totalTokens ?? 0) + (next.totalTokens ?? 0) } : {}),
+  };
 }
 
 function jsonString(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
-function errorResult(code: string, message: string): Extract<ToolExecutionResult, { readonly ok: false }> {
-  const error: ToolError = { code, message };
-  return { ok: false, error };
+function errorResult(code: string, message: string, durationMs = 0): Extract<ToolExecutionResult, { readonly ok: false }> {
+  return { ok: false, error: { code, message }, durationMs };
 }
 
 function assertToolCall(call: ToolCall): void {
   const candidate: unknown = call;
-  if (typeof candidate !== "object" || candidate === null) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
+  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
   const record = candidate as Record<string, unknown>;
   if (
-    typeof record.id !== "string" ||
-    record.id.length === 0 ||
-    typeof record.name !== "string" ||
-    record.name.length === 0 ||
+    typeof record.id !== "string" || record.id.length === 0 ||
+    typeof record.name !== "string" || record.name.length === 0 ||
     !isJsonValue(record.arguments)
-  ) {
-    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
-  }
+  ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
 }
 
 function assertToolCallDelta(delta: ToolCallDelta): void {
   const candidate: unknown = delta;
-  if (typeof candidate !== "object" || candidate === null) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
+  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
   const record = candidate as Record<string, unknown>;
-  if (!Number.isInteger(record.index) || Number(record.index) < 0) {
-    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
-  }
+  if (!Number.isInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   if (
     (record.id !== undefined && typeof record.id !== "string") ||
     (record.name !== undefined && typeof record.name !== "string") ||
     (record.arguments !== undefined && typeof record.arguments !== "string")
-  ) {
-    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
-  }
+  ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
 }
 
 interface StreamedToolCallDraft {
@@ -136,187 +133,120 @@ interface StreamedToolCallDraft {
 function completeStreamedToolCalls(drafts: ReadonlyMap<number, StreamedToolCallDraft>): ToolCall[] {
   return [...drafts.entries()].sort(([left], [right]) => left - right).map(([index, draft]) => {
     const name = draft.name.join("").trim();
-    if (!name) throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${index + 1} did not include a name.`);
+    if (!name) throw new HarnessError("INVALID_MODEL_OUTPUT", `Tool call ${index + 1} did not include a name.`);
     const argumentsText = draft.arguments.join("");
     let argumentsValue: unknown = {};
     if (argumentsText.trim().length > 0) {
       try {
         argumentsValue = JSON.parse(argumentsText) as unknown;
       } catch {
-        throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned malformed arguments.`);
+        throw new HarnessError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned malformed arguments.`);
       }
     }
-    if (!isJsonValue(argumentsValue)) throw new KernelError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned non-JSON arguments.`);
+    if (!isJsonValue(argumentsValue)) throw new HarnessError("INVALID_MODEL_OUTPUT", `Tool call ${name} returned non-JSON arguments.`);
     return { id: draft.id || `call-${index + 1}`, name, arguments: argumentsValue };
   });
 }
 
 function assertAssistant(message: AssistantMessage): void {
   const candidate: unknown = message;
-  if (typeof candidate !== "object" || candidate === null) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
+  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   const record = candidate as Record<string, unknown>;
-  if (record.role !== "assistant" || typeof record.content !== "string") {
-    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
-  }
-  if (record.reasoning !== undefined && typeof record.reasoning !== "string") {
-    throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned invalid reasoning text.");
-  }
+  if (record.role !== "assistant" || typeof record.content !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
   if (record.toolCalls !== undefined) {
-    if (!Array.isArray(record.toolCalls)) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
+    if (!Array.isArray(record.toolCalls)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid tool calls.");
     for (const call of record.toolCalls) assertToolCall(call as ToolCall);
   }
 }
 
-function assertMessages(messages: readonly ModelMessage[], limits: AgentLimits, validateContents = true): void {
-  if (!Array.isArray(messages) || messages.length > limits.maxMessages) {
-    throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `A run may contain at most ${limits.maxMessages} messages.`);
-  }
-  if (Number.isFinite(limits.maxRequestChars)) {
-    const serialized = JSON.stringify(messages) ?? "";
-    if (serialized.length > limits.maxRequestChars) {
-      throw new KernelError("REQUEST_LIMIT_EXCEEDED", `The model request exceeds the ${limits.maxRequestChars}-character limit.`);
-    }
-  }
-  if (!validateContents) return;
+function assertMessages(messages: readonly ModelMessage[]): void {
+  if (!Array.isArray(messages)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be an array.");
   for (const message of messages) {
-    if (!isJsonValue(message) || typeof message !== "object" || Array.isArray(message)) {
-      throw new KernelError("INVALID_MESSAGES", "Model messages must be JSON objects.");
-    }
+    if (!isJsonValue(message) || typeof message !== "object" || Array.isArray(message)) throw new HarnessError("INVALID_MESSAGES", "Model messages must be JSON objects.");
     const record = message as Record<string, unknown>;
-    if (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool") throw new KernelError("INVALID_MESSAGES", "Model messages have an invalid role.");
-    if (typeof record.content !== "string") throw new KernelError("INVALID_MESSAGES", "Every model message needs string content.");
-    if (record.role === "user" && record.attachmentIds !== undefined) {
-      if (!Array.isArray(record.attachmentIds) || record.attachmentIds.some((id) => typeof id !== "string" || id.length === 0)) {
-        throw new KernelError("INVALID_MESSAGES", "User attachment IDs must be non-empty strings.");
-      }
+    if (record.role !== "system" && record.role !== "user" && record.role !== "assistant" && record.role !== "tool") throw new HarnessError("INVALID_MESSAGES", "Model messages have an invalid role.");
+    if (typeof record.content !== "string") throw new HarnessError("INVALID_MESSAGES", "Every model message needs string content.");
+    if (record.role === "assistant") assertAssistant(message as unknown as AssistantMessage);
+    if (record.role === "tool" && (typeof record.callId !== "string" || record.callId.length === 0 || typeof record.name !== "string" || record.name.length === 0)) {
+      throw new HarnessError("INVALID_MESSAGES", "Tool messages need a call ID and name.");
     }
-    if (record.content.length > limits.maxMessageChars) {
-      throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `A model message may contain at most ${limits.maxMessageChars} characters.`);
-    }
-    if (record.role === "assistant" && record.reasoning !== undefined && typeof record.reasoning !== "string") {
-      throw new KernelError("INVALID_MESSAGES", "Assistant reasoning must be a string.");
-    }
-    if (record.role === "assistant" && typeof record.reasoning === "string" && record.reasoning.length > limits.maxMessageChars) {
-      throw new KernelError("MESSAGE_LIMIT_EXCEEDED", `Assistant reasoning may contain at most ${limits.maxMessageChars} characters.`);
-    }
-    if (record.role === "assistant" && record.toolCalls !== undefined) {
-      if (!Array.isArray(record.toolCalls)) throw new KernelError("INVALID_MESSAGES", "Assistant tool calls must be an array.");
-      for (const call of record.toolCalls) assertToolCall(call as ToolCall);
-    }
-  }
-}
-
-function assertAttachments(attachments: readonly ModelAttachment[] | undefined, messages: readonly ModelMessage[]): void {
-  const byId = new Map<string, ModelAttachment>();
-  for (const attachment of attachments ?? []) {
-    if (
-      typeof attachment !== "object" ||
-      attachment === null ||
-      typeof attachment.id !== "string" ||
-      attachment.id.length === 0 ||
-      typeof attachment.name !== "string" ||
-      attachment.name.length === 0 ||
-      typeof attachment.mediaType !== "string" ||
-      !attachment.mediaType.startsWith("image/") ||
-      !(attachment.data instanceof Uint8Array) ||
-      attachment.data.byteLength === 0
-    ) {
-      throw new KernelError("INVALID_ATTACHMENTS", "Model attachments must contain non-empty image bytes.");
-    }
-    if (byId.has(attachment.id)) throw new KernelError("INVALID_ATTACHMENTS", `Duplicate model attachment ID “${attachment.id}”.`);
-    byId.set(attachment.id, attachment);
-  }
-  for (const message of messages) {
-    if (message.role !== "user" || message.attachmentIds === undefined) continue;
-    for (const id of message.attachmentIds) {
-      if (!byId.has(id)) throw new KernelError("INVALID_ATTACHMENTS", `User message references missing attachment “${id}”.`);
+    if (record.role === "tool" && record.durationMs !== undefined && (typeof record.durationMs !== "number" || !Number.isFinite(record.durationMs) || record.durationMs < 0)) {
+      throw new HarnessError("INVALID_MESSAGES", "Tool message timing must be a non-negative number.");
     }
   }
 }
 
 function assertUsage(usage: ModelUsage): void {
   const candidate: unknown = usage;
-  if (typeof candidate !== "object" || candidate === null) throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
+  if (typeof candidate !== "object" || candidate === null) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
   const record = candidate as Record<string, unknown>;
   for (const key of ["inputTokens", "outputTokens", "totalTokens"]) {
     const value = record[key];
-    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) {
-      throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
-    }
+    if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
   }
 }
 
-function validateLimits(input: AgentLimits): void {
-  for (const [name, value] of Object.entries(input) as Array<[keyof AgentLimits, number]>) {
-    if (value === Number.POSITIVE_INFINITY) continue;
-    if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer or Infinity.`);
+function validatePositive(value: number | undefined, name: string): void {
+  if (value !== undefined && value !== Number.POSITIVE_INFINITY && (!Number.isFinite(value) || value < 1)) throw new Error(`${name} must be positive or Infinity.`);
+}
+
+function partialMessage(text: string, calls: readonly ToolCall[]): AssistantMessage | undefined {
+  if (text.length === 0 && calls.length === 0) return undefined;
+  return {
+    role: "assistant",
+    content: text,
+    ...(calls.length === 0 ? {} : { toolCalls: calls.map((call) => clone(call)) }),
+  };
+}
+
+async function executePageTool(runtime: PageRuntime, call: ToolCall, signal: AbortSignal): Promise<ToolExecutionResult> {
+  const started = typeof performance === "undefined" ? Date.now() : performance.now();
+  const duration = (): number => Math.max(0, Math.round((typeof performance === "undefined" ? Date.now() : performance.now()) - started));
+  if (call.name !== PAGE_TOOL_NAME) return errorResult("TOOL_NOT_FOUND", `Tool “${call.name}” is not available.`, duration());
+  const validation = validate(PAGE_TOOL_DESCRIPTOR.inputSchema, call.arguments);
+  if (!validation.valid) return errorResult("INVALID_TOOL_INPUT", formatIssues(validation.issues), duration());
+  const input = call.arguments as JsonObject;
+  try {
+    throwIfAborted(signal);
+    const result = await runtime.execute(input.code as string, input.input ?? null, { signal });
+    return { ok: true, value: { value: result.value, logs: [...result.logs], durationMs: result.durationMs }, durationMs: duration() };
+  } catch (error) {
+    if (signal.aborted || isAbortError(error)) throw error;
+    return { ok: false, error: errorInfo(error, "PAGE_TOOL_ERROR"), durationMs: duration() };
   }
 }
 
-async function executeWithTimeout(
-  kernel: AgentKernel,
-  call: ToolCall,
-  parentSignal: AbortSignal,
-  timeoutMs: number | undefined,
-): Promise<ToolExecutionResult> {
+async function executeWithTimeout(runtime: PageRuntime, call: ToolCall, parentSignal: AbortSignal, timeoutMs: number | undefined): Promise<ToolExecutionResult> {
   throwIfAborted(parentSignal);
   const controller = new AbortController();
   const relayAbort = () => controller.abort(parentSignal.reason);
   parentSignal.addEventListener("abort", relayAbort, { once: true });
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let onParentAbort: (() => void) | undefined;
-  const execution = kernel.executeTool(call.name, call.arguments, controller.signal).catch((error) => {
-    const info = errorInfo(error, "TOOL_ERROR");
-    return { ok: false, error: info } as ToolExecutionResult;
-  });
-  const abort = new Promise<never>((_, reject) => {
-    onParentAbort = () => {
-      const error = new Error("Operation cancelled.");
-      error.name = "AbortError";
-      reject(error);
-    };
-    parentSignal.addEventListener("abort", onParentAbort, { once: true });
-  });
-  const timeout = timeoutMs === undefined || timeoutMs === Number.POSITIVE_INFINITY
-    ? undefined
-    : new Promise<ToolExecutionResult>((resolve) => {
-        timer = setTimeout(() => {
-          controller.abort(new KernelError("TOOL_TIMEOUT", "Tool execution timed out."));
-          resolve(errorResult("TOOL_TIMEOUT", `Tool execution exceeded ${timeoutMs} ms.`));
-        }, timeoutMs);
-      });
-
+  const execution = executePageTool(runtime, call, controller.signal);
   try {
-    const races: Array<Promise<ToolExecutionResult>> = [execution, abort as Promise<ToolExecutionResult>];
-    if (timeout !== undefined) races.push(timeout);
-    return await Promise.race(races);
+    if (timeoutMs === undefined || timeoutMs === Number.POSITIVE_INFINITY) return await execution;
+    const timeout = new Promise<ToolExecutionResult>((resolve) => {
+      timer = setTimeout(() => {
+        controller.abort(new HarnessError("TOOL_TIMEOUT", "Page tool execution timed out."));
+        resolve(errorResult("TOOL_TIMEOUT", `Page tool execution exceeded ${timeoutMs} ms.`));
+      }, timeoutMs);
+    });
+    return await Promise.race([execution, timeout]);
   } finally {
     parentSignal.removeEventListener("abort", relayAbort);
-    if (onParentAbort !== undefined) parentSignal.removeEventListener("abort", onParentAbort);
     if (timer !== undefined) clearTimeout(timer);
   }
 }
 
 export class Agent {
-  private readonly model: ModelAdapter;
-  private readonly kernel: AgentKernel;
-
-  constructor(model: ModelAdapter, kernel: AgentKernel) {
-    this.model = model;
-    this.kernel = kernel;
-  }
+  constructor(private readonly model: ModelAdapter, private readonly pageRuntime: PageRuntime) {}
 
   async run(request: AgentRunRequest): Promise<AgentRunResult> {
     const id = runId();
     const signal = request.signal ?? NEVER_ABORTED_SIGNAL;
-    const maxTurns = request.maxTurns;
-    const modelTimeoutMs = request.modelTimeoutMs;
-    const toolTimeoutMs = request.toolTimeoutMs;
-    const limits: AgentLimits = { ...DEFAULT_AGENT_LIMITS, ...(request.limits ?? {}) };
-    if (maxTurns !== undefined && maxTurns !== Number.POSITIVE_INFINITY && (!Number.isInteger(maxTurns) || maxTurns < 1)) throw new Error("maxTurns must be a positive integer or Infinity.");
-    if (modelTimeoutMs !== undefined && modelTimeoutMs !== Number.POSITIVE_INFINITY && (!Number.isFinite(modelTimeoutMs) || modelTimeoutMs < 1)) throw new Error("modelTimeoutMs must be positive or Infinity.");
-    if (toolTimeoutMs !== undefined && toolTimeoutMs !== Number.POSITIVE_INFINITY && (!Number.isFinite(toolTimeoutMs) || toolTimeoutMs < 1)) throw new Error("toolTimeoutMs must be positive or Infinity.");
-    validateLimits(limits);
+    validatePositive(request.modelTimeoutMs, "modelTimeoutMs");
+    validatePositive(request.toolTimeoutMs, "toolTimeoutMs");
+    if (request.maxTurns !== undefined && request.maxTurns !== Number.POSITIVE_INFINITY && (!Number.isInteger(request.maxTurns) || request.maxTurns < 1)) throw new Error("maxTurns must be a positive integer or Infinity.");
 
     const messages: ModelMessage[] = [];
     let turns = 0;
@@ -330,6 +260,7 @@ export class Agent {
         messages: Object.freeze([...messages]),
         turns,
         ...(result.response === undefined ? {} : { response: result.response }),
+        ...(result.partial === undefined ? {} : { partial: result.partial }),
         ...(result.error === undefined ? {} : { error: result.error }),
         ...(usage === undefined ? {} : { usage }),
       };
@@ -337,14 +268,13 @@ export class Agent {
       return complete;
     };
 
-    const fail = (error: ToolError): AgentRunResult => {
+    const fail = (error: ToolError, partial?: AssistantMessage): AgentRunResult => {
       this.emit(request.onEvent, { type: "run-error", error });
-      return finish({ status: "failed", error });
+      return finish({ status: "failed", error, ...(partial === undefined ? {} : { partial }) });
     };
 
     try {
-      assertMessages(request.messages, limits);
-      assertAttachments(request.attachments, request.messages);
+      assertMessages(request.messages);
       messages.push(...cloneMessages(request.messages));
     } catch (error) {
       return fail(errorInfo(error, "INVALID_MESSAGES"));
@@ -356,221 +286,168 @@ export class Agent {
       } catch (error) {
         return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
       }
-      try {
-        assertMessages(messages, limits, false);
-      } catch (error) {
-        return fail(errorInfo(error, "MESSAGE_LIMIT_EXCEEDED"));
-      }
 
       turns += 1;
       this.emit(request.onEvent, { type: "model-started", turn: turns });
       let completed: AssistantMessage | undefined;
       const streamedText: string[] = [];
-      const streamedReasoning: string[] = [];
-      let streamedTextLength = 0;
-      let streamedReasoningLength = 0;
       const streamedCalls: ToolCall[] = [];
       const streamedCallDeltas = new Map<number, StreamedToolCallDraft>();
       let sawCompleted = false;
-
-      const descriptors = this.kernel.descriptors();
+      let iterator: AsyncIterator<ModelEvent> | undefined;
+      let timedOut = false;
       const modelController = new AbortController();
       const relayModelAbort = () => modelController.abort(signal.reason);
       signal.addEventListener("abort", relayModelAbort, { once: true });
       let modelTimer: ReturnType<typeof setTimeout> | undefined;
-      let onModelParentAbort: (() => void) | undefined;
-      let iterator: AsyncIterator<ModelEvent> | undefined;
-      let timedOut = false;
-      try {
-        const consume = (async () => {
-          const iterable = this.model.stream({
-            messages: Object.freeze([...messages]),
-            ...(request.attachments === undefined ? {} : { attachments: request.attachments }),
-            tools: descriptors,
-            signal: modelController.signal,
-          });
-          const currentIterator = iterable[Symbol.asyncIterator]();
-          iterator = currentIterator;
-          let eventsSinceYield = 0;
-          try {
-            while (true) {
-              const next = await currentIterator.next();
-              if (next.done) break;
-              throwIfAborted(signal);
-              throwIfAborted(modelController.signal);
-              const event = next.value;
-              if (typeof event !== "object" || event === null || typeof event.type !== "string") {
-                throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
-              }
-              switch (event.type) {
-                case "text-delta":
-                  if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
-                  if (event.delta.length === 0) break;
-                  streamedText.push(event.delta);
-                  streamedTextLength += event.delta.length;
-                  if (streamedTextLength > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model output is too large.");
-                  this.emit(request.onEvent, event);
-                  break;
-                case "reasoning-delta":
-                  if (typeof event.delta !== "string") throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an invalid reasoning delta.");
-                  if (event.delta.length === 0) break;
-                  streamedReasoning.push(event.delta);
-                  streamedReasoningLength += event.delta.length;
-                  if (streamedReasoningLength > limits.maxMessageChars) throw new KernelError("MODEL_OUTPUT_TOO_LARGE", "Model reasoning is too large.");
-                  this.emit(request.onEvent, event);
-                  break;
-                case "tool-call-delta": {
-                  assertToolCallDelta(event.delta);
-                  if (event.delta.id === undefined
-                    && (event.delta.name === undefined || event.delta.name.length === 0)
-                    && (event.delta.arguments === undefined || event.delta.arguments.length === 0)) break;
-                  let draft = streamedCallDeltas.get(event.delta.index);
-                  if (draft === undefined) {
-                    draft = { id: `call-${event.delta.index + 1}`, name: [], arguments: [] };
-                    streamedCallDeltas.set(event.delta.index, draft);
-                  }
-                  if (event.delta.id !== undefined) draft.id = event.delta.id;
-                  if (event.delta.name !== undefined) draft.name.push(event.delta.name);
-                  if (event.delta.arguments !== undefined) draft.arguments.push(event.delta.arguments);
-                  this.emit(request.onEvent, event);
-                  break;
+
+      const consume = (async () => {
+        const iterable = this.model.stream({ messages: Object.freeze([...messages]), tools: [PAGE_TOOL_DESCRIPTOR], signal: modelController.signal });
+        const currentIterator = iterable[Symbol.asyncIterator]();
+        iterator = currentIterator;
+        let eventsSinceYield = 0;
+        try {
+          while (true) {
+            const next = await currentIterator.next();
+            if (next.done) break;
+            throwIfAborted(signal);
+            const event: unknown = next.value;
+            if (typeof event !== "object" || event === null || typeof (event as { readonly type?: unknown }).type !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
+            switch ((event as { readonly type: string }).type) {
+              case "text-delta": {
+                const delta = (event as Extract<ModelEvent, { readonly type: "text-delta" }>).delta;
+                if (typeof delta !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
+                if (delta.length > 0) {
+                  streamedText.push(delta);
+                  this.emit(request.onEvent, { type: "text-delta", delta });
                 }
-                case "tool-call":
-                  assertToolCall(event.call);
-                  streamedCalls.push(event.call);
-                  this.emit(request.onEvent, {
-                    type: "tool-call-delta",
-                    delta: { index: streamedCalls.length - 1, id: event.call.id, name: event.call.name, arguments: JSON.stringify(event.call.arguments) },
-                  });
-                  break;
-                case "usage":
-                  assertUsage(event.usage);
-                  usage = addUsage(usage, event.usage);
-                  break;
-                case "completed":
-                  assertAssistant(event.message);
-                  completed = event.message;
-                  sawCompleted = true;
-                  if (event.usage !== undefined) {
-                    assertUsage(event.usage);
-                    usage = addUsage(usage, event.usage);
-                  }
-                  break;
-                default:
-                  throw new KernelError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
+                break;
               }
-              if (request.onEvent !== undefined && ++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
-                // Keep a bursty provider from starving the browser's paint and input tasks.
-                eventsSinceYield = 0;
-                await yieldToHost(signal);
+              case "tool-call-delta": {
+                const delta = (event as Extract<ModelEvent, { readonly type: "tool-call-delta" }>).delta;
+                assertToolCallDelta(delta);
+                if (delta.id === undefined && (delta.name === undefined || delta.name.length === 0) && (delta.arguments === undefined || delta.arguments.length === 0)) break;
+                let draft = streamedCallDeltas.get(delta.index);
+                if (draft === undefined) {
+                  draft = { id: `call-${delta.index + 1}`, name: [], arguments: [] };
+                  streamedCallDeltas.set(delta.index, draft);
+                }
+                if (delta.id !== undefined) draft.id = delta.id;
+                if (delta.name !== undefined) draft.name.push(delta.name);
+                if (delta.arguments !== undefined) draft.arguments.push(delta.arguments);
+                this.emit(request.onEvent, { type: "tool-call-delta", delta });
+                break;
               }
+              case "tool-call": {
+                const call = (event as Extract<ModelEvent, { readonly type: "tool-call" }>).call;
+                assertToolCall(call);
+                streamedCalls.push(call);
+                this.emit(request.onEvent, { type: "tool-call-delta", delta: { index: streamedCalls.length - 1, id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) } });
+                break;
+              }
+              case "usage": {
+                const current = (event as Extract<ModelEvent, { readonly type: "usage" }>).usage;
+                assertUsage(current);
+                usage = addUsage(usage, current);
+                break;
+              }
+              case "completed": {
+                const message = (event as Extract<ModelEvent, { readonly type: "completed" }>).message;
+                assertAssistant(message);
+                completed = message;
+                sawCompleted = true;
+                const currentUsage = (event as Extract<ModelEvent, { readonly type: "completed" }>).usage;
+                if (currentUsage !== undefined) {
+                  assertUsage(currentUsage);
+                  usage = addUsage(usage, currentUsage);
+                }
+                break;
+              }
+              default:
+                throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an unknown event.");
             }
-          } finally {
-            if (currentIterator.return !== undefined) await currentIterator.return();
+            if (request.onEvent !== undefined && ++eventsSinceYield >= STREAM_EVENT_YIELD_BATCH) {
+              eventsSinceYield = 0;
+              await yieldToHost(signal);
+            }
           }
-        })();
+        } finally {
+          if (currentIterator.return !== undefined) await currentIterator.return();
+        }
+      })();
+      void consume.catch(() => undefined);
+
+      try {
         const abort = new Promise<never>((_, reject) => {
-          onModelParentAbort = () => {
+          signal.addEventListener("abort", () => {
             const error = new Error("Operation cancelled.");
             error.name = "AbortError";
             reject(error);
-          };
-          signal.addEventListener("abort", onModelParentAbort, { once: true });
+          }, { once: true });
         });
-        const timeout = modelTimeoutMs === undefined || modelTimeoutMs === Number.POSITIVE_INFINITY
+        const timeout = request.modelTimeoutMs === undefined || request.modelTimeoutMs === Number.POSITIVE_INFINITY
           ? undefined
           : new Promise<never>((_, reject) => {
               modelTimer = setTimeout(() => {
                 timedOut = true;
-                modelController.abort(new KernelError("MODEL_TIMEOUT", "Model request timed out."));
+                modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
                 void iterator?.return?.();
-                reject(new KernelError("MODEL_TIMEOUT", `Model request exceeded ${modelTimeoutMs} ms.`));
-              }, modelTimeoutMs);
+                reject(new HarnessError("MODEL_TIMEOUT", `Model request exceeded ${request.modelTimeoutMs} ms.`));
+              }, request.modelTimeoutMs);
             });
         const races: Array<Promise<unknown>> = [consume, abort];
         if (timeout !== undefined) races.push(timeout);
         await Promise.race(races);
       } catch (error) {
-        if (timedOut) return fail(errorInfo(error, "MODEL_TIMEOUT"));
-        if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
-        if (isAbortError(error)) return fail(errorInfo(error, "MODEL_ERROR"));
-        return fail(errorInfo(error, "MODEL_ERROR"));
+        const partial = partialMessage(streamedText.join(""), streamedCalls);
+        if (timedOut) return fail(errorInfo(error, "MODEL_TIMEOUT"), partial);
+        if (signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED"), ...(partial === undefined ? {} : { partial }) });
+        return fail(errorInfo(error, "MODEL_ERROR"), partial);
       } finally {
         signal.removeEventListener("abort", relayModelAbort);
-        if (onModelParentAbort !== undefined) signal.removeEventListener("abort", onModelParentAbort);
         if (modelTimer !== undefined) clearTimeout(modelTimer);
-        if (timedOut) modelController.abort(new KernelError("MODEL_TIMEOUT", "Model request timed out."));
+        if (timedOut) modelController.abort(new HarnessError("MODEL_TIMEOUT", "Model request timed out."));
       }
 
-      if (!sawCompleted) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned no completed response." });
-      const calls = completed?.toolCalls === undefined || (completed.toolCalls.length === 0 && (streamedCalls.length > 0 || streamedCallDeltas.size > 0))
-        ? streamedCalls.length > 0 ? streamedCalls : completeStreamedToolCalls(streamedCallDeltas)
-        : [...completed.toolCalls];
-      if (calls.length > limits.maxToolCallsPerTurn) {
-        return fail({ code: "TOOL_CALL_LIMIT_EXCEEDED", message: `A model turn may contain at most ${limits.maxToolCallsPerTurn} tool calls.` });
-      }
-      const callIds = new Set<string>();
-      for (const call of calls) {
-        if (callIds.has(call.id)) return fail({ code: "INVALID_MODEL_OUTPUT", message: "Model returned duplicate tool call IDs." });
-        callIds.add(call.id);
-      }
-      const needsStreamedContent = completed === undefined || (completed.content.length === 0 && streamedTextLength > 0);
-      const streamedContent = needsStreamedContent ? streamedText.join("") : "";
-      const baseAssistant: AssistantMessage = completed ?? { role: "assistant", content: streamedContent };
-      // ponytail: join the append-only fallback only when completion omits the streamed body.
-      const content = baseAssistant.content.length === 0 && streamedTextLength > 0 ? streamedContent : baseAssistant.content;
-      const reasoning = streamedReasoningLength > 0
-        && (baseAssistant.reasoning === undefined || baseAssistant.reasoning.length === 0)
-        ? streamedReasoning.join("")
-        : baseAssistant.reasoning;
+      if (!sawCompleted || completed === undefined) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned no completed response." }, partialMessage(streamedText.join(""), streamedCalls));
+      const calls = completed.toolCalls !== undefined && completed.toolCalls.length > 0
+        ? [...completed.toolCalls]
+        : streamedCalls.length > 0
+          ? streamedCalls
+          : completeStreamedToolCalls(streamedCallDeltas);
+      const content = completed.content.length > 0 ? completed.content : streamedText.join("");
       const assistant: AssistantMessage = {
         role: "assistant",
         content,
-        ...(reasoning === undefined ? {} : { reasoning }),
         ...(calls.length === 0 ? {} : { toolCalls: calls.map((call) => ({ ...call, arguments: clone(call.arguments) })) }),
       };
       if (assistant.content.trim().length === 0 && calls.length === 0) return fail({ code: "EMPTY_MODEL_RESPONSE", message: "Model returned an empty response." });
-      if (assistant.content.length > limits.maxMessageChars) return fail({ code: "MODEL_OUTPUT_TOO_LARGE", message: "Model output is too large." });
       const immutableAssistant = freeze(assistant);
       messages.push(immutableAssistant);
       this.emit(request.onEvent, { type: "assistant-message", message: immutableAssistant });
 
       if (calls.length === 0) return finish({ status: "completed", response: immutableAssistant });
-      if (maxTurns !== undefined && turns >= maxTurns) return finish({ status: "max-turns", response: immutableAssistant });
+      if (request.maxTurns !== undefined && turns >= request.maxTurns) return finish({ status: "max-turns", response: immutableAssistant });
 
-      let executed: readonly { readonly call: ToolCall; readonly result: ToolExecutionResult }[];
-      try {
-        executed = await Promise.all(calls.map(async (call) => {
-          throwIfAborted(signal);
-          this.emit(request.onEvent, { type: "tool-started", call });
-          let result: ToolExecutionResult;
-          try {
-            result = await executeWithTimeout(this.kernel, call, signal, toolTimeoutMs);
-          } catch (error) {
-            if (isAbortError(error) || signal.aborted) throw error;
-            result = errorResult("TOOL_ERROR", error instanceof Error ? error.message : "Tool execution failed.");
-          }
-          this.emit(request.onEvent, { type: "tool-finished", call, result });
-          return { call, result };
-        }));
-      } catch (error) {
-        if (isAbortError(error) || signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
-        return fail(errorInfo(error, "TOOL_ERROR"));
-      }
-
-      for (const { call, result } of executed) {
+      for (const call of calls) {
         try {
-          const toolMessage: ToolMessage = result.ok
-            ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value) }
-            : { role: "tool", callId: call.id, name: call.name, content: jsonString({ error: jsonError(result.error) }), isError: true };
-          messages.push(Object.freeze(toolMessage));
-          assertMessages(messages, limits, false);
-          if (!result.ok && result.error.code === "TOOL_TIMEOUT") return fail(result.error);
+          throwIfAborted(signal);
         } catch (error) {
-          if (isAbortError(error) || signal.aborted) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
-          if (error instanceof KernelError && ["MESSAGE_LIMIT_EXCEEDED", "REQUEST_LIMIT_EXCEEDED"].includes(error.code)) return fail(errorInfo(error, error.code));
-          return fail(errorInfo(error, "TOOL_ERROR"));
+          return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
         }
+        this.emit(request.onEvent, { type: "tool-started", call });
+        let result: ToolExecutionResult;
+        try {
+          result = await executeWithTimeout(this.pageRuntime, call, signal, request.toolTimeoutMs);
+        } catch (error) {
+          if (signal.aborted || isAbortError(error)) return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
+          result = errorResult("PAGE_TOOL_ERROR", error instanceof Error ? error.message : "Page tool execution failed.");
+        }
+        this.emit(request.onEvent, { type: "tool-finished", call, result });
+        const toolMessage: ToolMessage = result.ok
+          ? { role: "tool", callId: call.id, name: call.name, content: jsonString(result.value as JsonObject), durationMs: result.durationMs }
+          : { role: "tool", callId: call.id, name: call.name, content: jsonString(jsonError(result.error)), isError: true, durationMs: result.durationMs };
+        messages.push(Object.freeze(toolMessage));
       }
     }
   }
@@ -579,7 +456,7 @@ export class Agent {
     try {
       onEvent?.(event);
     } catch {
-      // Observer failures must not interrupt an agent run.
+      // Observers are outside the runtime contract and cannot break a run.
     }
   }
 }
