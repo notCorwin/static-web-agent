@@ -964,6 +964,32 @@ test("message fields cannot come from the prototype chain", async () => {
   }
 });
 
+test("model event fields cannot come from the prototype chain", async () => {
+  const keys = ["type", "delta"];
+  const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(Object.prototype, key)]));
+  Object.defineProperty(Object.prototype, "type", { configurable: true, value: "text-delta" });
+  Object.defineProperty(Object.prototype, "delta", { configurable: true, value: "polluted" });
+  try {
+    for (const event of [{ type: "text-delta" }, {}]) {
+      const harness = await createHarness({ model: { id: "inherited-event", async *stream() { yield event; } } });
+      try {
+        const result = await harness.run({ messages: [{ role: "user", content: "go" }] });
+        assert.equal(result.status, "failed");
+        assert.equal(result.error.code, "INVALID_MODEL_OUTPUT");
+        assert.equal(result.partial, undefined);
+      } finally {
+        await harness.dispose();
+      }
+    }
+  } finally {
+    for (const key of keys) {
+      const descriptor = previous.get(key);
+      if (descriptor === undefined) delete Object.prototype[key];
+      else Object.defineProperty(Object.prototype, key, descriptor);
+    }
+  }
+});
+
 test("tool history requires matching preceding calls", async () => {
   for (const messages of [
     [{ role: "user", content: "go" }, { role: "tool", callId: "missing", name: "page.run", content: "{}" }],

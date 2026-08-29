@@ -205,10 +205,13 @@ function assertToolCallDelta(delta: ToolCallDelta): void {
   const candidate: unknown = delta;
   if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
   const record = candidate;
-  if (!Number.isSafeInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
+  if (!hasEnumerableOwn(record, "index") || !Number.isSafeInteger(record.index) || Number(record.index) < 0) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call index.");
   if (
+    (("id" in record) && !hasEnumerableOwn(record, "id")) ||
     (record.id !== undefined && (typeof record.id !== "string" || record.id.length === 0)) ||
+    (("name" in record) && !hasEnumerableOwn(record, "name")) ||
     (record.name !== undefined && typeof record.name !== "string") ||
+    (("arguments" in record) && !hasEnumerableOwn(record, "arguments")) ||
     (record.arguments !== undefined && typeof record.arguments !== "string")
   ) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
 }
@@ -286,6 +289,7 @@ function assertUsage(usage: ModelUsage): void {
   if (!isRecord(candidate)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
   const record = candidate;
   for (const key of ["inputTokens", "outputTokens", "totalTokens"]) {
+    if (key in record && !hasEnumerableOwn(record, key)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
     const value = record[key];
     if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0)) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
   }
@@ -456,11 +460,11 @@ export class Agent {
             if (next.done) break;
             throwIfAborted(modelController.signal);
             const event: unknown = next.value;
-            if (typeof event !== "object" || event === null || typeof (event as { readonly type?: unknown }).type !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
-            switch ((event as { readonly type: string }).type) {
+            if (!isRecord(event) || !hasEnumerableOwn(event, "type") || typeof event.type !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid event.");
+            switch (event.type) {
               case "text-delta": {
-                const delta = (event as Extract<ModelEvent, { readonly type: "text-delta" }>).delta;
-                if (typeof delta !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
+                if (!hasEnumerableOwn(event, "delta") || typeof event.delta !== "string") throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid text delta.");
+                const delta = event.delta;
                 if (delta.length > 0) {
                   streamedText.push(delta);
                   this.emit(request.onEvent, { type: "text-delta", delta });
@@ -468,7 +472,8 @@ export class Agent {
                 break;
               }
               case "tool-call-delta": {
-                const delta = (event as Extract<ModelEvent, { readonly type: "tool-call-delta" }>).delta;
+                if (!hasEnumerableOwn(event, "delta")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool-call delta.");
+                const delta = event.delta as ToolCallDelta;
                 assertToolCallDelta(delta);
                 if (delta.id === undefined && (delta.name === undefined || delta.name.length === 0) && (delta.arguments === undefined || delta.arguments.length === 0)) break;
                 let draft = streamedCallDeltas.get(delta.index);
@@ -486,20 +491,24 @@ export class Agent {
                 break;
               }
               case "tool-call": {
-                const call = (event as Extract<ModelEvent, { readonly type: "tool-call" }>).call;
+                if (!hasEnumerableOwn(event, "call")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid tool call.");
+                const call = event.call as ToolCall;
                 assertToolCall(call);
                 streamedCalls.push(snapshotToolCall(call));
                 this.emit(request.onEvent, { type: "tool-call-delta", delta: { index: streamedCalls.length - 1, id: call.id, name: call.name, arguments: JSON.stringify(call.arguments) } });
                 break;
               }
               case "usage": {
-                const current = (event as Extract<ModelEvent, { readonly type: "usage" }>).usage;
+                if (!hasEnumerableOwn(event, "usage")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
+                const current = event.usage as ModelUsage;
                 assertUsage(current);
                 usage = addUsage(usage, current);
                 break;
               }
               case "completed": {
-                const message = (event as Extract<ModelEvent, { readonly type: "completed" }>).message;
+                if (!hasEnumerableOwn(event, "message")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned an invalid assistant message.");
+                if ("usage" in event && !hasEnumerableOwn(event, "usage")) throw new HarnessError("INVALID_MODEL_OUTPUT", "Model returned invalid usage data.");
+                const message = event.message as AssistantMessage;
                 assertAssistant(message);
                 completed = snapshotAssistant(message);
                 if (streamedText.length === 0 && message.content.length > 0) {
@@ -507,7 +516,7 @@ export class Agent {
                   this.emit(request.onEvent, { type: "text-delta", delta: message.content });
                 }
                 sawCompleted = true;
-                const currentUsage = (event as Extract<ModelEvent, { readonly type: "completed" }>).usage;
+                const currentUsage = event.usage as ModelUsage | undefined;
                 if (currentUsage !== undefined) {
                   assertUsage(currentUsage);
                   usage = addUsage(usage, currentUsage);
