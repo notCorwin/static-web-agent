@@ -67,7 +67,11 @@ async function startServer() {
         return;
       }
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      if (lastUser?.content === "Keep my place") {
+      if (lastUser?.content === "Recover after failure") {
+        response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "recovered after failure" } }] })}\n\n`);
+        response.end('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n');
+        return;
+      } else if (lastUser?.content === "Keep my place") {
         let index = 0;
         const write = () => {
           if (index < 80) {
@@ -933,7 +937,7 @@ try {
     document.querySelector('#message-input').value = 'Fail during model';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('.stream-error') !== null");
+  await waitFor(page, "[...document.querySelectorAll('.stream-error')].at(-1)?.textContent === 'intentional model failure'");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Run failed. See the error above.");
   const tracesAfterModelFailure = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => ({
     summary: trace.querySelector('summary')?.textContent,
@@ -947,8 +951,8 @@ try {
     document.querySelector('#message-input').value = 'Fail after tool';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('.stream-error') !== null");
-  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 2, "failed runs should not duplicate committed tool traces");
+  await waitFor(page, "[...document.querySelectorAll('.stream-error')].at(-1)?.textContent === 'intentional provider failure'");
+  assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), tracesAfterModelFailure.length + 1, "failed runs should retain each attempted tool once");
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
   assert.equal(await page.evaluate("getComputedStyle(document.querySelector('.tool-error > summary')).color"), "rgb(180, 35, 24)", "failed tool summaries should be visibly distinct");
   assert.equal(await page.evaluate("getComputedStyle(document.querySelector('.tool-error')).borderColor"), "rgb(180, 35, 24)", "failed tool cards should expose their error state in the border");
@@ -999,11 +1003,26 @@ try {
     document.querySelector('#message-input').value = 'Fail before model';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('.stream-error')?.textContent.includes('before stream') === true");
+  await waitFor(page, "[...document.querySelectorAll('.stream-error')].at(-1)?.textContent.includes('before stream') === true");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Run failed. See the error above.");
-  assert.equal(await page.evaluate("document.querySelector('.stream-status')"), null, "failed runs should not be labeled as stopped");
-  assert.equal(await page.evaluate("document.querySelector('.streaming-run')?.classList.contains('stopped')"), false, "failed runs should not use the stopped visual state");
+  assert.equal(await page.evaluate("[...document.querySelectorAll('.streaming-run')].at(-1)?.querySelector('.stream-status')"), null, "failed runs should not be labeled as stopped");
+  assert.equal(await page.evaluate("[...document.querySelectorAll('.streaming-run')].at(-1)?.classList.contains('stopped')"), false, "failed runs should not use the stopped visual state");
   assert.deepEqual(page.consoleErrors.slice(consoleErrorsBeforeInitialFailure), [], "provider errors before the first stream must not leak to the browser console");
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Recover after failure';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent === 'recovered after failure'");
+  const retainedFailure = await page.evaluate(`(() => {
+    const order = [...document.querySelector('#conversation-content').children].map((node) => node.classList.contains('streaming-run') ? node.textContent : node.querySelector('.message-body')?.textContent ?? '');
+    return { order, errors: [...document.querySelectorAll('.stream-error')].map((node) => node.textContent), status: document.querySelector('#run-status')?.textContent };
+  })()`);
+  const failedPrompt = retainedFailure.order.indexOf("Fail before model");
+  const retainedError = retainedFailure.order.indexOf("intentional provider failure before stream");
+  const recoveryPrompt = retainedFailure.order.indexOf("Recover after failure");
+  assert.ok(failedPrompt >= 0 && failedPrompt < retainedError && retainedError < recoveryPrompt, `a failed run should remain between its prompt and the follow-up: ${JSON.stringify(retainedFailure)}`);
+  assert.equal(retainedFailure.errors.at(-1), "intentional provider failure before stream");
+  assert.equal(retainedFailure.status, "Response complete.");
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "light" }] });
   assert.equal(await page.evaluate("getComputedStyle(document.querySelector('.message-action')).color"), "rgb(112, 112, 112)", "message actions should remain readable in the light theme");
   await page.send("Emulation.setEmulatedMedia", { features: [] });
@@ -1019,8 +1038,8 @@ try {
     document.querySelector('#message-input').value = 'Show the provider error';
     document.querySelector('#composer-form').requestSubmit();
   })()`);
-  await waitFor(page, "document.querySelector('.stream-error') !== null");
-  assert.match(await page.evaluate("document.querySelector('.stream-error')?.textContent"), /Not Found|failed|error/i);
+  await waitFor(page, "[...document.querySelectorAll('.stream-error')].at(-1)?.textContent.length > 0");
+  assert.match(await page.evaluate("[...document.querySelectorAll('.stream-error')].at(-1)?.textContent"), /Not Found|failed|error/i);
 
   await page.send("Emulation.setDeviceMetricsOverride", { width: 280, height: 300, deviceScaleFactor: 1, mobile: false });
   await page.evaluate("document.querySelector('#open-settings').click()");

@@ -457,7 +457,7 @@ export class AgentApp {
       input.focus();
       return;
     }
-    this.retainStoppedStream();
+    this.retainEndedStream();
     this.messages = [...this.messages, { role: "user", content }];
     this.followChat = true;
     input.value = "";
@@ -509,12 +509,13 @@ export class AgentApp {
       } else {
         const stream = this.stream ?? { text: "", tools: [] };
         this.stream = { ...stream, tools: retainPendingTools(stream), error: result.error?.message ?? "The model request failed." };
-        this.streamAnchor = undefined;
+        this.streamAnchor = this.messages.length - 1;
         this.setStatus("Run failed. See the error above.", "error");
       }
     } catch (error) {
       if (generation === this.lifecycleGeneration) {
         this.stream = { ...(this.stream ?? { text: "", tools: [] }), error: asErrorMessage(error) };
+        this.streamAnchor = this.messages.length - 1;
         this.setStatus("Run failed. See the error above.", "error");
       }
     } finally {
@@ -781,9 +782,9 @@ export class AgentApp {
     this.focusComposer();
   }
 
-  private retainStoppedStream(): void {
+  private retainEndedStream(): void {
     const stream = this.stream;
-    if (stream?.stopped !== true) return;
+    if (stream === undefined || (stream.stopped !== true && stream.error === undefined)) return;
     if (stream.text.length > 0 || stream.tools.length > 0 || stream.error !== undefined) {
       this.retainedStreams = [...this.retainedStreams, {
         afterMessageIndex: this.streamAnchor ?? this.messages.length - 1,
