@@ -218,6 +218,12 @@ export class AgentApp {
     }
     this.element("open-settings").addEventListener("click", () => {
       if (this.harness?.modelId === undefined) return;
+      if (this.editingIndex !== undefined) {
+        this.setStatus("Finish editing before changing the connection.", "error");
+        this.keepMessageEditVisible();
+        this.element("conversation-content").querySelector<HTMLTextAreaElement>(`.message[data-message-index="${this.editingIndex}"] .message-edit textarea`)?.focus({ preventScroll: true });
+        return;
+      }
       if (this.connectionEditing) {
         const previousStatus = this.connectionRunStatusBeforeEdit;
         const runRevisionBeforeEdit = this.connectionRunRevisionBeforeEdit;
@@ -260,11 +266,14 @@ export class AgentApp {
       const summary = target.closest("summary");
       const details = summary?.parentElement;
       if (summary !== null && details instanceof HTMLDetailsElement) {
+        const wasConnectionEditing = this.connectionEditing;
+        if (wasConnectionEditing && !details.open) this.element<HTMLButtonElement>("open-settings").click();
         const wasFollowing = this.followChat;
         window.requestAnimationFrame(() => {
           if (!details.isConnected || !details.open || this.editingIndex !== undefined || this.connectionEditing) return;
           if (wasFollowing) chat.scrollTop = chat.scrollHeight;
           else this.keepToolVisible(details);
+          if (wasConnectionEditing && summary instanceof HTMLElement) summary.focus({ preventScroll: true });
         });
       }
       const button = target.closest<HTMLButtonElement>("button[data-action]");
@@ -279,6 +288,7 @@ export class AgentApp {
           break;
         }
         case "edit-message":
+          if (this.connectionEditing && !this.busy) this.element<HTMLButtonElement>("open-settings").click();
           this.startMessageEdit(index);
           break;
         case "cancel-edit":

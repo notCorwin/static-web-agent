@@ -627,6 +627,36 @@ try {
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
   assert.ok(Math.abs(await page.evaluate("document.querySelector('#chat-log')?.scrollTop") - scrollBeforeSettings) < 2, "closing settings must restore the conversation position");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  await page.evaluate(`(() => {
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    if (trace === null) return;
+    trace.open = false;
+    trace.querySelector('summary')?.click();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true && document.querySelector('.tool-trace[open]') !== null && document.activeElement?.tagName === 'SUMMARY'");
+  const toolFromSettings = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    return { trace: trace?.getBoundingClientRect().toJSON(), chat: chat?.getBoundingClientRect().toJSON(), focus: document.activeElement?.tagName };
+  })()`);
+  assert.ok(toolFromSettings.trace.bottom <= toolFromSettings.chat.bottom + 1, `expanding a tool from the settings edge should reveal its details: ${JSON.stringify(toolFromSettings)}`);
+  assert.equal(toolFromSettings.focus, "SUMMARY", "expanding a tool from the settings edge should keep focus on the tool summary");
+  await page.evaluate("document.querySelectorAll('[data-action=\"edit-message\"]').item(document.querySelectorAll('[data-action=\"edit-message\"]').length - 1)?.click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true && document.querySelector('.message-edit') !== null");
+  assert.equal(await page.evaluate("document.activeElement?.getAttribute('aria-label')"), "Edit message", "editing from the visible edge of settings should close settings first");
+  await page.evaluate("document.querySelector('[data-action=\"cancel-edit\"]')?.click()");
+  await waitFor(page, "document.querySelector('.message-edit') === null");
+  await page.evaluate("document.querySelectorAll('[data-action=\"edit-message\"]').item(document.querySelectorAll('[data-action=\"edit-message\"]').length - 1)?.click()");
+  await waitFor(page, "document.querySelector('.message-edit') !== null");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(await page.evaluate("document.querySelector('#connection-card')?.hidden"), true, "connection settings should not cover an active message editor");
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Finish editing before changing the connection.");
+  assert.equal(await page.evaluate("document.activeElement?.getAttribute('aria-label')"), "Edit message", "a settings click during editing should return focus to the editor");
+  await page.evaluate("document.querySelector('[data-action=\"cancel-edit\"]')?.click()");
+  await waitFor(page, "document.querySelector('.message-edit') === null");
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Fail during model';
     document.querySelector('#composer-form').requestSubmit();
