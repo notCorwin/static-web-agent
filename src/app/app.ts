@@ -13,6 +13,11 @@ interface StreamState {
   stopped?: boolean;
 }
 
+interface RetainedStream {
+  readonly afterMessageIndex: number;
+  readonly stream: StreamState;
+}
+
 function displayModelName(value: string): string {
   const name = value.trim().replace(/^.*\//, "").replace(/:.*$/, "").replace(/-/g, " ");
   const display = name.split(/\s+/).filter(Boolean).map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(" ");
@@ -66,10 +71,13 @@ export class AgentApp {
   private connectionRunRevisionBeforeEdit: number | undefined;
   private messageEditRunStatusBefore: { message: string; kind: "normal" | "success" | "error" } | undefined;
   private followChat = true;
+  private retainedStreams: RetainedStream[] = [];
+  private streamAnchor: number | undefined;
   private renderedMessages: readonly ModelMessage[] | undefined;
   private renderedConnected: boolean | undefined;
   private renderedConnectedModelName: string | undefined;
   private renderedEditingIndex: number | undefined;
+  private renderedRetainedStreams: readonly RetainedStream[] | undefined;
   private liveElement: HTMLElement | undefined;
   private connectionScrollTop: number | undefined;
   private connectionFollowChat: boolean | undefined;
@@ -89,6 +97,8 @@ export class AgentApp {
     Object.assign(this.elements, renderShell(this.root));
     this.messages = [];
     this.stream = undefined;
+    this.retainedStreams = [];
+    this.streamAnchor = undefined;
     this.runStatus = "";
     this.connectionRunStatusBeforeEdit = undefined;
     this.runRevision = 0;
@@ -131,6 +141,8 @@ export class AgentApp {
     this.modelConnection = undefined;
     this.messages = [];
     this.stream = undefined;
+    this.retainedStreams = [];
+    this.streamAnchor = undefined;
     this.busy = false;
     this.connecting = false;
     this.editingIndex = undefined;
@@ -148,6 +160,7 @@ export class AgentApp {
     this.renderedConnected = undefined;
     this.renderedConnectedModelName = undefined;
     this.renderedEditingIndex = undefined;
+    this.renderedRetainedStreams = undefined;
     this.liveElement = undefined;
     this.connectionScrollTop = undefined;
     this.connectionFollowChat = undefined;
@@ -444,6 +457,7 @@ export class AgentApp {
       input.focus();
       return;
     }
+    this.retainStoppedStream();
     this.messages = [...this.messages, { role: "user", content }];
     this.followChat = true;
     input.value = "";
@@ -458,6 +472,7 @@ export class AgentApp {
     const controller = new AbortController();
     this.runController = controller;
     this.runRevision += 1;
+    this.streamAnchor = this.messages.length - 1;
     this.busy = true;
     this.stream = { text: "", tools: [] };
     this.setStatus("Running…", "normal");
@@ -475,6 +490,7 @@ export class AgentApp {
       const retainPendingTools = (stream: StreamState): StreamTool[] => stream.tools.filter((item) => item.status !== "finished");
       if (result.status === "completed") {
         this.stream = undefined;
+        this.streamAnchor = undefined;
         this.setStatus("Response complete.", "success");
       } else if (result.status === "cancelled") {
         const stream = this.stream ?? { text: "", tools: [] };
@@ -483,15 +499,18 @@ export class AgentApp {
           tools: retainPendingTools(stream),
           stopped: true,
         };
+        this.streamAnchor = this.messages.length - 1;
         if (result.error?.code !== "MODEL_REPLACED" && result.error?.code !== "MODEL_CLEARED") {
           this.setStatus("Stopped. The produced content was retained above.", "error");
         }
       } else if (result.status === "max-turns") {
         this.stream = undefined;
+        this.streamAnchor = undefined;
         this.setStatus("Run stopped by the host limit.", "error");
       } else {
         const stream = this.stream ?? { text: "", tools: [] };
         this.stream = { ...stream, tools: retainPendingTools(stream), error: result.error?.message ?? "The model request failed." };
+        this.streamAnchor = undefined;
         this.setStatus("Run failed. See the error above.", "error");
       }
     } catch (error) {
@@ -630,7 +649,8 @@ export class AgentApp {
     const historyChanged = this.renderedMessages !== this.messages
       || this.renderedConnected !== connected
       || this.renderedConnectedModelName !== this.connectedModelName
-      || this.renderedEditingIndex !== this.editingIndex;
+      || this.renderedEditingIndex !== this.editingIndex
+      || this.renderedRetainedStreams !== this.retainedStreams;
 
     if (historyChanged) {
       const openToolCallKeys = new Set(
@@ -639,13 +659,26 @@ export class AgentApp {
       conversation.replaceChildren();
       if (!connected) {
         conversation.append(textElement("div", "Connect a model to start a conversation.", "empty-state"));
-      } else if (this.messages.length === 0 && this.stream === undefined) {
+      } else if (this.messages.length === 0 && this.stream === undefined && this.retainedStreams.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty-state";
         empty.append(textElement("h2", "Ready when you are"), textElement("p", `Connected to ${displayModelName(this.connectedModelName ?? this.harness?.modelId ?? "model")}. Ask the agent to do something.`));
         conversation.append(empty);
       } else {
-        conversation.append(...messageElements(this.messages, this.editingIndex));
+        const history = messageElements(this.messages, this.editingIndex);
+        const retainedAt = new Map<number, HTMLElement[]>();
+        for (const retained of this.retainedStreams) {
+          const element = streamingElement(retained.stream);
+          if (element === undefined) continue;
+          const position = history.findIndex((candidate) => Number(candidate.dataset.messageIndex ?? "") > retained.afterMessageIndex);
+          const insertion = position < 0 ? history.length : position;
+          retainedAt.set(insertion, [...(retainedAt.get(insertion) ?? []), element]);
+        }
+        for (let position = 0; position <= history.length; position += 1) {
+          conversation.append(...(retainedAt.get(position) ?? []));
+          const historyElement = history[position];
+          if (historyElement !== undefined) conversation.append(historyElement);
+        }
       }
       for (const details of conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-key]")) {
         if (details.dataset.toolCallKey !== undefined && openToolCallKeys.has(details.dataset.toolCallKey)) details.open = true;
@@ -666,6 +699,7 @@ export class AgentApp {
       this.renderedConnected = connected;
       this.renderedConnectedModelName = this.connectedModelName;
       this.renderedEditingIndex = this.editingIndex;
+      this.renderedRetainedStreams = this.retainedStreams;
     }
 
     if (connected && this.stream !== undefined) {
@@ -737,12 +771,28 @@ export class AgentApp {
       return;
     }
     if (this.busy || this.messages[index]?.role !== "user") return;
+    this.retainedStreams = this.retainedStreams.filter((item) => item.afterMessageIndex < index);
+    this.stream = undefined;
+    this.streamAnchor = undefined;
     this.messages = [...this.messages.slice(0, index), { role: "user", content }];
     this.followChat = true;
     this.messageEditRunStatusBefore = undefined;
     this.editingIndex = undefined;
     await this.runAgent();
     this.focusComposer();
+  }
+
+  private retainStoppedStream(): void {
+    const stream = this.stream;
+    if (stream?.stopped !== true) return;
+    if (stream.text.length > 0 || stream.tools.length > 0 || stream.error !== undefined) {
+      this.retainedStreams = [...this.retainedStreams, {
+        afterMessageIndex: this.streamAnchor ?? this.messages.length - 1,
+        stream,
+      }];
+    }
+    this.stream = undefined;
+    this.streamAnchor = undefined;
   }
 
   private setConnectionStatus(message: string): void {

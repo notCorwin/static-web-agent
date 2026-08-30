@@ -80,6 +80,21 @@ async function startServer() {
         };
         write();
         return;
+      } else if (lastUser?.content === "Stop partial text") {
+        const chunks = ["partial text that ", "must survive ", "the next message."];
+        let index = 0;
+        const write = () => {
+          if (response.destroyed) return;
+          if (index < chunks.length) {
+            response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[index] } }] })}\n\n`);
+            index += 1;
+            setTimeout(write, 120);
+          } else {
+            response.end(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+          }
+        };
+        write();
+        return;
       } else if (lastUser?.content === "Expand while streaming" && messages.at(-1)?.role === "tool") {
         const chunks = ["streaming ", "after ", "the ", "tool ", "call ", "so ", "the ", "expanded ", "detail ", "stays ", "visible."];
         let index = 0;
@@ -601,6 +616,33 @@ try {
   })()`);
   await waitFor(page, "document.querySelectorAll('.message.assistant .message-body').length === 2");
   assert.equal(await page.evaluate("document.querySelector('.message.assistant:last-of-type .message-body')?.textContent"), "done from browser");
+
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Stop partial text';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('.streaming-run .message-body')?.textContent.includes('partial text that') === true");
+  await page.evaluate("document.querySelector('#send-button').click()");
+  await waitFor(page, "document.querySelector('.streaming-run.stopped .message-body')?.textContent.includes('partial text that') === true");
+  await page.evaluate(`(() => {
+    document.querySelector('#message-input').value = 'Continue after partial stop';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send' && [...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
+  const retainedStop = await page.evaluate(`(() => {
+    const order = [...document.querySelector('#conversation-content').children].map((node) => node.classList.contains('streaming-run') ? 'stopped' : node.querySelector('.message-body')?.textContent ?? '');
+    return {
+      order,
+      text: document.querySelector('.streaming-run.stopped .message-body')?.textContent,
+      status: document.querySelector('#run-status')?.textContent,
+    };
+  })()`);
+  const stopMessage = retainedStop.order.indexOf("Stop partial text");
+  const retainedMessage = retainedStop.order.indexOf("stopped");
+  const continuationMessage = retainedStop.order.indexOf("Continue after partial stop");
+  assert.ok(stopMessage >= 0 && stopMessage < retainedMessage && retainedMessage < continuationMessage, `stopped output should remain between its message and the next message: ${JSON.stringify(retainedStop)}`);
+  assert.equal(retainedStop.text, "partial text that ");
+  assert.equal(retainedStop.status, "Response complete.");
 
   await page.evaluate(`(() => {
     document.querySelector('[data-action="edit-message"]').click();
