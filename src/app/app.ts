@@ -217,6 +217,11 @@ export class AgentApp {
       void this.connectFromForm(event.currentTarget as HTMLFormElement);
     }, { signal });
     const connectionForm = this.element<HTMLFormElement>("connection-form");
+    connectionForm.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      event.preventDefault();
+      this.element<HTMLButtonElement>("open-settings").click();
+    }, { signal });
     for (const id of ["model-endpoint", "model-name", "model-key"]) {
       this.element<HTMLInputElement>(id).addEventListener("keydown", (event) => {
         if (event.key !== "Enter" || event.isComposing) return;
@@ -267,6 +272,13 @@ export class AgentApp {
       this.element(id).addEventListener("input", () => this.clearFieldError(id), { signal });
     }
     const conversation = this.element("conversation-content");
+    conversation.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      const target = event.target;
+      if (!(target instanceof HTMLTextAreaElement) || target.closest(".message-edit") === null) return;
+      event.preventDefault();
+      target.closest<HTMLElement>(".message-edit")?.querySelector<HTMLButtonElement>('[data-action="cancel-edit"]')?.click();
+    }, { signal });
     conversation.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;

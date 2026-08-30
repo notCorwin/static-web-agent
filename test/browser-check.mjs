@@ -271,6 +271,7 @@ try {
     oneToolName: document.querySelector('#connection-card') !== null,
   })`);
   assert.deepEqual(initial, { connectionVisible: true, sendVisible: true, sendDisabled: true, chatNotBusy: true, noAttachments: true, noThinking: true, noPluginUi: true, oneToolName: true });
+  assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#chat-log')).scrollbarGutter"), "stable both-edges", "the chat should reserve stable gutters for classic scrollbars");
   assert.equal(await page.evaluate("document.activeElement?.id"), "model-endpoint", "the first connection field should receive initial focus");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 240, height: 160, deviceScaleFactor: 1, mobile: false });
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -392,6 +393,13 @@ try {
     label: document.querySelector('#open-settings')?.getAttribute('aria-label'),
     expanded: document.querySelector('#open-settings')?.getAttribute('aria-expanded'),
   })`), { text: "Close", label: "Close connection settings", expanded: "true" });
+  await page.evaluate("document.querySelector('#model-name').focus()");
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "Escape should close connection settings and return focus to the composer");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
   await page.evaluate("document.querySelector('#model-name').focus()");
   await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
   await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
@@ -603,6 +611,12 @@ try {
   await waitFor(page, "document.querySelectorAll('.message.user').length === 1 && document.querySelectorAll('.message.assistant .message-body').length === 1");
   assert.equal(await page.evaluate("document.querySelector('.message.assistant .message-body')?.textContent"), "done from browser");
   assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "editing and rerunning should return focus to the composer");
+  await page.evaluate("document.querySelector('[data-action=edit-message]').click()");
+  await waitFor(page, "document.querySelector('.message-edit') !== null");
+  await page.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await page.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
+  await waitFor(page, "document.querySelector('.message-edit') === null");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "Escape should cancel message editing and return focus to the composer");
   await page.evaluate(`(() => {
     document.querySelector('[data-action="edit-message"]').click();
     document.querySelector('.message-edit textarea').value = '';
