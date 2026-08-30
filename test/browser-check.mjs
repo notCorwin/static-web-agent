@@ -599,7 +599,8 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 50));
   await page.evaluate("document.querySelector('#send-button').click()");
   assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "stopping with the button should return focus to the composer");
-  await waitFor(page, "document.querySelector('.stream-status')?.textContent === 'Stopped' && document.querySelector('#send-button')?.textContent === 'Send'");
+  await waitFor(page, "document.querySelector('.tool-trace.tool-stopped') !== null && document.querySelector('#send-button')?.textContent === 'Send'");
+  assert.equal(await page.evaluate("document.querySelector('.streaming-run.stopped')"), null, "a tool-only cancellation should not duplicate the stopped state outside its tool card");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 3);
   const tracesAfterStop = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => [...trace.querySelectorAll('.trace-section')].map((section) => [section.querySelector('h3')?.textContent, section.querySelector('pre')?.textContent])))()`);
   assert.match(JSON.stringify(tracesAfterStop[0]), /42/);
@@ -796,6 +797,12 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('.streaming-run') !== null");
+  const streamingTextStyle = await page.evaluate(`(() => {
+    const body = document.querySelector('.streaming-run > .message-body');
+    const style = body === null ? undefined : getComputedStyle(body);
+    return { borderStyle: style?.borderStyle, padding: style?.padding, background: style?.backgroundColor };
+  })()`);
+  assert.deepEqual(streamingTextStyle, { borderStyle: "none", padding: "0px", background: "rgba(0, 0, 0, 0)" }, "streaming text should use the same unboxed style as the completed assistant response");
   assert.equal(await page.evaluate("document.querySelector('[data-action=edit-message]')?.disabled"), true, "message editing should be disabled while a response is streaming");
   await page.evaluate(`(() => {
     document.querySelector('#open-settings').click();

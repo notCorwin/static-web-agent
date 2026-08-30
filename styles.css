@@ -79,6 +79,7 @@ button:disabled { cursor: default; opacity: .58; }
 .message.assistant { align-self: flex-start; width: 100%; }
 .message-body { min-width: 0; padding: 13px 15px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
 .message.assistant .message-body { padding: 0; border: 0; background: transparent; }
+.streaming-run > .message-body { padding: 0; border: 0; background: transparent; }
 .message.user .message-body { border-color: var(--user-border); background: var(--user-surface); }
 .message-actions { display: flex; gap: 5px; min-height: 25px; opacity: 0; transition: opacity 140ms ease; }
 .message:hover .message-actions, .message:focus-within .message-actions { opacity: 1; }

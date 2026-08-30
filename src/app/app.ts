@@ -494,11 +494,10 @@ export class AgentApp {
         this.setStatus("Response complete.", "success");
       } else if (result.status === "cancelled") {
         const stream = this.stream ?? { text: "", tools: [] };
-        this.stream = {
-          ...stream,
-          tools: retainPendingTools(stream),
-          stopped: true,
-        };
+        const pendingTools = retainPendingTools(stream);
+        this.stream = stream.text.length === 0 && pendingTools.length === 0
+          ? undefined
+          : { ...stream, tools: pendingTools, stopped: true };
         this.streamAnchor = this.messages.length - 1;
         if (result.error?.code !== "MODEL_REPLACED" && result.error?.code !== "MODEL_CLEARED") {
           this.setStatus("Stopped. The produced content was retained above.", "error");
