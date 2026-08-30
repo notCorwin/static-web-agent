@@ -78,6 +78,26 @@ test("hostile clipboard errors become a visible status", async () => {
   }
 });
 
+test("clipboard feedback does not replace an active run status", async () => {
+  const clipboard = globalThis.navigator.clipboard;
+  Object.defineProperty(globalThis.navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: async () => undefined },
+  });
+  try {
+    const app = new AgentApp({});
+    app.busy = true;
+    app.runRevision = 1;
+    const statuses = [];
+    app.setStatus = (message, kind) => statuses.push([message, kind]);
+    await app.copyMessage("message");
+    assert.deepEqual(statuses, []);
+  } finally {
+    if (clipboard === undefined) delete globalThis.navigator.clipboard;
+    else Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: clipboard });
+  }
+});
+
 test("stopping the app releases conversation and DOM state", async () => {
   const app = new AgentApp({ replaceChildren() {} });
   const oldElement = {};

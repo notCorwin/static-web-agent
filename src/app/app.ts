@@ -17,7 +17,8 @@ function displayModelName(value: string): string {
   const name = value.trim().replace(/^.*\//, "").replace(/:.*$/, "").replace(/-/g, " ");
   const display = name.split(/\s+/).filter(Boolean).map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(" ");
   if (!display) return "Connected model";
-  return display.length > 48 ? `${display.slice(0, 47).trimEnd()}…` : display;
+  const characters = Array.from(display);
+  return characters.length > 48 ? `${characters.slice(0, 47).join("").trimEnd()}…` : display;
 }
 
 function copyable(message: ModelMessage): string | undefined {
@@ -314,13 +315,14 @@ export class AgentApp {
 
   private async copyMessage(content: string): Promise<void> {
     const generation = this.lifecycleGeneration;
+    const runRevision = this.runRevision;
     try {
       if (typeof navigator.clipboard?.writeText !== "function") throw new Error("Clipboard access is unavailable.");
       await navigator.clipboard.writeText(content);
-      if (generation !== this.lifecycleGeneration) return;
+      if (generation !== this.lifecycleGeneration || this.busy || runRevision !== this.runRevision) return;
       this.setStatus("Copied.", "success");
     } catch (error) {
-      if (generation !== this.lifecycleGeneration) return;
+      if (generation !== this.lifecycleGeneration || this.busy || runRevision !== this.runRevision) return;
       this.setStatus(asErrorMessage(error), "error");
     }
   }
@@ -371,6 +373,7 @@ export class AgentApp {
       this.connectionRunStatusBeforeEdit = undefined;
       this.connectionRunRevisionBeforeEdit = undefined;
       this.connectionEditing = false;
+      this.applyConnectionSettings(this.connectedSettings);
       this.setConnectionStatus("");
       if (previousStatus !== undefined && !runChanged) this.setStatus(previousStatus.message, previousStatus.kind);
       this.render();
@@ -386,6 +389,7 @@ export class AgentApp {
       if (generation !== this.lifecycleGeneration) return;
       this.connectedSettings = settings;
       this.connectedModelName = settings.model;
+      this.applyConnectionSettings(settings);
       this.connectionRunStatusBeforeEdit = undefined;
       this.connectionRunRevisionBeforeEdit = undefined;
       this.connectionEditing = false;
@@ -693,17 +697,21 @@ export class AgentApp {
     const chat = this.element("chat-log");
     const chatBounds = chat.getBoundingClientRect();
     const detailsBounds = details.getBoundingClientRect();
+    const previousMessage = details.closest<HTMLElement>(".message")?.previousElementSibling;
+    const groupTop = previousMessage?.classList.contains("user")
+      ? previousMessage.getBoundingClientRect().top
+      : detailsBounds.top;
     const followingResponse = details.closest<HTMLElement>(".message")?.nextElementSibling?.querySelector<HTMLElement>(".message-body");
     const followingResponseBounds = followingResponse?.getBoundingClientRect();
     const groupBottom = followingResponseBounds?.bottom ?? detailsBounds.bottom;
-    const groupHeight = groupBottom - detailsBounds.top;
+    const groupHeight = groupBottom - groupTop;
     const maxScroll = Math.max(0, chat.scrollHeight - chat.clientHeight);
     if (groupHeight > chat.clientHeight) {
       chat.scrollTop = Math.min(maxScroll, Math.max(0, chat.scrollTop + Math.round(detailsBounds.top - chatBounds.top)));
       return;
     }
     if (groupBottom > chatBounds.bottom) chat.scrollTop = Math.min(maxScroll, chat.scrollTop + Math.ceil(groupBottom - chatBounds.bottom));
-    else if (detailsBounds.top < chatBounds.top) chat.scrollTop = Math.max(0, chat.scrollTop + Math.floor(detailsBounds.top - chatBounds.top));
+    else if (groupTop < chatBounds.top) chat.scrollTop = Math.max(0, chat.scrollTop + Math.floor(groupTop - chatBounds.top));
   }
 
   private async resendEditedMessage(index: number, value: string): Promise<void> {

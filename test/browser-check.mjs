@@ -106,11 +106,11 @@ async function startServer() {
           ? "return 'x'.repeat(50000)"
           : lastUser?.content === "Expand while streaming"
             ? "return { expanded: true }"
-          : lastUser?.content === "Cancel this run"
-          ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
-          : lastUser?.content === "Fail after tool"
-            ? "throw new Error('intentional page failure')"
-            : "return { title: document.title, answer: 40 + 2 }";
+            : lastUser?.content === "Cancel this run"
+              ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
+              : lastUser?.content === "Fail after tool"
+                ? "throw new Error('intentional page failure')"
+                : "return document.title + ' 42'";
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
         response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
       }
@@ -317,7 +317,7 @@ try {
   await page.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: "dark" }] });
   assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#send-button')).color"), "rgb(23, 23, 23)", "dark theme primary buttons should use readable text");
   await page.send("Emulation.setEmulatedMedia", { features: [] });
-  const longModel = `model${"x".repeat(180)}`;
+  const longModel = `model${"😀".repeat(60)}`;
   await page.send("Emulation.setDeviceMetricsOverride", { width: 320, height: 480, deviceScaleFactor: 1, mobile: false });
   await page.evaluate(`(() => {
     document.querySelector('#open-settings').click();
@@ -346,6 +346,7 @@ try {
   assert.ok(longModelLayout.empty.width <= longModelLayout.chat.width, `long model empty state must stay inside the chat width: ${JSON.stringify(longModelLayout)}`);
   assert.ok(longModelLayout.paragraph.width <= longModelLayout.chat.width, `long model copy must stay inside the chat width: ${JSON.stringify(longModelLayout)}`);
   assert.match(longModelLayout.paragraphText, /…/, `long model copy should use a compact display label: ${JSON.stringify(longModelLayout)}`);
+  assert.equal(longModelLayout.paragraphText.includes("�"), false, `long Unicode model copy must not split a code point: ${JSON.stringify(longModelLayout)}`);
   assert.ok(longModelLayout.heading.top >= longModelLayout.chat.top - 1, `long model must not push the empty-state heading behind the header: ${JSON.stringify(longModelLayout)}`);
   assert.ok(longModelLayout.status.height <= 20 && longModelLayout.statusOverflow === "hidden", `long model success status must not expand the composer: ${JSON.stringify(longModelLayout)}`);
   await page.evaluate(`(() => {
@@ -353,6 +354,17 @@ try {
     document.querySelector('#model-name').value = 'browser-test';
     document.querySelector('#connection-form').requestSubmit();
   })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  await page.evaluate(`(() => {
+    document.querySelector('#open-settings').click();
+    document.querySelector('#model-name').value = '  browser-test  ';
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  assert.equal(await page.evaluate("document.querySelector('#model-name')?.value"), "browser-test", "a successful connection should show the normalized model name");
+  await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
   await page.evaluate("document.querySelector('#open-settings').click()");
@@ -467,6 +479,25 @@ try {
   assert.equal(await page.evaluate("document.querySelector('.message.user [data-action=edit-message]')?.getAttribute('aria-label')"), "Edit your message");
   assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant [data-action=copy-message]')].at(-1)?.getAttribute('aria-label')"), "Copy agent response");
 
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 600, deviceScaleFactor: 1, mobile: false });
+  await page.evaluate(`(() => {
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    trace.open = false;
+    trace.querySelector('summary')?.click();
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const toolContextLayout = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    const user = trace?.closest('.message')?.previousElementSibling;
+    return {
+      chat: chat?.getBoundingClientRect().toJSON(),
+      body: user?.querySelector('.message-body')?.getBoundingClientRect().toJSON(),
+      actions: user?.querySelector('.message-actions')?.getBoundingClientRect().toJSON(),
+    };
+  })()`);
+  assert.ok(toolContextLayout.body.top >= toolContextLayout.chat.top - 1 && toolContextLayout.actions.bottom <= toolContextLayout.chat.bottom + 1, `opening a normal tool detail should keep its triggering user message and actions together: ${JSON.stringify(toolContextLayout)}`);
+
   await page.send("Emulation.setDeviceMetricsOverride", { width: 768, height: 600, deviceScaleFactor: 1, mobile: false });
   await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
   await new Promise((resolve) => setTimeout(resolve, 200));
@@ -485,6 +516,9 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelectorAll('.tool-trace summary').item(document.querySelectorAll('.tool-trace summary').length - 1)?.textContent.includes('running') === true");
+  await page.evaluate("document.querySelector('.message.user [data-action=copy-message]')?.click()");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Running…", "copying a message during a run must not hide the running status");
   await page.evaluate(`(() => {
     document.querySelector('#open-settings').click();
     document.querySelector('#connection-form').requestSubmit();
