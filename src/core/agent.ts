@@ -169,8 +169,8 @@ function safeErrorMessage(value: unknown, fallback: string): string {
   }
 }
 
-function abortedToolResult(error: unknown): Extract<ToolExecutionResult, { readonly ok: false }> {
-  return { ok: false, error: errorInfo(error, "ABORTED"), durationMs: 0 };
+function abortedToolResult(error: unknown, durationMs = 0): Extract<ToolExecutionResult, { readonly ok: false }> {
+  return { ok: false, error: errorInfo(error, "ABORTED"), durationMs };
 }
 
 function assertToolCall(call: ToolCall): void {
@@ -638,12 +638,12 @@ export class Agent {
         this.emit(onEvent, { type: "tool-finished", call, result: freeze(result) });
         messages.push(Object.freeze(toolMessage));
       };
-      const cancelTools = (startIndex: number, error: unknown, firstStarted = false): AgentRunResult => {
+      const cancelTools = (startIndex: number, error: unknown, firstStarted = false, firstDurationMs = 0): AgentRunResult => {
         for (let index = startIndex; index < calls.length; index += 1) {
           const call = calls[index];
           if (call === undefined) break;
           if (!(firstStarted && index === startIndex)) this.emit(onEvent, { type: "tool-started", call });
-          appendToolResult(call, abortedToolResult(error));
+          appendToolResult(call, abortedToolResult(error, firstStarted && index === startIndex ? firstDurationMs : 0));
         }
         return finish({ status: "cancelled", error: errorInfo(error, "ABORTED") });
       };
@@ -669,11 +669,12 @@ export class Agent {
           return cancelTools(index, error);
         }
         this.emit(onEvent, { type: "tool-started", call });
+        const toolStarted = now();
         let result: ToolExecutionResult;
         try {
           result = await executeWithTimeout(this.pageRuntime, call, signal, toolTimeoutMs);
         } catch (error) {
-          if (signal.aborted) return cancelTools(index, abortReason(signal) ?? error, true);
+          if (signal.aborted) return cancelTools(index, abortReason(signal) ?? error, true, Math.max(0, Math.round(now() - toolStarted)));
           result = errorResult("PAGE_TOOL_ERROR", safeErrorMessage(error, "Page tool execution failed."));
         }
         appendToolResult(call, result);

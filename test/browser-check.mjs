@@ -573,6 +573,7 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelectorAll('.tool-trace summary').item(document.querySelectorAll('.tool-trace summary').length - 1)?.textContent.includes('running') === true");
+  await new Promise((resolve) => setTimeout(resolve, 50));
   await page.evaluate("document.querySelector('#send-button').click()");
   assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "stopping with the button should return focus to the composer");
   await waitFor(page, "document.querySelector('.stream-status')?.textContent === 'Stopped' && document.querySelector('#send-button')?.textContent === 'Send'");
@@ -585,6 +586,7 @@ try {
     const trace = document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1);
     return { summary: trace?.querySelector('summary')?.textContent, stopped: trace?.classList.contains('tool-stopped'), error: trace?.classList.contains('tool-error'), section: trace?.querySelector('.trace-section:last-of-type h3')?.textContent };
   })()`), { summary: "page.run · stopped", stopped: true, error: false, section: "Stopped" });
+  assert.ok(await page.evaluate(`Number.parseInt(document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.querySelector('.tool-timing')?.textContent ?? '') > 0`), "a stopped active tool should retain elapsed timing");
   await page.evaluate(`(() => {
     document.querySelector('#message-input').value = 'Continue after stopping';
     document.querySelector('#composer-form').requestSubmit();

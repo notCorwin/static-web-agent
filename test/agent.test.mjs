@@ -675,6 +675,42 @@ test("cancellation during assistant delivery wins over completion", async () => 
   await harness.dispose();
 });
 
+test("cancelling an active page tool reports elapsed duration", async () => {
+  const controller = new AbortController();
+  const events = [];
+  const harness = await createHarness({
+    model: {
+      id: "active-tool-cancel-duration",
+      async *stream() {
+        yield completed("", [{ id: "slow-tool", name: "page.run", arguments: { code: "await new Promise(() => {})" } }]);
+      },
+    },
+    pageRuntime: {
+      async execute() {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return { value: null, logs: [], durationMs: 100 };
+      },
+    },
+  });
+  try {
+    const resultPromise = harness.run({
+      messages: [{ role: "user", content: "stop" }],
+      signal: controller.signal,
+      onEvent: (event) => {
+        events.push(event);
+        if (event.type === "tool-started") setTimeout(() => controller.abort(), 25);
+      },
+    });
+    const result = await resultPromise;
+    const stopped = events.find((event) => event.type === "tool-finished");
+    assert.equal(result.status, "cancelled");
+    assert.equal(stopped.result.error.code, "ABORTED");
+    assert.ok(stopped.result.durationMs > 0);
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("model timeouts suppress late events from an uncooperative stream", async () => {
   const events = [];
   let cleanupRejection;
