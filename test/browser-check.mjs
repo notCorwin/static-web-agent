@@ -410,6 +410,10 @@ try {
   assert.equal(toolTrace.requestCount, 2);
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.getAttribute('aria-busy')"), "false");
   assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant')].find((node) => node.querySelector('.tool-trace') !== null && node.querySelector('.message-body') === null)?.querySelectorAll('.message-action').length"), 0, "tool-only assistant messages should not show an empty Copy action");
+  assert.equal(await page.evaluate("document.querySelector('.message.user')?.getAttribute('aria-label')"), "Your message");
+  assert.equal(await page.evaluate("document.querySelector('.message.user [data-action=copy-message]')?.getAttribute('aria-label')"), "Copy your message");
+  assert.equal(await page.evaluate("document.querySelector('.message.user [data-action=edit-message]')?.getAttribute('aria-label')"), "Edit your message");
+  assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant [data-action=copy-message]')].at(-1)?.getAttribute('aria-label')"), "Copy agent response");
 
   await page.send("Emulation.setDeviceMetricsOverride", { width: 768, height: 600, deviceScaleFactor: 1, mobile: false });
   await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
@@ -483,6 +487,7 @@ try {
     document.querySelector('[data-action="save-edit"]').click();
   })()`);
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "The edited message cannot be empty.");
+  assert.equal(await page.evaluate("document.activeElement?.getAttribute('aria-label')"), "Edit message", "an empty edit should return focus to the editor");
   await page.evaluate("document.querySelector('[data-action=cancel-edit]').click()");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "canceling an invalid edit should restore the prior run status");
   assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "canceling an edit should return focus to the composer");
@@ -691,6 +696,18 @@ try {
   assert.equal(compactSettings.pageWidth, 280);
   assert.ok(compactSettings.endpoint.top >= compactSettings.card.top && compactSettings.endpoint.bottom <= compactSettings.chat.bottom, `the required endpoint stays visible in a short settings card: ${JSON.stringify(compactSettings)}`);
   assert.equal(compactSettings.focused, "model-endpoint");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 200, height: 120, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const resizedSettings = await page.evaluate(`(() => ({
+    card: document.querySelector('#connection-card')?.getBoundingClientRect().toJSON(),
+    chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
+    endpoint: document.querySelector('#model-endpoint')?.getBoundingClientRect().toJSON(),
+    focused: document.activeElement?.id,
+  }))()`);
+  assert.ok(resizedSettings.endpoint.top >= resizedSettings.card.top && resizedSettings.endpoint.bottom <= resizedSettings.chat.bottom, `the focused connection field should stay visible after resizing: ${JSON.stringify(resizedSettings)}`);
+  assert.equal(resizedSettings.focused, "model-endpoint");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 280, height: 300, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
   await page.evaluate(`(() => {

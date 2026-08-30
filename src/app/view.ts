@@ -171,6 +171,7 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
   const article = document.createElement("article");
   article.className = `message ${message.role}`;
   article.dataset.messageIndex = String(index);
+  article.setAttribute("aria-label", message.role === "user" ? "Your message" : "Agent response");
   if (message.role === "user" && editingIndex === index) {
     const edit = document.createElement("div");
     edit.className = "message-edit";
@@ -213,6 +214,7 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
   copy.type = "button";
   copy.dataset.action = "copy-message";
   copy.dataset.messageIndex = String(index);
+  copy.setAttribute("aria-label", message.role === "user" ? "Copy your message" : "Copy agent response");
   copy.textContent = "Copy";
   if (message.content.length > 0) actions.append(copy);
   if (message.role === "user") {
@@ -221,6 +223,7 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
     edit.type = "button";
     edit.dataset.action = "edit-message";
     edit.dataset.messageIndex = String(index);
+    edit.setAttribute("aria-label", "Edit your message");
     edit.textContent = "Edit";
     actions.append(edit);
   }

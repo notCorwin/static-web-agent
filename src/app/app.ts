@@ -177,6 +177,7 @@ export class AgentApp {
       const chat = this.element("chat-log");
       if (this.followChat && !this.connectionEditing && (this.messages.length > 0 || this.stream !== undefined)) chat.scrollTop = chat.scrollHeight;
       this.keepMessageEditVisible();
+      if (this.connectionEditing) this.keepConnectionFieldVisible();
     }, { signal });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && this.busy && !event.isComposing) {
@@ -233,10 +234,7 @@ export class AgentApp {
       const endpoint = this.element<HTMLInputElement>("model-endpoint");
       card.scrollTop = 0;
       endpoint.focus({ preventScroll: true });
-      const cardBounds = card.getBoundingClientRect();
-      const endpointBounds = endpoint.getBoundingClientRect();
-      if (endpointBounds.bottom > cardBounds.bottom) card.scrollTop = Math.min(card.scrollHeight - card.clientHeight, Math.ceil(endpointBounds.bottom - cardBounds.bottom));
-      else if (endpointBounds.top < cardBounds.top) card.scrollTop = Math.max(0, endpointBounds.top - cardBounds.top);
+      this.keepConnectionFieldVisible();
     }, { signal });
 
     for (const id of ["model-endpoint", "model-name"]) {
@@ -611,6 +609,7 @@ export class AgentApp {
     const content = value.trim();
     if (!content) {
       this.setStatus("The edited message cannot be empty.", "error");
+      this.element("conversation-content").querySelector<HTMLTextAreaElement>(`.message[data-message-index="${index}"] .message-edit textarea`)?.focus();
       return;
     }
     if (this.busy || this.messages[index]?.role !== "user") return;
@@ -638,6 +637,19 @@ export class AgentApp {
     }
     this.connectionScrollTop = undefined;
     this.connectionFollowChat = undefined;
+  }
+
+  private keepConnectionFieldVisible(): void {
+    const card = this.element("connection-card");
+    const active = document.activeElement;
+    const form = this.element<HTMLFormElement>("connection-form");
+    const field = active instanceof HTMLInputElement && active.form === form
+      ? active
+      : this.element<HTMLInputElement>("model-endpoint");
+    const cardBounds = card.getBoundingClientRect();
+    const fieldBounds = field.getBoundingClientRect();
+    if (fieldBounds.bottom > cardBounds.bottom) card.scrollTop = Math.min(card.scrollHeight - card.clientHeight, Math.ceil(fieldBounds.bottom - cardBounds.bottom));
+    else if (fieldBounds.top < cardBounds.top) card.scrollTop = Math.max(0, fieldBounds.top - cardBounds.top);
   }
 
   private setStatus(message: string, kind: "normal" | "success" | "error"): void {
