@@ -605,10 +605,21 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Stop' && document.querySelector('.streaming-run .tool-trace') !== null");
-  await page.evaluate("document.querySelector('.streaming-run .tool-trace summary')?.click()");
+  await page.evaluate(`(() => {
+    const summary = document.querySelector('.streaming-run .tool-trace summary');
+    summary?.focus();
+    summary?.click();
+  })()`);
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.equal(await page.evaluate("document.querySelector('.streaming-run .tool-trace')?.open"), true, "an expanded live tool detail must survive later streamed tokens");
+  assert.deepEqual(await page.evaluate(`(() => {
+    const trace = document.querySelector('.streaming-run .tool-trace');
+    return { open: trace?.open, focus: document.activeElement?.tagName };
+  })()`), { open: true, focus: "SUMMARY" }, "an expanded live tool detail must retain its keyboard focus across streamed tokens");
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
+  assert.deepEqual(await page.evaluate(`(() => {
+    const trace = document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1);
+    return { open: trace?.open, focus: document.activeElement?.tagName };
+  })()`), { open: true, focus: "SUMMARY" }, "the finished tool detail must retain its keyboard focus");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 
   const refreshQuery = `?refresh=${Date.now()}`;

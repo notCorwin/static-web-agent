@@ -596,6 +596,11 @@ export class AgentApp {
     const connected = this.harness?.modelId !== undefined;
     const streamingToolStates = new Map<string, boolean>();
     const streamingToolIds = new Map<string, boolean>();
+    const activeStreamingSummary = this.liveElement !== undefined && document.activeElement?.tagName === "SUMMARY"
+      ? document.activeElement.closest<HTMLDetailsElement>(".tool-trace[data-stream-tool-index]")
+      : undefined;
+    const focusedStreamingToolIndex = activeStreamingSummary?.dataset.streamToolIndex;
+    const focusedStreamingToolId = activeStreamingSummary?.dataset.toolCallId;
     for (const details of this.liveElement?.querySelectorAll<HTMLDetailsElement>(".tool-trace") ?? []) {
       const index = details.dataset.streamToolIndex;
       if (index !== undefined) streamingToolStates.set(index, details.open);
@@ -633,6 +638,12 @@ export class AgentApp {
           .find((candidate) => candidate.dataset.toolCallId === id);
         if (details !== undefined) details.open = open;
       }
+      if (focusedStreamingToolId !== undefined) {
+        const details = [...conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-id]")]
+          .reverse()
+          .find((candidate) => candidate.dataset.toolCallId === focusedStreamingToolId);
+        details?.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
+      }
       this.renderedMessages = this.messages;
       this.renderedConnected = connected;
       this.renderedConnectedModelName = this.connectedModelName;
@@ -648,6 +659,10 @@ export class AgentApp {
         }
         conversation.append(live);
         this.liveElement = live;
+        if (focusedStreamingToolIndex !== undefined) {
+          const details = live.querySelector<HTMLDetailsElement>(`.tool-trace[data-stream-tool-index="${focusedStreamingToolIndex}"]`);
+          details?.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
+        }
       }
     }
     conversation.querySelectorAll<HTMLButtonElement>('[data-action="edit-message"]').forEach((button) => { button.disabled = this.busy; });
