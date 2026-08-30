@@ -744,6 +744,27 @@ try {
   assert.ok(ultraCompactLayout.input.bottom <= 120 && ultraCompactLayout.send.bottom <= 120 && ultraCompactLayout.status.bottom <= 120, `ultra-compact composer controls must stay visible: ${JSON.stringify(ultraCompactLayout)}`);
   assert.deepEqual(ultraCompactLayout.workspace, [200, 200]);
   assert.deepEqual(ultraCompactLayout.page, [200, 120]);
+  for (const [width, height, mainWidth] of [[1280, 100, 1100], [280, 120, 280], [200, 80, 200]]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+    const shortLayout = await page.evaluate(`(() => {
+      const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect().toJSON();
+      return {
+        viewport: [innerWidth, innerHeight],
+        header: rect('.chat-header'),
+        composer: rect('.composer-wrap'),
+        input: rect('#message-input'),
+        send: rect('#send-button'),
+        status: rect('#run-status'),
+        main: [document.querySelector('#main-content')?.clientWidth, document.querySelector('#main-content')?.scrollWidth],
+        page: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
+      };
+    })()`);
+    assert.deepEqual(shortLayout.viewport, [width, height]);
+    assert.ok(shortLayout.header.bottom <= height && shortLayout.composer.bottom <= height, `short chrome must stay in the viewport: ${JSON.stringify(shortLayout)}`);
+    assert.ok(shortLayout.input.bottom <= height && shortLayout.send.bottom <= height && shortLayout.status.bottom <= height, `short composer controls must stay visible: ${JSON.stringify(shortLayout)}`);
+    assert.deepEqual(shortLayout.main, [mainWidth, mainWidth]);
+    assert.deepEqual(shortLayout.page, [width, height]);
+  }
   await page.send("Emulation.clearDeviceMetricsOverride");
   assert.deepEqual(page.consoleErrors, [], `browser console errors: ${page.consoleErrors.join(" | ")}`);
   console.log("Browser smoke passed.");

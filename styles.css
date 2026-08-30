@@ -154,12 +154,28 @@ button:disabled { cursor: default; opacity: .58; }
   .message-edit textarea { height: 48px; min-height: 48px; max-height: 48px; resize: none; }
 }
 
-@media (max-width: 240px) and (max-height: 160px) {
+@media (max-height: 160px) {
   .chat-header { min-width: 0; padding-block: 4px; }
   .chat-header > div { min-width: 0; }
   .chat-header .eyebrow { display: none; }
   .chat-header h1 { min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chat-header .settings-button { min-height: 28px; padding-block: 4px; }
   .connection-intro, .connection-intro > div, .composer-wrap { min-width: 0; }
   .composer-wrap { padding-block: 0 4px; }
   .status-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
+@media (max-height: 120px) {
+  .chat-header { padding-block: 3px; }
+  .chat-header .settings-button { min-height: 26px; padding-block: 2px; }
+  .composer-wrap { padding-block: 0; }
+  .composer textarea { padding-block: 4px; line-height: 1.2; }
+  .composer textarea, .send-button { min-height: 30px; }
+}
+
+@media (max-height: 90px) {
+  .chat-header { padding-block: 2px; }
+  .chat-header .settings-button { min-height: 24px; padding-block: 1px; }
+  .composer { gap: 3px; }
+  .composer textarea, .send-button { min-height: 26px; }
 }
