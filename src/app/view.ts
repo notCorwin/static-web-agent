@@ -227,7 +227,7 @@ function messageElement(message: ModelMessage, index: number, results: ReadonlyM
     edit.textContent = "Edit";
     actions.append(edit);
   }
-  article.append(actions);
+  if (actions.childElementCount > 0) article.append(actions);
   return article;
 }
 

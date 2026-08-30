@@ -264,6 +264,19 @@ try {
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
   assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test. Ask the agent to do something.");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = '   ';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Write a message before sending.");
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'A valid message';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "", "typing a valid message should clear the stale empty-message error");
+  await page.evaluate("document.querySelector('#message-input').value = ''");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 240, height: 240, deviceScaleFactor: 1, mobile: false });
   const tinyEmptyLayout = await page.evaluate(`(() => ({
     chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
@@ -410,6 +423,7 @@ try {
   assert.equal(toolTrace.requestCount, 2);
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.getAttribute('aria-busy')"), "false");
   assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant')].find((node) => node.querySelector('.tool-trace') !== null && node.querySelector('.message-body') === null)?.querySelectorAll('.message-action').length"), 0, "tool-only assistant messages should not show an empty Copy action");
+  assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant')].find((node) => node.querySelector('.tool-trace') !== null && node.querySelector('.message-body') === null)?.querySelector('.message-actions')"), null, "tool-only assistant messages should not render an empty action row");
   assert.equal(await page.evaluate("document.querySelector('.message.user')?.getAttribute('aria-label')"), "Your message");
   assert.equal(await page.evaluate("document.querySelector('.message.user [data-action=copy-message]')?.getAttribute('aria-label')"), "Copy your message");
   assert.equal(await page.evaluate("document.querySelector('.message.user [data-action=edit-message]')?.getAttribute('aria-label')"), "Edit your message");
@@ -649,6 +663,15 @@ try {
   })()`);
   assert.equal(reusedToolCall.firstOpen, true, "the original expanded tool must stay open");
   assert.equal(reusedToolCall.lastOpen, false, "a reused call ID must not expand the new tool card");
+  await page.evaluate("document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1)?.querySelector('summary')?.click()");
+  await waitFor(page, `(() => {
+    const chat = document.querySelector('#chat-log');
+    const trace = document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1);
+    const response = [...document.querySelectorAll('.message.assistant .message-body')].at(-1);
+    return trace?.open === true
+      && trace.getBoundingClientRect().bottom <= (chat?.getBoundingClientRect().bottom ?? 0) + 1
+      && response?.getBoundingClientRect().bottom <= (chat?.getBoundingClientRect().bottom ?? 0) + 1;
+  })()`);
 
   const consoleErrorsBeforeInitialFailure = page.consoleErrors.length;
   await page.evaluate(`(() => {

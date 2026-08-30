@@ -159,6 +159,9 @@ export class AgentApp {
     const signal = controller.signal;
     const input = this.element<HTMLTextAreaElement>("message-input");
     const chat = this.element("chat-log");
+    input.addEventListener("input", () => {
+      if (input.value.trim().length > 0 && this.runStatus === "Write a message before sending.") this.setStatus("", "normal");
+    }, { signal });
     this.element("composer-form").addEventListener("submit", (event) => {
       event.preventDefault();
       if (this.busy) {
@@ -245,9 +248,20 @@ export class AgentApp {
     for (const id of ["model-endpoint", "model-name"]) {
       this.element(id).addEventListener("input", () => this.clearFieldError(id), { signal });
     }
-    this.element("conversation-content").addEventListener("click", (event) => {
+    const conversation = this.element("conversation-content");
+    conversation.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      const summary = target.closest("summary");
+      const details = summary?.parentElement;
+      if (summary !== null && details instanceof HTMLDetailsElement) {
+        const wasFollowing = this.followChat;
+        window.requestAnimationFrame(() => {
+          if (!details.isConnected || !details.open || this.editingIndex !== undefined || this.connectionEditing) return;
+          if (wasFollowing) chat.scrollTop = chat.scrollHeight;
+          else this.keepToolVisible(details);
+        });
+      }
       const button = target.closest<HTMLButtonElement>("button[data-action]");
       if (button === null) return;
       const index = Number.parseInt(button.dataset.messageIndex ?? "", 10);
@@ -608,6 +622,15 @@ export class AgentApp {
   private keepMessageEditVisible(): void {
     if (this.editingIndex === undefined) return;
     this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${this.editingIndex}"] .message-edit`)?.scrollIntoView({ block: "nearest" });
+  }
+
+  private keepToolVisible(details: HTMLDetailsElement): void {
+    const chat = this.element("chat-log");
+    const chatBounds = chat.getBoundingClientRect();
+    const detailsBounds = details.getBoundingClientRect();
+    const maxScroll = Math.max(0, chat.scrollHeight - chat.clientHeight);
+    if (detailsBounds.bottom > chatBounds.bottom) chat.scrollTop = Math.min(maxScroll, chat.scrollTop + Math.ceil(detailsBounds.bottom - chatBounds.bottom));
+    else if (detailsBounds.top < chatBounds.top) chat.scrollTop = Math.max(0, chat.scrollTop + Math.floor(detailsBounds.top - chatBounds.top));
   }
 
   private async resendEditedMessage(index: number, value: string): Promise<void> {
