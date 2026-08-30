@@ -653,8 +653,9 @@ export class AgentApp {
       : this.element<HTMLInputElement>("model-endpoint");
     const cardBounds = card.getBoundingClientRect();
     const fieldBounds = field.getBoundingClientRect();
-    if (fieldBounds.bottom > cardBounds.bottom) card.scrollTop = Math.min(card.scrollHeight - card.clientHeight, Math.ceil(fieldBounds.bottom - cardBounds.bottom));
-    else if (fieldBounds.top < cardBounds.top) card.scrollTop = Math.max(0, fieldBounds.top - cardBounds.top);
+    const maxScroll = Math.max(0, card.scrollHeight - card.clientHeight);
+    if (fieldBounds.bottom > cardBounds.bottom) card.scrollTop = Math.min(maxScroll, card.scrollTop + Math.ceil(fieldBounds.bottom - cardBounds.bottom));
+    else if (fieldBounds.top < cardBounds.top) card.scrollTop = Math.max(0, card.scrollTop + Math.floor(fieldBounds.top - cardBounds.top));
   }
 
   private setStatus(message: string, kind: "normal" | "success" | "error"): void {
