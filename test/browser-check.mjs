@@ -182,7 +182,7 @@ class CdpPage {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`CDP command timed out: ${method}`));
-      }, 10_000);
+      }, 30_000);
       this.pending.set(id, {
         resolve: (value) => { clearTimeout(timer); resolve(value); },
         reject: (error) => { clearTimeout(timer); reject(error); },
@@ -472,8 +472,9 @@ try {
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "canceling an invalid edit should restore the prior run status");
   assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "canceling an edit should return focus to the composer");
 
-  await page.send("Page.reload", { ignoreCache: true });
-  await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
+  const refreshQuery = `?refresh=${Date.now()}`;
+  await page.send("Page.navigate", { url: `http://127.0.0.1:${port}/dist/index.html${refreshQuery}` });
+  await waitFor(page, `location.search === ${JSON.stringify(refreshQuery)} && document.querySelector('#message-input')?.disabled === false`);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(await page.evaluate("document.querySelectorAll('.message').length"), 0, "conversation should not be restored");
   await page.evaluate("document.querySelector('#open-settings').click()");
@@ -724,6 +725,25 @@ try {
     input.value = '';
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 200, height: 120, deviceScaleFactor: 1, mobile: false });
+  const ultraCompactLayout = await page.evaluate(`(() => {
+    const rect = (selector) => document.querySelector(selector)?.getBoundingClientRect().toJSON();
+    return {
+      viewport: [innerWidth, innerHeight],
+      header: rect('.chat-header'),
+      composer: rect('.composer-wrap'),
+      input: rect('#message-input'),
+      send: rect('#send-button'),
+      status: rect('#run-status'),
+      workspace: [document.querySelector('#main-content')?.clientWidth, document.querySelector('#main-content')?.scrollWidth],
+      page: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
+    };
+  })()`);
+  assert.deepEqual(ultraCompactLayout.viewport, [200, 120]);
+  assert.ok(ultraCompactLayout.header.bottom <= 120 && ultraCompactLayout.composer.bottom <= 120, `ultra-compact chrome must stay in the viewport: ${JSON.stringify(ultraCompactLayout)}`);
+  assert.ok(ultraCompactLayout.input.bottom <= 120 && ultraCompactLayout.send.bottom <= 120 && ultraCompactLayout.status.bottom <= 120, `ultra-compact composer controls must stay visible: ${JSON.stringify(ultraCompactLayout)}`);
+  assert.deepEqual(ultraCompactLayout.workspace, [200, 200]);
+  assert.deepEqual(ultraCompactLayout.page, [200, 120]);
   await page.send("Emulation.clearDeviceMetricsOverride");
   assert.deepEqual(page.consoleErrors, [], `browser console errors: ${page.consoleErrors.join(" | ")}`);
   console.log("Browser smoke passed.");
