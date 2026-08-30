@@ -261,7 +261,11 @@ export function streamingElement(stream: StreamView): HTMLElement | undefined {
   const wrapper = document.createElement("div");
   wrapper.className = `streaming-run${stream.stopped === true ? " stopped" : ""}`;
   if (stream.text.length > 0) wrapper.append(textElement("div", stream.text, "message-body"));
-  for (const item of stream.tools) wrapper.append(toolElement(item.call, item.delta, item.result, undefined, item.status, stream.stopped === true));
+  for (const [index, item] of stream.tools.entries()) {
+    const details = toolElement(item.call, item.delta, item.result, undefined, item.status, stream.stopped === true);
+    details.dataset.streamToolIndex = String(index);
+    wrapper.append(details);
+  }
   if (stream.stopped === true) wrapper.append(textElement("p", "Stopped", "stream-status"));
   if (stream.error !== undefined) wrapper.append(textElement("p", stream.error, "stream-error"));
   return wrapper;

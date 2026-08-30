@@ -594,6 +594,16 @@ export class AgentApp {
     const conversation = this.element("conversation-content");
     const chat = this.element("chat-log");
     const connected = this.harness?.modelId !== undefined;
+    const streamingToolStates = new Map<string, boolean>();
+    const streamingToolIds = new Map<string, boolean>();
+    for (const details of this.liveElement?.querySelectorAll<HTMLDetailsElement>(".tool-trace") ?? []) {
+      const index = details.dataset.streamToolIndex;
+      if (index !== undefined) streamingToolStates.set(index, details.open);
+      const id = details.dataset.toolCallId;
+      if (id !== undefined) streamingToolIds.set(id, details.open);
+    }
+    this.liveElement?.remove();
+    this.liveElement = undefined;
     const historyChanged = this.renderedMessages !== this.messages
       || this.renderedConnected !== connected
       || this.renderedConnectedModelName !== this.connectedModelName
@@ -617,17 +627,25 @@ export class AgentApp {
       for (const details of conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-key]")) {
         if (details.dataset.toolCallKey !== undefined && openToolCallKeys.has(details.dataset.toolCallKey)) details.open = true;
       }
+      for (const [id, open] of streamingToolIds) {
+        const details = [...conversation.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-tool-call-id]")]
+          .reverse()
+          .find((candidate) => candidate.dataset.toolCallId === id);
+        if (details !== undefined) details.open = open;
+      }
       this.renderedMessages = this.messages;
       this.renderedConnected = connected;
       this.renderedConnectedModelName = this.connectedModelName;
       this.renderedEditingIndex = this.editingIndex;
     }
 
-    this.liveElement?.remove();
-    this.liveElement = undefined;
     if (connected && this.stream !== undefined) {
       const live = streamingElement(this.stream as StreamView);
       if (live !== undefined) {
+        for (const details of live.querySelectorAll<HTMLDetailsElement>(".tool-trace[data-stream-tool-index]")) {
+          const index = details.dataset.streamToolIndex;
+          if (index !== undefined && streamingToolStates.has(index)) details.open = streamingToolStates.get(index) === true;
+        }
         conversation.append(live);
         this.liveElement = live;
       }

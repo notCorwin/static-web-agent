@@ -80,6 +80,20 @@ async function startServer() {
         };
         write();
         return;
+      } else if (lastUser?.content === "Expand while streaming" && messages.at(-1)?.role === "tool") {
+        const chunks = ["streaming ", "after ", "the ", "tool ", "call ", "so ", "the ", "expanded ", "detail ", "stays ", "visible."];
+        let index = 0;
+        const write = () => {
+          if (index < chunks.length) {
+            response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: chunks[index] } }] })}\n\n`);
+            index += 1;
+            setTimeout(write, 120);
+          } else {
+            response.end(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+          }
+        };
+        write();
+        return;
       } else if (lastUser?.content === "Fail during model") {
         const code = "return { partial: true }";
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
@@ -90,6 +104,8 @@ async function startServer() {
       } else {
         const code = lastUser?.content === "Long tool result"
           ? "return 'x'.repeat(50000)"
+          : lastUser?.content === "Expand while streaming"
+            ? "return { expanded: true }"
           : lastUser?.content === "Cancel this run"
           ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
           : lastUser?.content === "Fail after tool"
@@ -582,6 +598,17 @@ try {
   assert.ok(longToolLayout.resultLength > 10000, `the long tool fixture should render a large result: ${JSON.stringify(longToolLayout)}`);
   assert.ok(longToolLayout.trace.height > longToolLayout.chat.height, `the long tool detail should exercise an oversized trace: ${JSON.stringify(longToolLayout)}`);
   assert.ok(longToolLayout.summary.top >= longToolLayout.chat.top - 1 && longToolLayout.summary.bottom <= longToolLayout.chat.bottom + 1, `opening an oversized tool detail should keep its summary visible: ${JSON.stringify(longToolLayout)}`);
+
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'Expand while streaming';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Stop' && document.querySelector('.streaming-run .tool-trace') !== null");
+  await page.evaluate("document.querySelector('.streaming-run .tool-trace summary')?.click()");
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  assert.equal(await page.evaluate("document.querySelector('.streaming-run .tool-trace')?.open"), true, "an expanded live tool detail must survive later streamed tokens");
+  await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 
   const refreshQuery = `?refresh=${Date.now()}`;
