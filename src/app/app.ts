@@ -177,7 +177,12 @@ export class AgentApp {
       const chat = this.element("chat-log");
       if (this.followChat && !this.connectionEditing && (this.messages.length > 0 || this.stream !== undefined)) chat.scrollTop = chat.scrollHeight;
       this.keepMessageEditVisible();
-      if (this.connectionEditing) this.keepConnectionFieldVisible();
+      if (this.connectionEditing) {
+        this.keepConnectionFieldVisible();
+        window.requestAnimationFrame(() => {
+          if (this.connectionEditing) this.keepConnectionFieldVisible();
+        });
+      }
     }, { signal });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && this.busy && !event.isComposing) {
