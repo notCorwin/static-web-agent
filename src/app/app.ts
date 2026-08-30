@@ -106,8 +106,11 @@ export class AgentApp {
     this.applyConnectionSettings(settings);
     this.ready = true;
     this.render();
-    if (settings === undefined) this.element<HTMLInputElement>("model-endpoint").focus();
-    else this.focusComposer();
+    if (settings === undefined) {
+      this.element<HTMLInputElement>("model-endpoint").focus();
+      this.keepConnectionFieldVisible();
+      this.element("chat-log").scrollTop = 0;
+    } else this.focusComposer();
     if (this.options.autoConnect !== false && settings !== undefined) void this.connectSettings(settings, true, generation);
   }
 
@@ -185,10 +188,14 @@ export class AgentApp {
       const chat = this.element("chat-log");
       if (this.followChat && !this.connectionEditing && (this.messages.length > 0 || this.stream !== undefined)) chat.scrollTop = chat.scrollHeight;
       this.keepMessageEditVisible();
-      if (this.connectionEditing) {
+      if (this.connectionEditing || this.harness?.modelId === undefined) {
         this.keepConnectionFieldVisible();
+        if (this.harness?.modelId === undefined) chat.scrollTop = 0;
         window.requestAnimationFrame(() => {
-          if (this.connectionEditing) this.keepConnectionFieldVisible();
+          if (this.connectionEditing || this.harness?.modelId === undefined) {
+            this.keepConnectionFieldVisible();
+            if (this.harness?.modelId === undefined) chat.scrollTop = 0;
+          }
         });
       }
     }, { signal });
@@ -267,11 +274,9 @@ export class AgentApp {
       if (summary !== null && details instanceof HTMLDetailsElement) {
         const wasConnectionEditing = this.connectionEditing;
         if (wasConnectionEditing && !details.open) this.element<HTMLButtonElement>("open-settings").click();
-        const wasFollowing = this.followChat;
         window.requestAnimationFrame(() => {
           if (!details.isConnected || !details.open || this.connectionEditing) return;
-          if (wasFollowing) chat.scrollTop = chat.scrollHeight;
-          else this.keepToolVisible(details);
+          this.keepToolVisible(details);
           if (wasConnectionEditing && summary instanceof HTMLElement) summary.focus({ preventScroll: true });
         });
       }
@@ -628,7 +633,8 @@ export class AgentApp {
       }
     }
     conversation.querySelectorAll<HTMLButtonElement>('[data-action="edit-message"]').forEach((button) => { button.disabled = this.busy; });
-    if (this.followChat && !this.connectionEditing && (this.messages.length > 0 || this.stream !== undefined)) chat.scrollTop = chat.scrollHeight;
+    if (this.messages.length === 0 && this.stream === undefined) chat.scrollTop = 0;
+    else if (this.followChat && !this.connectionEditing) chat.scrollTop = chat.scrollHeight;
   }
 
   private startMessageEdit(index: number): void {
@@ -654,8 +660,16 @@ export class AgentApp {
     const chat = this.element("chat-log");
     const chatBounds = chat.getBoundingClientRect();
     const detailsBounds = details.getBoundingClientRect();
+    const followingResponse = details.closest<HTMLElement>(".message")?.nextElementSibling?.querySelector<HTMLElement>(".message-body");
+    const followingResponseBounds = followingResponse?.getBoundingClientRect();
+    const groupBottom = followingResponseBounds?.bottom ?? detailsBounds.bottom;
+    const groupHeight = groupBottom - detailsBounds.top;
     const maxScroll = Math.max(0, chat.scrollHeight - chat.clientHeight);
-    if (detailsBounds.bottom > chatBounds.bottom) chat.scrollTop = Math.min(maxScroll, chat.scrollTop + Math.ceil(detailsBounds.bottom - chatBounds.bottom));
+    if (groupHeight > chat.clientHeight) {
+      chat.scrollTop = Math.min(maxScroll, Math.max(0, chat.scrollTop + Math.round(detailsBounds.top - chatBounds.top)));
+      return;
+    }
+    if (groupBottom > chatBounds.bottom) chat.scrollTop = Math.min(maxScroll, chat.scrollTop + Math.ceil(groupBottom - chatBounds.bottom));
     else if (detailsBounds.top < chatBounds.top) chat.scrollTop = Math.max(0, chat.scrollTop + Math.floor(detailsBounds.top - chatBounds.top));
   }
 

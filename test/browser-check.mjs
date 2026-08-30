@@ -88,7 +88,9 @@ async function startServer() {
       } else if (messages.at(-1)?.role === "tool") {
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: "done from browser" } }] })}\n\n`);
       } else {
-        const code = lastUser?.content === "Cancel this run"
+        const code = lastUser?.content === "Long tool result"
+          ? "return 'x'.repeat(50000)"
+          : lastUser?.content === "Cancel this run"
           ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
           : lastUser?.content === "Fail after tool"
             ? "throw new Error('intentional page failure')"
@@ -254,6 +256,16 @@ try {
   })`);
   assert.deepEqual(initial, { connectionVisible: true, sendVisible: true, sendDisabled: true, chatNotBusy: true, noAttachments: true, noThinking: true, noPluginUi: true, oneToolName: true });
   assert.equal(await page.evaluate("document.activeElement?.id"), "model-endpoint", "the first connection field should receive initial focus");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 240, height: 160, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const tinyConnection = await page.evaluate(`(() => ({
+    viewport: { width: innerWidth, height: innerHeight },
+    card: document.querySelector('#connection-card')?.getBoundingClientRect().toJSON(),
+    endpoint: document.querySelector('#model-endpoint')?.getBoundingClientRect().toJSON(),
+    cardScrollTop: document.querySelector('#connection-card')?.scrollTop,
+  }))()`);
+  assert.ok(tinyConnection.endpoint.top >= tinyConnection.card.top - 1 && tinyConnection.endpoint.bottom <= tinyConnection.card.bottom + 1, `the focused connection field must stay visible in a tiny viewport: ${JSON.stringify(tinyConnection)}`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 
   await page.evaluate(`(() => {
     document.querySelector('#model-endpoint').value = 'http://127.0.0.1:${port}/v1';
@@ -526,6 +538,51 @@ try {
   assert.equal(await page.evaluate("document.activeElement?.getAttribute('aria-label')"), "Edit message", "a blocked send should return focus to the active editor");
   await page.evaluate("document.querySelector('[data-action=cancel-edit]').click()");
   assert.equal(await page.evaluate("document.querySelector('#message-input')?.value"), "Do not discard the edit", "a blocked send should preserve the composer draft too");
+
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'Long tool result';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  await waitFor(page, `(() => {
+    const users = document.querySelectorAll('.message.user .message-body');
+    const assistants = document.querySelectorAll('.message.assistant .message-body');
+    const traces = document.querySelectorAll('.tool-trace');
+    return users.item(users.length - 1)?.textContent === 'Long tool result'
+      && traces.length >= 2
+      && assistants.item(assistants.length - 1)?.textContent.includes('done from browser') === true;
+  })()`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 600, deviceScaleFactor: 1, mobile: false });
+  await page.evaluate(`(() => {
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    trace.open = false;
+    trace.querySelector('summary')?.scrollIntoView({ block: 'nearest' });
+    trace.querySelector('summary')?.click();
+  })()`);
+  await waitFor(page, `(() => {
+    const chat = document.querySelector('#chat-log');
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    const summary = trace?.querySelector('summary');
+    return trace?.open === true
+      && (summary?.getBoundingClientRect().top ?? -Infinity) >= (chat?.getBoundingClientRect().top ?? 0) - 1
+      && (summary?.getBoundingClientRect().bottom ?? Infinity) <= (chat?.getBoundingClientRect().bottom ?? 0) + 1;
+  })()`);
+  const longToolLayout = await page.evaluate(`(() => {
+    const trace = [...document.querySelectorAll('.tool-trace')].at(-1);
+    const values = trace?.querySelectorAll('.trace-value');
+    return {
+      chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
+      trace: trace?.getBoundingClientRect().toJSON(),
+      summary: trace?.querySelector('summary')?.getBoundingClientRect().toJSON(),
+      code: trace?.querySelector('.trace-code')?.textContent,
+      resultLength: values?.item((values.length ?? 0) - 1)?.textContent?.length,
+    };
+  })()`);
+  assert.match(longToolLayout.code, /repeat\(50000\)/, `the long tool fixture should reach the page tool: ${JSON.stringify(longToolLayout)}`);
+  assert.ok(longToolLayout.resultLength > 10000, `the long tool fixture should render a large result: ${JSON.stringify(longToolLayout)}`);
+  assert.ok(longToolLayout.trace.height > longToolLayout.chat.height, `the long tool detail should exercise an oversized trace: ${JSON.stringify(longToolLayout)}`);
+  assert.ok(longToolLayout.summary.top >= longToolLayout.chat.top - 1 && longToolLayout.summary.bottom <= longToolLayout.chat.bottom + 1, `opening an oversized tool detail should keep its summary visible: ${JSON.stringify(longToolLayout)}`);
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 
   const refreshQuery = `?refresh=${Date.now()}`;
   await page.send("Page.navigate", { url: `http://127.0.0.1:${port}/dist/index.html${refreshQuery}` });
