@@ -348,6 +348,16 @@ try {
   })()`);
   await waitFor(page, "document.querySelector('#model-endpoint')?.getAttribute('aria-invalid') === 'true' && document.querySelector('#model-name')?.getAttribute('aria-invalid') === 'true'");
   assert.equal(await page.evaluate("document.activeElement?.id"), "model-endpoint", "validation should focus the first invalid field");
+  await page.evaluate(`(() => {
+    const endpoint = document.querySelector('#model-endpoint');
+    const model = document.querySelector('#model-name');
+    endpoint.value = 'http://127.0.0.1:${port}/v1';
+    endpoint.dispatchEvent(new Event('input', { bubbles: true }));
+    model.value = 'browser-test';
+    model.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Connected to Browser Test.", "correcting every invalid connection field should restore the prior status");
+  assert.equal(await page.evaluate("document.querySelector('#endpoint-error')?.textContent || document.querySelector('#model-error')?.textContent"), "", "correcting every invalid connection field should clear its field errors");
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
   assert.deepEqual(await page.evaluate(`({
@@ -505,6 +515,17 @@ try {
   await page.evaluate("document.querySelector('[data-action=cancel-edit]').click()");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "canceling an invalid edit should restore the prior run status");
   assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "canceling an edit should return focus to the composer");
+  await page.evaluate(`(() => {
+    document.querySelector('[data-action="edit-message"]').click();
+    document.querySelector('.message-edit textarea').value = 'Keep this edit';
+    document.querySelector('#message-input').value = 'Do not discard the edit';
+    document.querySelector('#composer-form').requestSubmit();
+  })()`);
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Finish editing before sending.");
+  assert.equal(await page.evaluate("document.querySelector('.message-edit textarea')?.value"), "Keep this edit", "sending from the composer must preserve an unfinished message edit");
+  assert.equal(await page.evaluate("document.activeElement?.getAttribute('aria-label')"), "Edit message", "a blocked send should return focus to the active editor");
+  await page.evaluate("document.querySelector('[data-action=cancel-edit]').click()");
+  assert.equal(await page.evaluate("document.querySelector('#message-input')?.value"), "Do not discard the edit", "a blocked send should preserve the composer draft too");
 
   const refreshQuery = `?refresh=${Date.now()}`;
   await page.send("Page.navigate", { url: `http://127.0.0.1:${port}/dist/index.html${refreshQuery}` });
@@ -554,6 +575,7 @@ try {
     document.querySelector('#composer-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('.streaming-run') !== null");
+  assert.equal(await page.evaluate("document.querySelector('[data-action=edit-message]')?.disabled"), true, "message editing should be disabled while a response is streaming");
   await page.evaluate(`(() => {
     document.querySelector('#open-settings').click();
     window.dispatchEvent(new Event('resize'));
@@ -573,6 +595,25 @@ try {
   })()`);
   assert.ok(settingsDuringStream.card.top >= settingsDuringStream.header.bottom - 1, `settings should stay below the header while a stream updates: ${JSON.stringify(settingsDuringStream)}`);
   assert.ok(settingsDuringStream.endpoint.top >= settingsDuringStream.card.top && settingsDuringStream.endpoint.bottom <= settingsDuringStream.chat.bottom, `settings fields should stay visible while a stream updates: ${JSON.stringify(settingsDuringStream)}`);
+  await page.evaluate(`(() => {
+    const endpoint = document.querySelector('#model-endpoint');
+    const model = document.querySelector('#model-name');
+    endpoint.value = '';
+    endpoint.dispatchEvent(new Event('input', { bubbles: true }));
+    model.value = '';
+    model.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('#connection-form').requestSubmit();
+  })()`);
+  await waitFor(page, "document.querySelector('#model-endpoint')?.getAttribute('aria-invalid') === 'true' && document.querySelector('#model-name')?.getAttribute('aria-invalid') === 'true'");
+  await page.evaluate(`(() => {
+    const endpoint = document.querySelector('#model-endpoint');
+    const model = document.querySelector('#model-name');
+    endpoint.value = 'http://127.0.0.1:${port}/v1';
+    endpoint.dispatchEvent(new Event('input', { bubbles: true }));
+    model.value = 'browser-test-replaced';
+    model.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Running…", "correcting connection fields during a stream should restore the running status");
   await waitFor(page, "document.querySelector('#send-button')?.textContent === 'Send'");
   assert.equal(await page.evaluate("document.querySelector('#run-status')?.textContent"), "Response complete.", "a completed run should update status while settings remain open");
   await page.evaluate("document.querySelector('#open-settings').click()");
@@ -622,10 +663,13 @@ try {
   const settingsGeometry = await page.evaluate(`(() => ({
     cardTop: document.querySelector('#connection-card')?.getBoundingClientRect().top,
     headerBottom: document.querySelector('.chat-header')?.getBoundingClientRect().bottom,
+    overflow: getComputedStyle(document.querySelector('#chat-log')).overflow,
   }))()`);
   assert.ok(settingsGeometry.cardTop >= settingsGeometry.headerBottom - 1, `connection settings must stay below the page header: ${JSON.stringify(settingsGeometry)}`);
+  assert.equal(settingsGeometry.overflow, "hidden", "opening connection settings should lock background chat scrolling");
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  assert.equal(await page.evaluate("getComputedStyle(document.querySelector('#chat-log')).overflow"), "auto", "closing connection settings should restore chat scrolling");
   assert.ok(Math.abs(await page.evaluate("document.querySelector('#chat-log')?.scrollTop") - scrollBeforeSettings) < 2, "closing settings must restore the conversation position");
   await page.evaluate("document.querySelector('#open-settings').click()");
   await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
@@ -702,6 +746,25 @@ try {
       && trace.getBoundingClientRect().bottom <= (chat?.getBoundingClientRect().bottom ?? 0) + 1
       && response?.getBoundingClientRect().bottom <= (chat?.getBoundingClientRect().bottom ?? 0) + 1;
   })()`);
+  await page.evaluate("document.querySelector('[data-action=edit-message]')?.click()");
+  await waitFor(page, "document.querySelector('.message-edit') !== null");
+  await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = Math.max(0, chat.scrollHeight - chat.clientHeight - 60);
+    chat.dispatchEvent(new Event('scroll'));
+    const trace = document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1);
+    trace.open = false;
+    trace.querySelector('summary')?.click();
+  })()`);
+  await waitFor(page, `(() => {
+    const chat = document.querySelector('#chat-log');
+    const trace = document.querySelectorAll('.tool-trace').item(document.querySelectorAll('.tool-trace').length - 1);
+    return document.querySelector('.message-edit') !== null
+      && trace?.open === true
+      && trace.getBoundingClientRect().bottom <= (chat?.getBoundingClientRect().bottom ?? 0) + 1;
+  })()`);
+  await page.evaluate("document.querySelector('[data-action=cancel-edit]')?.click()");
+  await waitFor(page, "document.querySelector('.message-edit') === null");
 
   const consoleErrorsBeforeInitialFailure = page.consoleErrors.length;
   await page.evaluate(`(() => {

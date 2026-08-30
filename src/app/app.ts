@@ -220,8 +220,7 @@ export class AgentApp {
       if (this.harness?.modelId === undefined) return;
       if (this.editingIndex !== undefined) {
         this.setStatus("Finish editing before changing the connection.", "error");
-        this.keepMessageEditVisible();
-        this.element("conversation-content").querySelector<HTMLTextAreaElement>(`.message[data-message-index="${this.editingIndex}"] .message-edit textarea`)?.focus({ preventScroll: true });
+        this.focusMessageEdit();
         return;
       }
       if (this.connectionEditing) {
@@ -270,7 +269,7 @@ export class AgentApp {
         if (wasConnectionEditing && !details.open) this.element<HTMLButtonElement>("open-settings").click();
         const wasFollowing = this.followChat;
         window.requestAnimationFrame(() => {
-          if (!details.isConnected || !details.open || this.editingIndex !== undefined || this.connectionEditing) return;
+          if (!details.isConnected || !details.open || this.connectionEditing) return;
           if (wasFollowing) chat.scrollTop = chat.scrollHeight;
           else this.keepToolVisible(details);
           if (wasConnectionEditing && summary instanceof HTMLElement) summary.focus({ preventScroll: true });
@@ -410,6 +409,11 @@ export class AgentApp {
       this.setStatus("Connect a model before sending.", "error");
       this.connectionEditing = true;
       this.render();
+      return;
+    }
+    if (this.editingIndex !== undefined) {
+      this.setStatus("Finish editing before sending.", "error");
+      this.focusMessageEdit();
       return;
     }
     const input = this.element<HTMLTextAreaElement>("message-input");
@@ -554,6 +558,7 @@ export class AgentApp {
   private renderConnection(): void {
     const connected = this.harness?.modelId !== undefined;
     const card = this.element("connection-card");
+    this.element("chat-log").classList.toggle("settings-open", connected && this.connectionEditing);
     card.hidden = connected && !this.connectionEditing;
     const openSettings = this.element("open-settings");
     openSettings.hidden = !connected;
@@ -622,6 +627,7 @@ export class AgentApp {
         this.liveElement = live;
       }
     }
+    conversation.querySelectorAll<HTMLButtonElement>('[data-action="edit-message"]').forEach((button) => { button.disabled = this.busy; });
     if (this.followChat && !this.connectionEditing && (this.messages.length > 0 || this.stream !== undefined)) chat.scrollTop = chat.scrollHeight;
   }
 
@@ -630,13 +636,18 @@ export class AgentApp {
     this.messageEditRunStatusBefore = { message: this.runStatus, kind: this.runStatusKind };
     this.editingIndex = index;
     this.renderConversation();
-    this.keepMessageEditVisible();
-    this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${index}"] .message-edit textarea`)?.focus({ preventScroll: true });
+    this.focusMessageEdit();
   }
 
   private keepMessageEditVisible(): void {
     if (this.editingIndex === undefined) return;
     this.element("conversation-content").querySelector<HTMLElement>(`.message[data-message-index="${this.editingIndex}"] .message-edit`)?.scrollIntoView({ block: "nearest" });
+  }
+
+  private focusMessageEdit(): void {
+    if (this.editingIndex === undefined) return;
+    this.keepMessageEditVisible();
+    this.element("conversation-content").querySelector<HTMLTextAreaElement>(`.message[data-message-index="${this.editingIndex}"] .message-edit textarea`)?.focus({ preventScroll: true });
   }
 
   private keepToolVisible(details: HTMLDetailsElement): void {
@@ -652,7 +663,7 @@ export class AgentApp {
     const content = value.trim();
     if (!content) {
       this.setStatus("The edited message cannot be empty.", "error");
-      this.element("conversation-content").querySelector<HTMLTextAreaElement>(`.message[data-message-index="${index}"] .message-edit textarea`)?.focus();
+      this.focusMessageEdit();
       return;
     }
     if (this.busy || this.messages[index]?.role !== "user") return;
@@ -707,6 +718,14 @@ export class AgentApp {
     const errorId = id === "model-endpoint" ? "endpoint-error" : "model-error";
     input.setAttribute("aria-invalid", "false");
     this.element(errorId).textContent = "";
+    if (this.runStatus === "Check the highlighted connection fields." && this.element<HTMLInputElement>("model-endpoint").getAttribute("aria-invalid") !== "true" && this.element<HTMLInputElement>("model-name").getAttribute("aria-invalid") !== "true") {
+      if (this.busy) this.setStatus("Running…", "normal");
+      else {
+        const runChanged = this.connectionRunRevisionBeforeEdit !== undefined && this.connectionRunRevisionBeforeEdit !== this.runRevision;
+        const previous = runChanged ? undefined : this.connectionRunStatusBeforeEdit;
+        this.setStatus(previous?.message ?? "", previous?.kind ?? "normal");
+      }
+    }
   }
 
   private setFieldError(id: string, message: string): void {

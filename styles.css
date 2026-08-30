@@ -53,6 +53,7 @@ button:disabled { cursor: default; opacity: .58; }
 .eyebrow { margin: 0; color: var(--faint); font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
 .settings-button { min-height: 32px; }
 .chat-scroll { position: relative; min-width: 0; min-height: 0; padding: 18px clamp(18px, 4vw, 48px); overflow: auto; overscroll-behavior: contain; }
+.chat-scroll.settings-open { overflow: hidden; }
 .conversation-content { display: flex; flex-direction: column; gap: 18px; min-width: 0; min-height: 100%; }
 .connection-card { position: absolute; z-index: 2; top: 50%; left: 50%; width: min(680px, calc(100% - 32px)); max-height: 100%; margin: 0; overflow: auto; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); transform: translate(-50%, -50%); }
 .connection-card[hidden], .settings-button[hidden], .send-button[hidden] { display: none; }
