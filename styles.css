@@ -83,6 +83,9 @@ button:disabled { cursor: default; opacity: .58; }
 .message.user .message-actions { justify-content: flex-end; }
 .message-action { min-height: 25px; padding: 3px 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; }
 .message-action:hover { border-color: var(--border); background: var(--surface-soft); color: var(--text); }
+@media (hover: none), (pointer: coarse) {
+  .message-actions { opacity: 1; }
+}
 .message-edit { display: grid; gap: 8px; }
 .message-edit textarea { min-height: 76px; padding: 9px 10px; resize: vertical; line-height: 1.45; }
 .message-edit-actions { display: flex; justify-content: flex-end; gap: 7px; }

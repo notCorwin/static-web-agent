@@ -393,8 +393,10 @@ try {
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = 'Use the page tool';
-    document.querySelector('#composer-form').requestSubmit();
+    document.querySelector('#send-button').focus();
+    document.querySelector('#send-button').click();
   })()`);
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "sending with the button should return focus to the composer");
   await waitFor(page, "[...document.querySelectorAll('.message.assistant .message-body')].at(-1)?.textContent.includes('done from browser') === true");
   const toolTrace = await page.evaluate(`(() => ({
     count: document.querySelectorAll('.tool-trace').length,
@@ -408,6 +410,18 @@ try {
   assert.equal(toolTrace.requestCount, 2);
   assert.equal(await page.evaluate("document.querySelector('#chat-log')?.getAttribute('aria-busy')"), "false");
   assert.equal(await page.evaluate("[...document.querySelectorAll('.message.assistant')].find((node) => node.querySelector('.tool-trace') !== null && node.querySelector('.message-body') === null)?.querySelectorAll('.message-action').length"), 0, "tool-only assistant messages should not show an empty Copy action");
+
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 768, height: 600, deviceScaleFactor: 1, mobile: false });
+  await page.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const touchActions = await page.evaluate(`(() => ({
+    hoverNone: matchMedia('(hover: none)').matches,
+    actionsVisible: [...document.querySelectorAll('.message-actions')].every((node) => getComputedStyle(node).opacity === '1'),
+  }))()`);
+  assert.equal(touchActions.hoverNone, true, `touch emulation should expose a hover-none media state: ${JSON.stringify(touchActions)}`);
+  assert.equal(touchActions.actionsVisible, true, `message actions should remain discoverable without hover: ${JSON.stringify(touchActions)}`);
+  await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
@@ -436,6 +450,7 @@ try {
   })()`);
   await waitFor(page, "document.querySelectorAll('.tool-trace summary').item(document.querySelectorAll('.tool-trace summary').length - 1)?.textContent.includes('running') === true");
   await page.evaluate("document.querySelector('#send-button').click()");
+  assert.equal(await page.evaluate("document.activeElement?.id"), "message-input", "stopping with the button should return focus to the composer");
   await waitFor(page, "document.querySelector('.stream-status')?.textContent === 'Stopped' && document.querySelector('#send-button')?.textContent === 'Send'");
   assert.equal(await page.evaluate("document.querySelectorAll('.tool-trace').length"), 3);
   const tracesAfterStop = await page.evaluate(`(() => [...document.querySelectorAll('.tool-trace')].map((trace) => [...trace.querySelectorAll('.trace-section')].map((section) => [section.querySelector('h3')?.textContent, section.querySelector('pre')?.textContent])))()`);

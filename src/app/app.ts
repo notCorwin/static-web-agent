@@ -157,14 +157,19 @@ export class AgentApp {
     const controller = new AbortController();
     this.eventController = controller;
     const signal = controller.signal;
-    this.element("composer-form").addEventListener("submit", (event) => {
-      event.preventDefault();
-      if (this.busy) this.runController?.abort();
-      else void this.sendMessage();
-    }, { signal });
-
     const input = this.element<HTMLTextAreaElement>("message-input");
     const chat = this.element("chat-log");
+    this.element("composer-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (this.busy) {
+        this.runController?.abort();
+        input.focus();
+      } else {
+        input.focus();
+        void this.sendMessage();
+      }
+    }, { signal });
+
     chat.addEventListener("scroll", () => {
       this.followChat = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
     }, { signal, passive: true });
