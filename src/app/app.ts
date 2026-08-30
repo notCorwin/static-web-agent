@@ -567,7 +567,9 @@ export class AgentApp {
   private renderConnection(): void {
     const connected = this.harness?.modelId !== undefined;
     const card = this.element("connection-card");
-    this.element("chat-log").classList.toggle("settings-open", connected && this.connectionEditing);
+    const chat = this.element("chat-log");
+    chat.classList.toggle("connection-open", !connected || this.connectionEditing);
+    chat.classList.toggle("settings-open", connected && this.connectionEditing);
     card.hidden = connected && !this.connectionEditing;
     const openSettings = this.element("open-settings");
     openSettings.hidden = !connected;
@@ -707,7 +709,8 @@ export class AgentApp {
     const groupHeight = groupBottom - groupTop;
     const maxScroll = Math.max(0, chat.scrollHeight - chat.clientHeight);
     if (groupHeight > chat.clientHeight) {
-      chat.scrollTop = Math.min(maxScroll, Math.max(0, chat.scrollTop + Math.round(detailsBounds.top - chatBounds.top)));
+      const anchorTop = previousMessage?.classList.contains("user") ? groupTop : detailsBounds.top;
+      chat.scrollTop = Math.min(maxScroll, Math.max(0, chat.scrollTop + Math.round(anchorTop - chatBounds.top)));
       return;
     }
     if (groupBottom > chatBounds.bottom) chat.scrollTop = Math.min(maxScroll, chat.scrollTop + Math.ceil(groupBottom - chatBounds.bottom));

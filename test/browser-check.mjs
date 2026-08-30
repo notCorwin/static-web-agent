@@ -110,7 +110,7 @@ async function startServer() {
               ? "await new Promise((resolve) => setTimeout(resolve, 5000)); return \"late\""
               : lastUser?.content === "Fail after tool"
                 ? "throw new Error('intentional page failure')"
-                : "return document.title + ' 42'";
+                : "return { title: document.title, answer: 40 + 2 }";
         response.write(`data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call-browser", type: "function", function: { name: "page_run", arguments: JSON.stringify({ code }) } }] } }] })}\n\n`);
         response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
       }
@@ -290,6 +290,24 @@ try {
     document.querySelector('#connection-form').requestSubmit();
   })()`);
   await waitFor(page, "document.querySelector('#message-input')?.disabled === false");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 320, height: 200, deviceScaleFactor: 1, mobile: false });
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === false");
+  const shortSettingsLayout = await page.evaluate(`(() => {
+    const card = document.querySelector('#connection-card');
+    return {
+      card: card?.getBoundingClientRect().toJSON(),
+      submit: document.querySelector('#connection-submit')?.getBoundingClientRect().toJSON(),
+      endpoint: document.querySelector('#model-endpoint')?.getBoundingClientRect().toJSON(),
+      composerDisplay: getComputedStyle(document.querySelector('.composer-wrap')).display,
+    };
+  })()`);
+  assert.equal(shortSettingsLayout.composerDisplay, "none", `short settings should release composer space: ${JSON.stringify(shortSettingsLayout)}`);
+  assert.ok(shortSettingsLayout.submit.top >= shortSettingsLayout.card.top - 1 && shortSettingsLayout.submit.bottom <= shortSettingsLayout.card.bottom + 1, `short settings submit button must stay visible: ${JSON.stringify(shortSettingsLayout)}`);
+  assert.ok(shortSettingsLayout.endpoint.top >= shortSettingsLayout.card.top - 1 && shortSettingsLayout.endpoint.bottom <= shortSettingsLayout.card.bottom + 1, `short settings focused field must stay visible: ${JSON.stringify(shortSettingsLayout)}`);
+  await page.evaluate("document.querySelector('#open-settings').click()");
+  await waitFor(page, "document.querySelector('#connection-card')?.hidden === true");
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
   assert.equal(await page.evaluate("localStorage.getItem('static-web-agent.connection') !== null"), true);
   assert.equal(await page.evaluate("document.querySelector('.empty-state p')?.textContent"), "Connected to Browser Test. Ask the agent to do something.");
   await page.evaluate(`(() => {
@@ -508,6 +526,22 @@ try {
   assert.equal(touchActions.hoverNone, true, `touch emulation should expose a hover-none media state: ${JSON.stringify(touchActions)}`);
   assert.equal(touchActions.actionsVisible, true, `message actions should remain discoverable without hover: ${JSON.stringify(touchActions)}`);
   await page.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
+
+  await page.send("Emulation.setDeviceMetricsOverride", { width: 180, height: 600, deviceScaleFactor: 1, mobile: false });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const narrowWidthLayout = await page.evaluate(`(() => {
+    const selectors = ['.chat-header', '.chat-header h1', '#open-settings', '.composer-wrap', '#message-input', '#send-button'];
+    return {
+      width: innerWidth,
+      documentWidth: document.documentElement.scrollWidth,
+      nodes: Object.fromEntries(selectors.map((selector) => [selector, document.querySelector(selector)?.getBoundingClientRect().toJSON()])),
+    };
+  })()`);
+  assert.equal(narrowWidthLayout.width, 180);
+  assert.equal(narrowWidthLayout.documentWidth, 180, `narrow layout must not create page overflow: ${JSON.stringify(narrowWidthLayout)}`);
+  assert.ok(Object.values(narrowWidthLayout.nodes).every((rect) => rect.left >= -1 && rect.right <= narrowWidthLayout.width + 1), `narrow layout controls must stay inside the viewport: ${JSON.stringify(narrowWidthLayout)}`);
+  assert.ok(narrowWidthLayout.nodes['.chat-header h1'].height <= 24, `narrow header should stay compact: ${JSON.stringify(narrowWidthLayout)}`);
   await page.send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 
   await page.evaluate(`(() => {
