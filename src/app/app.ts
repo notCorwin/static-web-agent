@@ -161,6 +161,11 @@ export class AgentApp {
     const chat = this.element("chat-log");
     input.addEventListener("input", () => {
       if (input.value.trim().length > 0 && this.runStatus === "Write a message before sending.") this.setStatus("", "normal");
+      const wasFollowing = this.followChat;
+      if (!wasFollowing || this.connectionEditing) return;
+      window.requestAnimationFrame(() => {
+        if (!this.connectionEditing) chat.scrollTop = chat.scrollHeight;
+      });
     }, { signal });
     this.element("composer-form").addEventListener("submit", (event) => {
       event.preventDefault();

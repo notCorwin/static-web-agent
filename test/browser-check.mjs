@@ -761,20 +761,51 @@ try {
   assert.ok(resizedCompactEditor.buttons.every((button) => button.top >= resizedCompactEditor.chat.top - 1 && button.bottom <= resizedCompactEditor.chat.bottom + 1), `edit actions stay reachable after shrinking the window: ${JSON.stringify(resizedCompactEditor)}`);
   await page.evaluate("document.querySelector('[data-action=\"cancel-edit\"]')?.click()");
   await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = chat.scrollHeight;
+    chat.dispatchEvent(new Event('scroll'));
+  })()`);
+  await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = Array.from({ length: 20 }, (_, index) => 'line ' + (index + 1)).join('\\n');
     input.dispatchEvent(new Event('input', { bubbles: true }));
   })()`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
   const compactComposer = await page.evaluate(`(() => ({
     chat: document.querySelector('#chat-log')?.getBoundingClientRect().toJSON(),
     composer: document.querySelector('.composer-wrap')?.getBoundingClientRect().toJSON(),
     input: document.querySelector('#message-input')?.getBoundingClientRect().toJSON(),
     send: document.querySelector('#send-button')?.getBoundingClientRect().toJSON(),
     status: document.querySelector('#run-status')?.getBoundingClientRect().toJSON(),
+    last: [...document.querySelectorAll('#chat-log article')].at(-1)?.getBoundingClientRect().toJSON(),
+    scrollTop: document.querySelector('#chat-log')?.scrollTop,
+    maxScroll: (() => { const chat = document.querySelector('#chat-log'); return chat === null ? 0 : chat.scrollHeight - chat.clientHeight; })(),
     pageHeight: document.documentElement.scrollHeight,
   }))()`);
   assert.ok(compactComposer.composer.top >= compactComposer.chat.bottom - 1, "a long short-screen composer must not overlap the chat");
   assert.ok(compactComposer.composer.bottom <= 300 && compactComposer.send.bottom <= 300 && compactComposer.status.bottom <= 300, "short-screen composer controls stay inside the viewport");
+  assert.ok(compactComposer.last.bottom <= compactComposer.chat.bottom + 1, `the bottom-following chat must reveal its last message after the composer grows: ${JSON.stringify(compactComposer)}`);
+  assert.ok(Math.abs(compactComposer.scrollTop - compactComposer.maxScroll) < 2, `the bottom-following chat must remain scrolled to the bottom after the composer grows: ${JSON.stringify(compactComposer)}`);
+  const manualComposerBefore = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    chat.scrollTop = Math.max(0, chat.scrollHeight - chat.clientHeight - 120);
+    chat.dispatchEvent(new Event('scroll'));
+    return { top: chat.scrollTop, max: chat.scrollHeight - chat.clientHeight };
+  })()`);
+  assert.ok(manualComposerBefore.max > 120, `the short-screen conversation must have room for a manual scroll check: ${JSON.stringify(manualComposerBefore)}`);
+  await page.evaluate(`(() => {
+    const input = document.querySelector('#message-input');
+    input.value = 'short draft';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.value = Array.from({ length: 20 }, (_, index) => 'line ' + (index + 1)).join('\\n');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const manualComposerAfter = await page.evaluate(`(() => {
+    const chat = document.querySelector('#chat-log');
+    return { top: chat.scrollTop, max: chat.scrollHeight - chat.clientHeight };
+  })()`);
+  assert.ok(Math.abs(manualComposerAfter.top - manualComposerBefore.top) < 2, `a manually scrolled chat must not jump when the composer grows: ${JSON.stringify({ before: manualComposerBefore, after: manualComposerAfter })}`);
   await page.evaluate(`(() => {
     const input = document.querySelector('#message-input');
     input.value = '';
